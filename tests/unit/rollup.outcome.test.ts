@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { cancelToResult, placedToResult, thrownToResult } from "@/lib/rollup/outcome";
+import {
+  cancelErrorToResult,
+  cancelToResult,
+  placedToResult,
+  thrownToResult,
+} from "@/lib/rollup/outcome";
 import {
   OrderInvalid,
+  OutcomeUnknown,
   RESULT_STATUS_CODE,
   TransactionFailed,
   type OrderResult,
@@ -32,6 +38,7 @@ function result(over: Partial<OrderResult>): OrderResult {
 function placedResult(over: Partial<OrderResult>): Placed {
   return {
     outcome: "placed",
+    clientOrderId: 1n,
     result: result(over),
     secret: new Uint8Array(16),
     view: FAKE_VIEW,
@@ -115,7 +122,7 @@ describe("placedToResult: outcome status mapping", () => {
     const mapped = placedToResult(placed, UNITS, 6);
     expect(mapped.status).toBe("rejected");
     expect(mapped.orderId).toBe("");
-    expect(mapped.reason).toMatch(/expired/);
+    expect(mapped.reason).toMatch(/Expired/);
     expect(mapped.reason).toMatch(/not placed/);
     expect(mapped.sentAtMs).toBe(50);
     expect(mapped.resultAtMs).toBeUndefined();
@@ -158,8 +165,36 @@ describe("cancelToResult", () => {
       cancelled: 3,
     });
   });
+});
 
-  it("reports zero, not an error, when the instruction's outcome is unknown (expired)", () => {
-    expect(cancelToResult(null)).toEqual({ cancelled: 0 });
+describe("cancelErrorToResult: OutcomeUnknown and all-slots-busy (0.3.1)", () => {
+  it("maps OutcomeUnknown to a pending result that settles to the real count once known", async () => {
+    const settled = Promise.resolve({
+      ...result({ cancelled: 2n, kind: 3 }),
+      sentAt: 0,
+      resultAt: 1,
+    });
+    const mapped = cancelErrorToResult(new OutcomeUnknown(1n, settled), Date.now() + 5_000);
+    expect(mapped?.cancelled).toBe(0);
+    expect(mapped?.pending).toBeDefined();
+    expect((await mapped!.pending!.settled).cancelled).toBe(2);
+  });
+
+  it("maps OutcomeUnknown settling to null (expired, never ran) to a plain zero", async () => {
+    const mapped = cancelErrorToResult(new OutcomeUnknown(1n, Promise.resolve(null)), Date.now());
+    const settled = await mapped!.pending!.settled;
+    expect(settled.cancelled).toBe(0);
+    expect(settled.reason).toMatch(/Expired, not run/);
+  });
+
+  it("maps every order-key slot busy to an immediate zero with a plain reason", () => {
+    const mapped = cancelErrorToResult(new Error("every order key is in use"), Date.now());
+    expect(mapped?.pending).toBeUndefined();
+    expect(mapped?.cancelled).toBe(0);
+    expect(mapped?.reason).toMatch(/slots are busy/);
+  });
+
+  it("returns null for an ordinary error, letting the caller's own handling take over", () => {
+    expect(cancelErrorToResult(new Error("network down"), Date.now())).toBeNull();
   });
 });

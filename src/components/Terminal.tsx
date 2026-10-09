@@ -12,6 +12,7 @@ import {
 import { candlesLoadingKey } from "@/lib/market-data/selectors";
 import { useWallet } from "@/lib/wallet/useWallet";
 import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
+import type { CancelResult } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { describeRejectReason } from "@/lib/trading/validation";
@@ -42,6 +43,13 @@ interface OrderSession {
   baseSteps: RailStep[];
   trackedOrderId: string | null;
   trackedTag: string | null;
+  /**
+   * Set while this order's own outcome is not yet certain (rollup mode,
+   * 0.3.1): the device gave up waiting while it could still run. Blocks
+   * resubmitting an order in this market (the same intent) until it clears,
+   * but not cancelling or transferring - those use other order-key slots.
+   */
+  pendingPlace: { expiresAtMs: number } | null;
 }
 
 export function Terminal() {
@@ -78,6 +86,8 @@ export function Terminal() {
   const [orderSession, setOrderSession] = useState<OrderSession | null>(null);
   const [clientDurationMs, setClientDurationMs] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [cancelPending, setCancelPending] = useState<{ expiresAtMs: number } | null>(null);
+  const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [accountRefreshedAt, setAccountRefreshedAt] = useState<number | null>(null);
   const lastOwnFillCountRef = useRef(0);
 
@@ -91,38 +101,73 @@ export function Terminal() {
     return [...prev, { type, at, detail }];
   }
 
-  function handleOrderPlaced(outcome: PlacedOrderOutcome, descriptor: OrderDescriptor): void {
-    const submittedAt = Date.now() - Math.round(outcome.clientDurationMs);
-    const baseSteps: RailStep[] = [{ type: "submitted", at: submittedAt }];
-    setClientDurationMs(outcome.clientDurationMs);
-    if (outcome.result.status === "rejected") {
-      setOrderSession({
+  /** Builds the session that a (now-certain) place result settles into, shared between the immediate path below and the pending path's background continuation. */
+  function sessionFromResult(
+    result: PlacedOrderOutcome["result"],
+    descriptor: OrderDescriptor,
+    baseSteps: RailStep[],
+  ): OrderSession {
+    if (result.status === "rejected") {
+      return {
         market: descriptor.market,
         descriptor,
         baseSteps: appendStep(
           baseSteps,
           "rejected",
           Date.now(),
-          describeRejectReason(outcome.result.reason ?? ""),
+          describeRejectReason(result.reason ?? ""),
         ),
         trackedOrderId: null,
         trackedTag: null,
-      });
-      return;
+        pendingPlace: null,
+      };
     }
-    setOrderSession({
+    return {
       market: descriptor.market,
       descriptor,
       baseSteps: appendStep(baseSteps, "confirmed", Date.now()),
-      trackedOrderId: outcome.result.orderId,
-      trackedTag: outcome.result.tag,
-    });
+      trackedOrderId: result.orderId,
+      trackedTag: result.tag,
+      pendingPlace: null,
+    };
   }
 
-  async function handleCancelAll(): Promise<void> {
-    setCancelling(true);
-    try {
-      await trading.cancelAllInMarket(selectedMarketId);
+  function handleOrderPlaced(outcome: PlacedOrderOutcome, descriptor: OrderDescriptor): void {
+    const submittedAt = Date.now() - Math.round(outcome.clientDurationMs);
+    const baseSteps: RailStep[] = [{ type: "submitted", at: submittedAt }];
+    setClientDurationMs(outcome.clientDurationMs);
+    if (outcome.result.pending) {
+      const { pending } = outcome.result;
+      setOrderSession({
+        market: descriptor.market,
+        descriptor,
+        baseSteps: appendStep(baseSteps, "confirmed", Date.now()),
+        trackedOrderId: null,
+        trackedTag: null,
+        pendingPlace: { expiresAtMs: pending.expiresAtMs },
+      });
+      void pending.settled.then((settled) => {
+        setOrderSession((prev) =>
+          prev && prev.market === descriptor.market && prev.pendingPlace
+            ? sessionFromResult(settled, descriptor, prev.baseSteps)
+            : prev,
+        );
+      });
+      return;
+    }
+    setOrderSession(sessionFromResult(outcome.result, descriptor, baseSteps));
+  }
+
+  /** Shared by both cancel paths: an immediate result marks the rail cancelled or shows a plain reason it could not be sent (e.g. every order-key slot busy); a pending one shows the countdown and recurses once it settles. */
+  async function applyCancelOutcome(result: CancelResult): Promise<void> {
+    if (result.pending) {
+      setCancelPending({ expiresAtMs: result.pending.expiresAtMs });
+      const settled = await result.pending.settled;
+      setCancelPending(null);
+      await applyCancelOutcome(settled);
+      return;
+    }
+    if (result.cancelled > 0) {
       setOrderSession((prev) =>
         prev && prev.market === selectedMarketId
           ? {
@@ -136,6 +181,16 @@ export function Terminal() {
             }
           : prev,
       );
+      return;
+    }
+    if (result.reason) setCancelMessage(result.reason);
+  }
+
+  async function handleCancelAll(): Promise<void> {
+    setCancelling(true);
+    setCancelMessage(null);
+    try {
+      await applyCancelOutcome(await trading.cancelAllInMarket(selectedMarketId));
     } finally {
       setCancelling(false);
     }
@@ -144,21 +199,9 @@ export function Terminal() {
   async function handleCancelOrder(orderId: string): Promise<void> {
     if (!trading.cancelOrder) return;
     setCancelling(true);
+    setCancelMessage(null);
     try {
-      await trading.cancelOrder(selectedMarketId, orderId);
-      setOrderSession((prev) =>
-        prev && prev.market === selectedMarketId
-          ? {
-              ...prev,
-              baseSteps: appendStep(
-                prev.baseSteps,
-                "cancelled",
-                Date.now(),
-                "Cancelled by request.",
-              ),
-            }
-          : prev,
-      );
+      await applyCancelOutcome(await trading.cancelOrder(selectedMarketId, orderId));
     } finally {
       setCancelling(false);
     }
@@ -205,23 +248,31 @@ export function Terminal() {
   const railSteps: RailStep[] = relevantSession
     ? [
         ...relevantSession.baseSteps,
-        ...(trackedOpenOrder
+        ...(relevantSession.pendingPlace
           ? [
               {
-                type: (Number(trackedOpenOrder.remainingSize) < Number(trackedOpenOrder.size)
-                  ? "partiallyFilled"
-                  : "resting") as RailStepType,
+                type: "unknown" as RailStepType,
                 at: now,
+                detail: `Checking with the venue. Do not resend yet. About ${Math.max(0, Math.ceil((relevantSession.pendingPlace.expiresAtMs - now) / 1000))}s.`,
               },
             ]
-          : trackedFills.length > 0
+          : trackedOpenOrder
             ? [
                 {
-                  type: "filled" as RailStepType,
-                  at: trackedFills.reduce((max, fill) => Math.max(max, fill.timestampMs), 0),
+                  type: (Number(trackedOpenOrder.remainingSize) < Number(trackedOpenOrder.size)
+                    ? "partiallyFilled"
+                    : "resting") as RailStepType,
+                  at: now,
                 },
               ]
-            : []),
+            : trackedFills.length > 0
+              ? [
+                  {
+                    type: "filled" as RailStepType,
+                    at: trackedFills.reduce((max, fill) => Math.max(max, fill.timestampMs), 0),
+                  },
+                ]
+              : []),
       ]
     : [];
 
@@ -251,6 +302,7 @@ export function Terminal() {
       onOrderPlaced={handleOrderPlaced}
       onTransferToSpot={trading.transferBetweenBalances}
       supportsGoodFor={trading.client.mode === "rollup"}
+      placeOrderPending={!!relevantSession?.pendingPlace}
     />
   );
 
@@ -268,6 +320,8 @@ export function Terminal() {
           : null
       }
       cancelling={cancelling}
+      cancelPending={cancelPending}
+      cancelMessage={cancelMessage}
       now={now}
     />
   );
@@ -307,6 +361,7 @@ export function Terminal() {
           <div className="flex min-h-0 flex-[3] flex-col">
             <MarketChart
               market={market}
+              interval={interval}
               candles={candles}
               mark={mark}
               publicFills={tape}
@@ -404,6 +459,7 @@ export function Terminal() {
           <div className="flex h-[260px] flex-col">
             <MarketChart
               market={market}
+              interval={interval}
               candles={candles}
               mark={mark}
               publicFills={tape}

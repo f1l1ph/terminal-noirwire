@@ -60,6 +60,7 @@ export function OrderEntry({
   onOrderPlaced,
   onTransferToSpot,
   supportsGoodFor,
+  placeOrderPending,
 }: {
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
@@ -79,6 +80,13 @@ export function OrderEntry({
   onTransferToSpot: TransferFn | null;
   /** Rollup limit orders can carry their own expiry (RULES.md section 4); dev-mode orders cannot. */
   supportsGoodFor: boolean;
+  /**
+   * An order in this market is still being checked with the venue (rollup
+   * mode, 0.3.1): blocks resubmitting the same intent (this button) until
+   * it clears, without blocking cancel or transfer - those lend a different
+   * order-key slot.
+   */
+  placeOrderPending: boolean;
 }) {
   const isPerp = market?.kind === "perp";
   const [side, setSide] = useState<Side>("buy");
@@ -258,7 +266,8 @@ export function OrderEntry({
     !!validation?.valid &&
     !unaffordable &&
     !staleBlock &&
-    !submitting;
+    !submitting &&
+    !placeOrderPending;
 
   async function runSubmit() {
     if (!draft || !market) return;
@@ -376,6 +385,10 @@ export function OrderEntry({
     primaryLabel = "Create test wallet";
     primaryClass = btnPrimary;
     primaryDisabled = creatingWallet;
+  } else if (placeOrderPending) {
+    primaryLabel = "Checking with the venue…";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (needsTransfer) {
     primaryLabel = "Move funds to spot";
     primaryClass = btnPrimary;

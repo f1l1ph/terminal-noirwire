@@ -36,6 +36,19 @@ export interface NewOrderInput {
   goodFor?: "untilCancelled" | "1m" | "1h";
 }
 
+/**
+ * A call whose outcome was not yet certain when it returned (rollup mode
+ * only): the device gave up waiting while the instruction could still run
+ * on the venue's own clock. `expiresAtMs` is this device's clock reading of
+ * when the venue can no longer run it; until `settled` resolves, this
+ * call's order-key slot is lent to nothing else, so the same intent must
+ * not be resent.
+ */
+export interface PendingSettlement<T> {
+  expiresAtMs: number;
+  settled: Promise<T>;
+}
+
 export interface PlaceOrderResult {
   orderId: string;
   tag: string;
@@ -51,10 +64,20 @@ export interface PlaceOrderResult {
    */
   sentAtMs?: number;
   resultAtMs?: number;
+  /**
+   * Set only while the outcome is not yet certain. `status`/`reason` above
+   * are a provisional placeholder ("open", "Checking with the venue...");
+   * await `pending.settled` for what the order actually did.
+   */
+  pending?: PendingSettlement<PlaceOrderResult>;
 }
 
 export interface CancelResult {
   cancelled: number;
+  /** A plain reason the cancel could not be sent at all (e.g. every order-key slot busy). Never set alongside `pending`. */
+  reason?: string;
+  /** Set only while the outcome is not yet certain; see `PendingSettlement`. */
+  pending?: PendingSettlement<CancelResult>;
 }
 
 export interface Balance {
@@ -102,7 +125,11 @@ export interface TraderState {
   openOrders: OpenOrder[];
 }
 
-export type TransferResult = { kind: "ok" } | { kind: "error"; message: string };
+export type TransferResult =
+  | { kind: "ok" }
+  | { kind: "error"; message: string }
+  /** Set only while the outcome is not yet certain; see `PendingSettlement`. */
+  | { kind: "pending"; pending: PendingSettlement<TransferResult> };
 
 export interface PrivacyCheck {
   viewAddress: string;

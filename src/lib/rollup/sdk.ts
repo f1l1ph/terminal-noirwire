@@ -4,7 +4,7 @@
  * defined here, so a client package upgrade is an edit to this one file.
  * Mirrors the same discipline sim-noirwire's own `src/rollup/program.ts`
  * follows for the same package (see that repo's docs/DESIGN.md, "The rollup
- * venue"). Currently on 0.3.0.
+ * venue"). Currently on 0.3.1.
  */
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
@@ -12,6 +12,7 @@ import {
   OrderInvalid as SdkOrderInvalid,
   OrderKeyManager,
   ORDER_TYPE,
+  OutcomeUnknown as SdkOutcomeUnknown,
   PROGRAM_ID,
   RESULT_STATUS,
   ROLE,
@@ -29,15 +30,28 @@ import {
   type OrderKeyCheckpoint,
   type OrderResult,
   type Placed,
+  type Settled,
   type SignMessage,
   type Timing,
   type View,
 } from "@noirwire/orderbook";
 
-export type { View, OrderResult, Placed, SignMessage, Timing, OrderKeyCheckpoint, OrderKeyManager };
+export type {
+  View,
+  OrderResult,
+  Placed,
+  Settled,
+  SignMessage,
+  Timing,
+  OrderKeyCheckpoint,
+  OrderKeyManager,
+};
 export { randomSecret, PROGRAM_ID };
 export const OrderInvalid = SdkOrderInvalid;
 export const TransactionFailed = SdkTransactionFailed;
+export const OutcomeUnknown = SdkOutcomeUnknown;
+/** `keys.take()`'s own message when every one of the four order-key slots is already lent out. Not a typed error in the package; matched on its exact text. */
+export const ALL_KEYS_BUSY_MESSAGE = "every order key is in use";
 
 export function programAddresses(programId: PublicKey): Addresses {
   return new Addresses(programId);
@@ -130,29 +144,33 @@ export class TraderClient {
     return this.inner.placeOrder(marketId, order, options);
   }
 
+  /** May throw `OutcomeUnknown` (carries `settled`) instead of returning, once the device gives up waiting before the outcome is certain. */
   cancelOrder(
     marketId: number,
     orderSeq: bigint,
     expirySeconds?: number,
-  ): Promise<(OrderResult & Timing) | null> {
+  ): Promise<OrderResult & Timing> {
     return this.inner.cancelOrder(marketId, orderSeq, expirySeconds);
   }
 
-  cancelAll(marketId: number, expirySeconds?: number): Promise<(OrderResult & Timing) | null> {
+  /** May throw `OutcomeUnknown`; see `cancelOrder`. */
+  cancelAll(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing> {
     return this.inner.cancelAll(marketId, undefined, expirySeconds);
   }
 
-  syncView(marketId: number, expirySeconds?: number): Promise<(OrderResult & Timing) | null> {
+  /** May throw `OutcomeUnknown`; see `cancelOrder`. */
+  syncView(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing> {
     return this.inner.syncView(marketId, expirySeconds);
   }
 
+  /** May throw `OutcomeUnknown`; see `cancelOrder`. */
   transferBetweenBalances(
     toCollateral: boolean,
     spotToken: number,
     amount: bigint,
     riskMarkets: number[],
     expirySeconds?: number,
-  ): Promise<(OrderResult & Timing) | null> {
+  ): Promise<OrderResult & Timing> {
     return this.inner.transferBetweenBalances(
       toCollateral,
       spotToken,

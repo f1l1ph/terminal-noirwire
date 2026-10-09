@@ -75,12 +75,29 @@ const FAKE_DEPLOYMENT: PublicDeployment = {
   ],
 };
 
+/** 0.3.1: cancelOrder/cancelAll/syncView/transferBetweenBalances no longer return null on timeout (they throw `OutcomeUnknown` instead), so every fake here returns an ordinary successful result by default. */
+const FAKE_SUCCESS = {
+  clientOrderId: 1n,
+  orderSeq: 0n,
+  filled: 0n,
+  filledNotional: 0n,
+  rested: 0n,
+  cancelled: 0n,
+  fee: 0n,
+  kind: 3,
+  status: RESULT_STATUS_CODE.filled,
+  code: 0,
+  sentAt: 0,
+  resultAt: 1,
+};
+
 function fakeClient(overrides: Partial<TraderClientLike> = {}): TraderClientLike {
   return {
     view: async () => EMPTY_VIEW,
     subscribeView: () => async () => {},
     placeOrder: async () => ({
       outcome: "placed",
+      clientOrderId: 1n,
       result: {
         clientOrderId: 1n,
         orderSeq: 0n,
@@ -98,10 +115,10 @@ function fakeClient(overrides: Partial<TraderClientLike> = {}): TraderClientLike
       sentAt: 0,
       resultAt: 1,
     }),
-    cancelOrder: async () => null,
-    cancelAll: async () => null,
-    syncView: async () => null,
-    transferBetweenBalances: async () => null,
+    cancelOrder: async () => FAKE_SUCCESS,
+    cancelAll: async () => FAKE_SUCCESS,
+    syncView: async () => FAKE_SUCCESS,
+    transferBetweenBalances: async () => FAKE_SUCCESS,
     ...overrides,
   };
 }

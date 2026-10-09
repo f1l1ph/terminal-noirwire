@@ -7,7 +7,13 @@ import {
 } from "../wallet/index";
 import type { DeploymentOverrides } from "../rollup/deployment";
 import { openAndFund } from "../rollup/fundingClient";
-import { cancelToResult, placedToResult, thrownToResult } from "../rollup/outcome";
+import {
+  cancelErrorToResult,
+  cancelToResult,
+  placedToResult,
+  thrownToResult,
+  transferErrorToResult,
+} from "../rollup/outcome";
 import { trackSecret } from "../rollup/secretStore";
 import { buildRealSession, type RollupSession, type RollupSessionDeps } from "../rollup/session";
 import {
@@ -54,6 +60,14 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
  */
 const SESSION_REFRESH_MS = 4 * 60 * 1000;
 const GOOD_FOR_SECONDS: Record<"1m" | "1h", bigint> = { "1m": 60n, "1h": 3_600n };
+/**
+ * Passed explicitly on every keyed call (place/cancel/transfer/sync) so this
+ * client can compute `PendingSettlement.expiresAtMs` itself from the same
+ * value and the same wall clock the package uses internally (`Date.now()`),
+ * rather than mirroring the package's own default (also 5s) and risking it
+ * drifting out of sync with a future release.
+ */
+const DEFAULT_EXPIRY_SECONDS = 5;
 
 export interface RollupTradingClientOptions {
   simUrl: string;
@@ -276,6 +290,7 @@ export class RollupTradingClient implements TradingClient {
       const size = sizeToLots(binding.units, order.size);
       const secret = randomSecret();
       const expiry = expiryFor(order.goodFor, this.now);
+      const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
       let result: PlaceOrderResult;
       try {
         const placed = await session.client.placeOrder(
@@ -289,14 +304,17 @@ export class RollupTradingClient implements TradingClient {
             expiry,
             secret,
           },
-          { riskMarkets: binding.isPerp ? riskMarketIds(bindings) : undefined },
+          {
+            expirySeconds: DEFAULT_EXPIRY_SECONDS,
+            riskMarkets: binding.isPerp ? riskMarketIds(bindings) : undefined,
+          },
         );
-        result = placedToResult(placed, binding.units, binding.sizeDecimals);
+        result = placedToResult(placed, binding.units, binding.sizeDecimals, expiresAtMs);
       } catch (error) {
-        // OrderInvalid (refused before signing) or TransactionFailed (landed
-        // and refused): both map to the ordinary rejected state, like a
-        // book-dependent refusal, rather than reaching the submit button's
-        // generic error path.
+        // OrderInvalid (refused before signing), TransactionFailed (landed
+        // and refused), or every order-key slot busy: all map to the
+        // ordinary rejected state, like a book-dependent refusal, rather
+        // than reaching the submit button's generic error path.
         const mapped = thrownToResult(error);
         if (!mapped) throw error;
         result = mapped;
@@ -321,9 +339,20 @@ export class RollupTradingClient implements TradingClient {
     return this.withSession(wallet, async (session) => {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
-      const result = await session.client.cancelOrder(binding.numericId, BigInt(orderId));
-      session.saveKeyCheckpoint();
-      return cancelToResult(result);
+      const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
+      try {
+        const result = await session.client.cancelOrder(
+          binding.numericId,
+          BigInt(orderId),
+          DEFAULT_EXPIRY_SECONDS,
+        );
+        session.saveKeyCheckpoint();
+        return cancelToResult(result);
+      } catch (error) {
+        const mapped = cancelErrorToResult(error, expiresAtMs);
+        if (!mapped) throw error;
+        return mapped;
+      }
     });
   }
 
@@ -331,9 +360,16 @@ export class RollupTradingClient implements TradingClient {
     return this.withSession(wallet, async (session) => {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
-      const result = await session.client.cancelAll(binding.numericId);
-      session.saveKeyCheckpoint();
-      return cancelToResult(result);
+      const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
+      try {
+        const result = await session.client.cancelAll(binding.numericId, DEFAULT_EXPIRY_SECONDS);
+        session.saveKeyCheckpoint();
+        return cancelToResult(result);
+      } catch (error) {
+        const mapped = cancelErrorToResult(error, expiresAtMs);
+        if (!mapped) throw error;
+        return mapped;
+      }
     });
   }
 
@@ -349,16 +385,20 @@ export class RollupTradingClient implements TradingClient {
       if (!spot || quoteIndex === undefined) {
         return { kind: "error", message: "No spot market to transfer into." };
       }
+      const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
       try {
         await session.client.transferBetweenBalances(
           !toSpot,
           quoteIndex,
           amountToQuoteAtoms(amount),
           riskMarketIds(bindings),
+          DEFAULT_EXPIRY_SECONDS,
         );
         session.saveKeyCheckpoint();
         return { kind: "ok" };
       } catch (error) {
+        const mapped = transferErrorToResult(error, expiresAtMs);
+        if (mapped) return mapped;
         return {
           kind: "error",
           message: error instanceof Error ? error.message : "The venue refused the transfer.",
@@ -371,8 +411,15 @@ export class RollupTradingClient implements TradingClient {
     await this.withSession(wallet, async (session) => {
       const binding = this.bindings(session).get(market);
       if (!binding) return;
-      await session.client.syncView(binding.numericId);
-      session.saveKeyCheckpoint();
+      try {
+        await session.client.syncView(binding.numericId, DEFAULT_EXPIRY_SECONDS);
+        session.saveKeyCheckpoint();
+      } catch {
+        // Best effort, same as before: an own fill's view sync is a
+        // background nicety (the next trading instruction re-syncs it
+        // regardless), so an unknown or busy-slots outcome here is not
+        // worth surfacing to the trader.
+      }
     });
   }
 

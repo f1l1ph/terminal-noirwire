@@ -1,9 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatMoney } from "@/lib/format";
 import type { Balance, TransferResult } from "@/lib/trading/types";
 import { btnGhost, btnPrimary, input, sectionLabel } from "@/components/ui/styles";
+
+/** A local, one-second ticker while this control is awaiting a pending transfer's settlement - self-contained, so a countdown needs no `now` prop threaded through AccountDock/BalancesTable. */
+function useLocalNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
 
 export type TransferFn = (toSpot: boolean, amount: string) => Promise<TransferResult>;
 
@@ -43,6 +54,8 @@ export function TransferControl({
   const [amount, setAmount] = useState(prefillAmount ?? "");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [pendingExpiresAtMs, setPendingExpiresAtMs] = useState<number | null>(null);
+  const now = useLocalNow(pendingExpiresAtMs !== null);
 
   if (!open) {
     return (
@@ -56,19 +69,39 @@ export function TransferControl({
     );
   }
 
+  function finish(result: TransferResult) {
+    if (result.kind === "ok") {
+      setMessage(null);
+      setAmount("");
+      setOpen(false);
+      onDone?.();
+    } else if (result.kind === "pending") {
+      // Should not recur (a pending transfer settles to ok/error, never to
+      // another pending), but handled plainly rather than assumed away.
+      setMessage("Still checking with the venue.");
+    } else {
+      setMessage(result.message);
+    }
+  }
+
   async function submit() {
     setBusy(true);
     setMessage(null);
     try {
       const result = await onTransfer(direction === "toSpot", amount);
-      if (result.kind === "ok") {
-        setMessage(null);
-        setAmount("");
-        setOpen(false);
-        onDone?.();
-      } else {
-        setMessage(result.message);
+      if (result.kind === "pending") {
+        // The call's own order-key slot stays lent until this resolves, so
+        // the Move button below stays disabled (via `busy`) the whole time:
+        // resending the same transfer is blocked, but placing an order or
+        // cancelling one elsewhere in the terminal is not.
+        setMessage("Checking with the venue. Do not resend yet.");
+        setPendingExpiresAtMs(result.pending.expiresAtMs);
+        const settled = await result.pending.settled;
+        setPendingExpiresAtMs(null);
+        finish(settled);
+        return;
       }
+      finish(result);
     } finally {
       setBusy(false);
     }
@@ -127,8 +160,13 @@ export function TransferControl({
         </button>
       </div>
       {message && (
-        <p role="alert" className="text-danger mt-1 text-[12px]">
+        <p
+          role="alert"
+          className={`mt-1 text-[12px] ${pendingExpiresAtMs !== null ? "text-faint" : "text-danger"}`}
+        >
           {message}
+          {pendingExpiresAtMs !== null &&
+            ` About ${Math.max(0, Math.ceil((pendingExpiresAtMs - now) / 1000))}s.`}
         </p>
       )}
     </div>

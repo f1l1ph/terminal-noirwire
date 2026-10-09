@@ -4,7 +4,14 @@ import type { OpenOrder, Side } from "@/lib/trading/types";
 import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
 
 export type RailStepType =
-  "submitted" | "confirmed" | "resting" | "partiallyFilled" | "filled" | "cancelled" | "rejected";
+  | "submitted"
+  | "confirmed"
+  | "unknown"
+  | "resting"
+  | "partiallyFilled"
+  | "filled"
+  | "cancelled"
+  | "rejected";
 
 export interface RailStep {
   type: RailStepType;
@@ -27,6 +34,7 @@ export interface OrderDescriptor {
 const STEP_LABELS: Record<RailStepType, string> = {
   submitted: "Submitted",
   confirmed: "Confirmed",
+  unknown: "Checking with the venue",
   resting: "Resting",
   partiallyFilled: "Partially filled",
   filled: "Filled",
@@ -53,6 +61,8 @@ export function WitnessRail({
   onCancelAll,
   onCancelOrder,
   cancelling,
+  cancelPending,
+  cancelMessage,
   now,
 }: {
   order: OrderDescriptor | null;
@@ -64,6 +74,10 @@ export function WitnessRail({
   /** Present only when the trading client supports a per-order cancel (the real program does; sim-noirwire's dev routes do not). */
   onCancelOrder: (() => void) | null;
   cancelling: boolean;
+  /** Set while a cancel's own outcome is not yet certain (rollup mode): shows a countdown next to the cancel button instead of resending it. */
+  cancelPending?: { expiresAtMs: number } | null;
+  /** A plain reason the last cancel attempt could not be sent at all (e.g. every order-key slot busy), shown once and cleared on the next attempt. */
+  cancelMessage?: string | null;
   now: number;
 }) {
   if (!order || steps.length === 0) {
@@ -101,7 +115,7 @@ export function WitnessRail({
       {lastStep?.type === "rejected" && lastStep.detail && (
         <p className="text-danger mt-1 text-[12px]">{lastStep.detail}</p>
       )}
-      {lastStep?.type === "cancelled" && lastStep.detail && (
+      {(lastStep?.type === "cancelled" || lastStep?.type === "unknown") && lastStep.detail && (
         <p className="text-faint mt-1 text-[12px]">{lastStep.detail}</p>
       )}
 
@@ -133,6 +147,17 @@ export function WitnessRail({
                 ? `Cancel order ${openOrder.orderId}`
                 : `Cancel all ${order.market} orders`}
           </button>
+          {cancelPending && (
+            <p className="text-faint mt-1 text-[12px]">
+              Checking with the venue. Do not resend yet. About{" "}
+              {Math.max(0, Math.ceil((cancelPending.expiresAtMs - now) / 1000))}s.
+            </p>
+          )}
+          {!cancelPending && cancelMessage && (
+            <p role="alert" className="text-danger mt-1 text-[12px]">
+              {cancelMessage}
+            </p>
+          )}
         </div>
       )}
 

@@ -38,15 +38,21 @@ export interface TraderClientLike {
     },
     options?: { expirySeconds?: number; riskMarkets?: number[] },
   ): Promise<Placed>;
-  cancelOrder(marketId: number, orderSeq: bigint): Promise<(OrderResult & Timing) | null>;
-  cancelAll(marketId: number): Promise<(OrderResult & Timing) | null>;
-  syncView(marketId: number): Promise<(OrderResult & Timing) | null>;
+  /** May throw `OutcomeUnknown` (carries `settled`) instead of returning; see `./sdk.ts`. */
+  cancelOrder(
+    marketId: number,
+    orderSeq: bigint,
+    expirySeconds?: number,
+  ): Promise<OrderResult & Timing>;
+  cancelAll(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
+  syncView(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
   transferBetweenBalances(
     toCollateral: boolean,
     spotToken: number,
     amount: bigint,
     riskMarkets: number[],
-  ): Promise<(OrderResult & Timing) | null>;
+    expirySeconds?: number,
+  ): Promise<OrderResult & Timing>;
 }
 
 export interface RollupSession {

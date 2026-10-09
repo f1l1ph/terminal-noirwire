@@ -17,6 +17,17 @@ import type { Candle, MarketInfo, PublicFill } from "@/lib/market-data/types";
 import { btnGhost } from "@/components/ui/styles";
 
 const MIN_VALID_CANDLES = 2;
+/**
+ * The visible time range is fit to the last this-many candles (plus a few
+ * bar-widths of right padding), not to every candle ever loaded: a single
+ * outlier far back in history (e.g. a venue's own startup price walk) must
+ * not flatten the rest of the chart's price axis, since lightweight-charts
+ * autoscales the price axis to whatever is currently in the visible time
+ * range. Scrolling is left on, so an outlier stays reachable - the price
+ * axis then autoscales to include whatever comes into view.
+ */
+const VISIBLE_CANDLE_COUNT = 60;
+const RIGHT_PADDING_BARS = 5;
 
 function toUtcSeconds(epochMs: number): UTCTimestamp {
   return Math.floor(epochMs / 1000) as UTCTimestamp;
@@ -33,6 +44,7 @@ interface OhlcvLegend {
 
 export function MarketChart({
   market,
+  interval,
   candles,
   mark,
   publicFills,
@@ -42,6 +54,8 @@ export function MarketChart({
   onRetry,
 }: {
   market: MarketInfo | undefined;
+  /** Together with `market`, identifies this candle series: a change in either means a freshly-loaded series whose visible range should snap back to "latest N candles" rather than wherever the user last scrolled. */
+  interval: string;
   candles: Candle[];
   mark: { price: string; time: number } | null;
   publicFills: PublicFill[];
@@ -63,6 +77,13 @@ export function MarketChart({
     priceDecimalsRef.current = priceDecimals;
   }, [priceDecimals]);
 
+  // A genuinely new series (market or interval changed) snaps the view back
+  // to "latest N candles"; a live update of the SAME series (a new candle
+  // streaming in) only replaces the data, leaving the user's own scroll
+  // position alone - otherwise enabling scroll at all would be pointless,
+  // since the next tick would always yank the view back to the end.
+  const seriesKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
@@ -82,7 +103,15 @@ export function MarketChart({
       rightPriceScale: { borderColor: "#36393c" },
       timeScale: { borderColor: "#36393c", timeVisible: true, secondsVisible: false },
       crosshair: { vertLine: { color: "#515458" }, horzLine: { color: "#515458" } },
-      handleScroll: false,
+      // Scrolling stays on so an outlier candle outside the default visible
+      // window (see VISIBLE_CANDLE_COUNT) is still reachable; scaling stays
+      // off (pinch/wheel zoom would fight the price axis's own autoscale).
+      handleScroll: {
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+        mouseWheel: true,
+        pressedMouseMove: true,
+      },
       handleScale: false,
     });
     const candleSeries = chart.addCandlestickSeries({
@@ -169,7 +198,21 @@ export function MarketChart({
           color: Number(candle.close) >= Number(candle.open) ? "#2e4536" : "#4a2e2a",
         })),
       );
-      chartRef.current?.timeScale().fitContent();
+      const seriesKey = `${market?.id ?? ""}:${interval}`;
+      if (seriesKeyRef.current !== seriesKey) {
+        seriesKeyRef.current = seriesKey;
+        const visible = ordered.slice(-VISIBLE_CANDLE_COUNT);
+        const first = visible[0];
+        const last = ordered.at(-1);
+        if (first && last) {
+          const barSpacingMs =
+            visible.length >= 2 ? visible[1].startMs - visible[0].startMs : 60_000;
+          chartRef.current?.timeScale().setVisibleRange({
+            from: toUtcSeconds(first.startMs),
+            to: toUtcSeconds(last.startMs + barSpacingMs * RIGHT_PADDING_BARS),
+          });
+        }
+      }
       const lastCandle = ordered.at(-1);
       if (lastCandle && !legend) {
         setLegend({
@@ -204,25 +247,51 @@ export function MarketChart({
     };
   }, [mark]);
 
+  // Candle bucket size, estimated from the loaded series itself rather than
+  // parsed from the interval string: several own fills landing in the same
+  // candle share that candle's x-position regardless of their exact second,
+  // so grouping must match how the chart buckets time, not raw timestamps.
+  const candleDurationMs =
+    candles.length >= 2 ? Math.abs(candles[1].startMs - candles[0].startMs) : 60_000;
+
   useEffect(() => {
     if (!candleSeriesRef.current) return;
     const ascending = [...publicFills].sort((a, b) => a.timestampMs - b.timestampMs).slice(-80);
     try {
+      const publicMarkers = ascending
+        .filter((fill) => !ownSequences.has(fill.sequence))
+        .map((fill) => ({
+          time: toUtcSeconds(fill.timestampMs),
+          position: "inBar" as const,
+          color: "#515458",
+          shape: "circle" as const,
+        }));
+      // Several own fills in one candle would otherwise render as multiple
+      // markers stacked at the same bar position (indistinguishable from a
+      // rendering glitch); grouped into one marker per candle bucket, with
+      // a count label once more than one fill landed there.
+      const ownByBucket = new Map<number, number>();
+      for (const fill of ascending) {
+        if (!ownSequences.has(fill.sequence)) continue;
+        const bucket = Math.floor(fill.timestampMs / candleDurationMs) * candleDurationMs;
+        ownByBucket.set(bucket, (ownByBucket.get(bucket) ?? 0) + 1);
+      }
+      const ownMarkers = [...ownByBucket.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([bucket, count]) => ({
+          time: toUtcSeconds(bucket),
+          position: "aboveBar" as const,
+          color: "#f5f3ee",
+          shape: "circle" as const,
+          text: count > 1 ? `×${count}` : undefined,
+        }));
       candleSeriesRef.current.setMarkers(
-        ascending.map((fill) => {
-          const mine = ownSequences.has(fill.sequence);
-          return {
-            time: toUtcSeconds(fill.timestampMs),
-            position: mine ? ("aboveBar" as const) : ("inBar" as const),
-            color: mine ? "#f5f3ee" : "#515458",
-            shape: "circle" as const,
-          };
-        }),
+        [...publicMarkers, ...ownMarkers].sort((a, b) => a.time - b.time),
       );
     } catch {
       // Markers are decorative; a malformed set is dropped rather than throwing.
     }
-  }, [publicFills, ownSequences]);
+  }, [publicFills, ownSequences, candleDurationMs]);
 
   const frozen = connectionState !== "open";
   const lastUpdateLabel = mark ? formatClockTime(new Date(mark.time)) : UNAVAILABLE;
