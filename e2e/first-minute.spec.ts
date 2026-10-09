@@ -21,7 +21,7 @@ test.describe("First minute: wallet, funds, a filled market long", () => {
     await shot(page, "03-funded");
 
     await page.getByLabel("Quantity (SOL)").fill("1");
-    await expect(page.getByText("Initial margin (est.)")).toBeVisible();
+    await expect(page.getByRole("term").filter({ hasText: "Margin" })).toBeVisible();
 
     await page.getByRole("button", { name: "Place test long", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Confirm order" });

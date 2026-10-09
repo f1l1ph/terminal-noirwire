@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
+import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { WalletIdentity } from "@/lib/trading/types";
 import { RESULT_STATUS_CODE, type View } from "@/lib/rollup/sdk";
@@ -48,21 +49,31 @@ const EMPTY_VIEW = {
   },
 } as unknown as View;
 
-function fakeDeployment() {
-  return {
-    markets: [
-      {
-        numericId: 0,
-        kind: "perp" as const,
-        base: "SOL",
-        quote: "nUSD",
-        baseToken: 0,
-        quoteToken: 0,
-      },
-    ],
-    tokenSymbols: new Map([[0, "nUSD"]]),
-  };
-}
+const FAKE_DEPLOYMENT: PublicDeployment = {
+  network: "localnet",
+  programId: Keypair.generate().publicKey.toBase58(),
+  solanaRpcUrl: "http://127.0.0.1:8899",
+  rollupRpcUrl: "http://127.0.0.1:6699",
+  rollupWsUrl: "ws://127.0.0.1:6700",
+  exchange: Keypair.generate().publicKey.toBase58(),
+  stats: Keypair.generate().publicKey.toBase58(),
+  markets: [
+    {
+      marketId: 0,
+      symbol: "NSOL-PERP",
+      kind: "perp",
+      market: Keypair.generate().publicKey.toBase58(),
+      tape: Keypair.generate().publicKey.toBase58(),
+      priceFeed: Keypair.generate().publicKey.toBase58(),
+      baseToken: null,
+      quoteToken: { symbol: "nUSD", mint: Keypair.generate().publicKey.toBase58(), decimals: 6 },
+      baseDecimals: 9,
+      quoteDecimals: 6,
+      lotSize: "1000000",
+      tick: "100",
+    },
+  ],
+};
 
 function fakeClient(overrides: Partial<TraderClientLike> = {}): TraderClientLike {
   return {
@@ -100,8 +111,8 @@ function fakeSession(client: TraderClientLike, createdAtMs: number): RollupSessi
     owner: Keypair.generate(),
     orderKeyPublicKeys: [],
     client,
-    mintDecimals: { decimalsOf: async () => 6 },
-    deployment: () => Promise.resolve(fakeDeployment()),
+    deployment: FAKE_DEPLOYMENT,
+    tokenIndexBySymbol: new Map([["nUSD", 0]]),
     createdAtMs,
     saveKeyCheckpoint: () => {},
   };
@@ -126,9 +137,6 @@ describe("RollupTradingClient: sign-in refresh", () => {
 
     const client = new RollupTradingClient({
       simUrl: "http://sim.test",
-      rollupRpcUrl: "http://rollup.test",
-      rollupWsUrl: "ws://rollup.test",
-      rollupPrivateUrl: "http://private.test",
       marketSettingsLookup,
       buildSession,
     });
@@ -148,9 +156,6 @@ describe("RollupTradingClient: sign-in refresh", () => {
 
     const client = new RollupTradingClient({
       simUrl: "http://sim.test",
-      rollupRpcUrl: "http://rollup.test",
-      rollupWsUrl: "ws://rollup.test",
-      rollupPrivateUrl: "http://private.test",
       marketSettingsLookup,
       buildSession,
       now: () => now,
@@ -174,9 +179,6 @@ describe("RollupTradingClient: sign-in refresh", () => {
 
     const client = new RollupTradingClient({
       simUrl: "http://sim.test",
-      rollupRpcUrl: "http://rollup.test",
-      rollupWsUrl: "ws://rollup.test",
-      rollupPrivateUrl: "http://private.test",
       marketSettingsLookup,
       buildSession,
       now: () => now,

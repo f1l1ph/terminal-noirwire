@@ -31,8 +31,14 @@ export function TransferControl({
   onDone?: () => void;
 }) {
   const [open, setOpen] = useState(!!initiallyOpen || !!prefillAmount);
+  // Both `initiallyOpen` and `prefillAmount` only ever come from the same
+  // place - order entry's "Move funds to spot" - so either one means the
+  // direction defaults to spot too; a quantity not yet typed in the order
+  // form (so no prefillAmount) must not silently flip it to the opposite
+  // direction, which moved funds OUT of an empty spot balance and was
+  // refused on chain (InsufficientBalance) with no visible reason.
   const [direction, setDirection] = useState<"toSpot" | "toCollateral">(
-    prefillAmount ? "toSpot" : "toCollateral",
+    initiallyOpen || prefillAmount ? "toSpot" : "toCollateral",
   );
   const [amount, setAmount] = useState(prefillAmount ?? "");
   const [busy, setBusy] = useState(false);
@@ -72,8 +78,7 @@ export function TransferControl({
     <div className="border-line-subtle mt-2 border-t pt-2">
       <p className={sectionLabel}>Transfer</p>
       <p className="text-faint mt-1 text-[11px]">
-        Collateral {formatMoney(collateral.available)} nUSD · Spot{" "}
-        {formatMoney(spot?.available ?? "0")} nUSD
+        Collateral {formatMoney(collateral.available)} · Spot {formatMoney(spot?.available ?? "0")}
       </p>
       <div className="mt-2 flex gap-2" role="group" aria-label="Direction">
         <button

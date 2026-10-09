@@ -402,7 +402,7 @@ export function OrderEntry({
   return (
     <div
       ref={containerRef}
-      className="bg-surface border-line-subtle rounded-panel flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2"
+      className="bg-surface border-line-subtle rounded-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-1.5"
     >
       <p className="text-ink-strong text-[13px] font-medium">
         Trade {market.id} · {market.kind === "perp" ? "Perpetual, cross margin" : "Spot"}
@@ -445,20 +445,21 @@ export function OrderEntry({
         ))}
       </div>
 
-      <p className="text-faint text-[12px]">
-        Available: {formatMoney(availableQuote)}
-        {market.kind === "spot" && side === "sell" && (
-          <span>
-            {" "}
-            · {formatDecimal(baseBalance?.available ?? "0", sizeDecimals)} {market.base}
-          </span>
-        )}
-      </p>
-
       <div>
-        <label className="text-faint text-[12px]" htmlFor="order-quantity">
-          Quantity ({market.base})
-        </label>
+        <div className="flex items-baseline justify-between">
+          <label className="text-faint text-[12px]" htmlFor="order-quantity">
+            Quantity ({market.base})
+          </label>
+          <span className="text-faint text-[11px]">
+            Available: {formatMoney(availableQuote)}
+            {market.kind === "spot" && side === "sell" && (
+              <>
+                {" "}
+                · {formatDecimal(baseBalance?.available ?? "0", sizeDecimals)} {market.base}
+              </>
+            )}
+          </span>
+        </div>
         <input
           ref={quantityInputRef}
           id="order-quantity"
@@ -474,15 +475,15 @@ export function OrderEntry({
           }}
         />
         {quantityError ? (
-          <p id="order-quantity-error" role="alert" className="text-danger mt-1 text-[12px]">
+          <p id="order-quantity-error" role="alert" className="text-danger mt-0.5 text-[12px]">
             {quantityError}
           </p>
         ) : (
-          <p id="order-quantity-hint" className="text-faint mt-1 text-[11px]">
+          <p id="order-quantity-hint" className="text-faint mt-0.5 text-[11px]">
             Min {market.lotSize} {market.base} · step {market.lotSize}
           </p>
         )}
-        <div className="mt-1.5 flex gap-1" role="group" aria-label="Quantity shortcuts">
+        <div className="mt-0.5 flex gap-1" role="group" aria-label="Quantity shortcuts">
           {PERCENT_SHORTCUTS.map((pct) => (
             <button
               key={pct}
@@ -523,16 +524,16 @@ export function OrderEntry({
           }}
         />
         {priceError ? (
-          <p id="order-price-error" role="alert" className="text-danger mt-1 text-[12px]">
+          <p id="order-price-error" role="alert" className="text-danger mt-0.5 text-[12px]">
             {priceError}
           </p>
         ) : orderType === "market" && mark && !markStale ? (
-          <p id="order-price-hint" className="text-faint mt-1 text-[11px]">
+          <p id="order-price-hint" className="text-faint mt-0.5 text-[11px]">
             {formatPercent(((Number(priceText) - Number(mark.price)) / Number(mark.price)) * 100)}{" "}
             from mark · mark age {markAge !== null ? formatRelativeAge(markAge) : UNAVAILABLE}
           </p>
         ) : (
-          <p id="order-price-hint" className="text-faint mt-1 text-[11px]">
+          <p id="order-price-hint" className="text-faint mt-0.5 text-[11px]">
             Filled only at this price or better.
           </p>
         )}
@@ -560,7 +561,11 @@ export function OrderEntry({
 
       {isPerp && (
         <div>
-          <label className="text-faint flex justify-between text-[12px]" htmlFor="order-leverage">
+          <label
+            className="text-faint flex justify-between text-[12px]"
+            htmlFor="order-leverage"
+            title="Display only: the venue sets margin by its own fixed ratio, not this slider."
+          >
             <span>Leverage</span>
             <span className="tnum text-ink">
               {leverage}x (1-{market.maxLeverage}x)
@@ -576,11 +581,8 @@ export function OrderEntry({
             onChange={(event) => setLeverage(Number(event.target.value))}
             className={`${rangeBrand} mt-1`}
           />
-          <p className="text-faint mt-1 text-[11px]">
-            Cross margin, display only: the venue sets margin by its own fixed ratio.
-          </p>
           {position && Number(position.size) !== 0 && (
-            <label className="text-dim mt-1.5 flex items-center gap-2 text-[12px]">
+            <label className="text-dim mt-1 flex items-center gap-2 text-[12px]">
               <input
                 type="checkbox"
                 checked={reduceOnly}
@@ -616,7 +618,6 @@ export function OrderEntry({
         display={estimateDisplay}
         priceDecimals={priceDecimals}
         remainingAvailable={remainingAvailable}
-        now={now}
       />
 
       <button
@@ -675,7 +676,6 @@ export function OrderEntry({
               display={estimateDisplay}
               priceDecimals={priceDecimals}
               remainingAvailable={remainingAvailable}
-              now={now}
             />
             <label className="text-dim mt-3 flex items-center gap-2 text-[12px]">
               <input

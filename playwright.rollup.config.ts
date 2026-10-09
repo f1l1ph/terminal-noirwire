@@ -7,12 +7,20 @@ import { defineConfig, devices } from "@playwright/test";
  * against the real rollup"). This config never starts or stops that
  * network; another engineer may be using its ports (8899/7799/6699) for
  * long stretches.
+ *
+ * The rollup's own RPC/WS URLs and program id come from sim-noirwire's
+ * `GET /v1/deployment` at runtime (src/lib/rollup/deployment.ts), not from
+ * configuration here. `ROLLUP_RPC_URL`/`ROLLUP_WS_URL` below exist only so
+ * the Content-Security-Policy can allow them (a static response header
+ * cannot know what an async fetch will return) - they should name the same
+ * addresses the deployment itself reports (the query filter, port 6699 on
+ * the local stack), or the browser's connection is CSP-blocked even though
+ * the deployment fetch succeeds.
  */
 const SIM_ROLLUP_URL = process.env.SIM_ROLLUP_URL ?? "http://localhost:4100";
-const ROLLUP_RPC_URL = process.env.ROLLUP_RPC_URL ?? "http://127.0.0.1:7799";
-const ROLLUP_WS_URL = process.env.ROLLUP_WS_URL ?? "ws://127.0.0.1:7800";
-const ROLLUP_PRIVATE_URL = process.env.ROLLUP_PRIVATE_URL ?? "http://127.0.0.1:6699";
-const ORDERBOOK_PROGRAM_ID = process.env.ORDERBOOK_PROGRAM_ID; // falls back to the package's own default when unset
+const ROLLUP_RPC_URL = process.env.ROLLUP_RPC_URL ?? "http://127.0.0.1:6699";
+const ROLLUP_WS_URL = process.env.ROLLUP_WS_URL ?? "ws://127.0.0.1:6700";
+const ORDERBOOK_PROGRAM_ID = process.env.ORDERBOOK_PROGRAM_ID; // falls back to the deployment's own id when unset
 const PORT = Number(process.env.PLAYWRIGHT_ROLLUP_PORT ?? 3102);
 const BASE_URL = `http://localhost:${PORT}`;
 
@@ -37,12 +45,11 @@ export default defineConfig({
     command: `npx next build && npx next start --port ${PORT}`,
     env: {
       NEXT_PUBLIC_SIM_URL: SIM_ROLLUP_URL,
-      NEXT_PUBLIC_SIM_WS_URL: SIM_ROLLUP_URL.replace(/^http/, "ws"),
+      NEXT_PUBLIC_SIM_WS_URL: `${SIM_ROLLUP_URL.replace(/^http/, "ws")}/v1/stream`,
       NEXT_PUBLIC_TRADING_MODE: "rollup",
       NEXT_PUBLIC_NETWORK_LABEL: "TEST NETWORK",
       NEXT_PUBLIC_ROLLUP_RPC_URL: ROLLUP_RPC_URL,
       NEXT_PUBLIC_ROLLUP_WS_URL: ROLLUP_WS_URL,
-      NEXT_PUBLIC_ROLLUP_PRIVATE_URL: ROLLUP_PRIVATE_URL,
       ...(ORDERBOOK_PROGRAM_ID ? { NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID: ORDERBOOK_PROGRAM_ID } : {}),
     },
     url: BASE_URL,

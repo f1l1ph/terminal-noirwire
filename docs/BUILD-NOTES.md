@@ -275,33 +275,158 @@ configuration with no reader.
 
 ### Rollup config the service doesn't expose yet
 
-Nothing publishes the rollup's own RPC/WS/private URLs or the program id
-over HTTP (no `/v1/deployment` route), so these are plain env vars instead
-of being read from the service, per the brief's own fallback. If sim-noirwire
-ever adds one, the shape to ask for is exactly its own internal `Deployment`
-type (`src/rollup/settings.ts`): `{ network, programId, gate, oracle,
-faucet, tokens: [{ index, symbol, decimals, mint }], markets: [{ id,
-symbol, kind, fundingTaskId? }] }`. That would also let `marketIds.ts`'s
-on-chain scan and `mintDecimals.ts`'s per-mint `getMint` calls be replaced
-with a single read, both a latency and a code-size win.
+**Superseded by the fourth pass** (see below): sim-noirwire's rollup mode
+now serves `GET /v1/deployment`, and this terminal reads it instead of env
+vars or an on-chain scan. Kept for history; do not add back the scan
+modules this section used to call for.
 
 ### Bundle size: a real, unresolved cost
 
-Measured total `.next/static/chunks` size after a clean build:
-**dev mode 1,676,143 bytes, rollup mode 1,676,066 bytes** - functionally
-identical. That is not a clean build: `createTradingClient()` reads
-`env.tradingMode` (a property of a Zod-parsed object), not the literal
-`process.env.NEXT_PUBLIC_TRADING_MODE` expression Next.js's dead-code
-elimination for `NEXT_PUBLIC_*` vars needs to see directly, so it cannot
-prove the `rollup` branch is unreachable in a dev-mode build and bundles
-`@noirwire/orderbook` plus `@magicblock-labs/ephemeral-rollups-sdk` into
-every build regardless of mode. The fix is to load whichever
-`TradingClient` implementation is needed via a dynamic `import()` in
-`trading/index.ts` instead of a static one, which would code-split the
-rollup bundle out of a dev-only deployment; not done here, since
-`createTradingClient()` is called synchronously today and making it async
-touches `useTrading.ts`'s initialisation path too, which felt like the
-wrong thing to rush at the end of this pass.
+**Resolved in the fourth pass** (see below): `createTradingClient()` now
+returns a `LazyRollupTradingClient` that imports the real client (and so
+`@noirwire/orderbook`) only when a method is actually called, which in
+practice means only after a wallet is created. Current measured numbers are
+in the fourth-pass section and in the README's "Bundle size" section.
+
+## Fourth pass: the real local stack
+
+The first three passes built and tested the rollup trading client only
+against fakes (a scripted mock of sim-noirwire's routes, or reasoning from
+reading sim-noirwire's and the order book's source). This pass ran the
+first-minute flow in a real browser, via Playwright, against the real local
+three-part network (solana-test-validator, the ephemeral rollup, the query
+filter) and a real sim-noirwire in `VENUE=rollup` mode - and fixed what
+broke. Every fix below is in this repository; **no sim-noirwire source was
+changed** (one local, non-committed runtime choice is noted at the end).
+
+**Deployment-based config replaces env vars and on-chain scanning.**
+`src/lib/rollup/deployment.ts` fetches sim-noirwire's `GET /v1/deployment`
+once per `simUrl` (Zod-validated, cached): network, program id, the rollup's
+RPC/WS URL, the exchange account, and every market's id/symbol/tokens
+(mint, decimals)/lot/tick. This replaced two modules outright, both
+deleted: `marketIds.ts` (used to resolve a market's numeric id by scanning
+every on-chain `Market` account for a base/quote/kind match) and
+`mintDecimals.ts` (used to read each spot token's decimals via
+`@solana/spl-token`'s `getMint`, one on-chain read per mint). `@solana/spl-token`
+is consequently no longer a dependency. `session.ts`'s `resolveTokenIndices`
+now does the one read a trader's session still needs (the Exchange account,
+to map each market's token mints onto `Seat.spot[]`'s index) by matching
+against `/v1/deployment`'s own token descriptions, not a fresh scan.
+
+**Sending a transaction needs the signed-in token too, not only private
+reads.** Confirmed by hand: constructing `TraderClient` with a plain,
+unsigned `Connection` as the sending connection fails every send with 401
+"Missing token query param," even though the design doc frames sign-in as
+being about private reads. `buildRealSession` (`session.ts`) now uses the
+one signed-in `reader` connection for both the sending and the private-read
+role; the separate unsigned `anonymous` connection exists only for the
+Exchange account read, which is genuinely public.
+
+**`deposit` does not update the trader's view; `fund()` now syncs it
+explicitly.** Verified with a standalone script calling the SDK directly:
+after a successful `open_trader` + `deposit` (sim-noirwire's fund flow),
+`view().snapshot.seat.collateral` stayed zero. The `deposit` instruction's
+account list never includes the `TraderView` account - only an order-key-signed
+instruction (`place_order`, `cancel_order`, `cancel_all`, `sync_view`,
+`transfer_between_balances`) re-copies the seat into the view as a side
+effect. `RollupTradingClient.fund()` now calls `client.syncView(marketId)`
+right after a grant and saves the resulting key checkpoint, so the balance
+shows up without the trader placing an order first.
+
+**The outer price band is real and narrower than dev mode's.** A resting
+limit order priced far from the mark (e.g. "1.00" against a ~109 mark)
+is refused by the real program - RULES.md section 3's 50% outer band,
+which the dev-mode fake engine does not enforce. Not a terminal bug; the
+rollup e2e spec prices its resting-order step close to the mark instead
+(the exact price does not matter functionally, only that it is within the
+band and unlikely to fill in a short test window).
+
+**Witness-rail "filled" step and fill tracking, both masked by dev mode.**
+Two separate bugs, both invisible against the dev-mode fake engine because
+its behaviour happens to paper over them: (1) the rail's "filled" branch
+required a truthy `trackedOrderId` as well as a non-empty fill list, but a
+fully (not partially) filled market order legitimately returns an empty
+order id - fixed by dropping that condition, keeping only the fill-list
+check. (2) `RollupTradingClient.placeOrder()` returned `tag: ""` (there is
+no venue tag in rollup mode), but the rail's fill-tracking treats an empty
+tag as "nothing to track." Fixed by returning the order's own secret as
+`tag` (hex-encoded, the same string `ownFills.ts` already produces for a
+matched fill), reusing the existing tag-based plumbing instead of adding a
+mode-specific path.
+
+**Own-fill ("yours") marking needed a mode-agnostic signal.** `PublicTape`
+and `MarketChart` matched fills by tag (`ownTags`/`isOwnFill`), which works
+in dev mode (the venue echoes a client-chosen tag) but cannot work in
+rollup mode once `placeOrder` returns the order's _secret_ as its tag (the
+fix above) - a secret can never equal a fill's receipt-derived
+`takerTag`/`makerTag`. Both components now take `ownSequences: ReadonlySet<number>`
+instead; `Terminal.tsx` computes it from `ownFillsForMarket` (already
+correct per mode - `deriveOwnFills` for dev, `deriveRollupOwnFills` for
+rollup) via each fill's `sequence`, which means the same thing in both
+modes. Verified before and after a reload.
+
+**Transfer direction defaulted to the wrong account.** `TransferControl`'s
+initial direction was `prefillAmount ? "toSpot" : "toCollateral"`; the
+"Move funds to spot" shortcut (from the order entry panel) opens the
+control via `initiallyOpen`, not `prefillAmount`, when no quantity is
+typed yet - so it silently defaulted to debiting the (empty) spot balance
+instead of collateral, and the real program refused it
+(`InsufficientBalance`, on-chain error code 6022). Fixed by also checking
+`initiallyOpen` in the default.
+
+**A WebSocket reconnect storm, from an unstable `useMemo` dependency.**
+`Terminal.tsx`'s inline `marketSettings` lookup was recreated every render;
+combined with `useNow()`'s one-second tick, the `useMemo` that builds the
+trading client (and, in rollup mode, signs in and opens a session
+WebSocket) was rebuilding every second, faster than old connections could
+close, until the browser refused new sockets ("Insufficient resources").
+Fixed by wrapping `marketSettings` in `useCallback`.
+
+**Order entry now fits at 1280x800 for a market order, without internal
+scroll.** It did not, once a real perp order with the leverage slider and
+full cost breakdown was on screen - the panel clipped below "Remaining
+available" and the submit button was unreachable. Compacted without
+dropping any information: `OrderSummary` is a single tight column with
+shorter labels (`Notional`/`Fee`/`Margin`/`Liquidation (est.)`/`Remaining`,
+previously longer and each on a bigger row); the leverage caption and the
+quantity hint moved inline (the former into a `title` tooltip, the latter
+next to the "Available" line); gaps and padding across the panel went from
+`gap-1.5 p-2` to `gap-0.5 p-1.5`. No information was removed, only
+re-packed.
+
+**Measured click-to-result, 30 market orders, local stack:** median 33 ms,
+p95 50 ms (min 26 ms, max 150 ms - the first order after funding, plausibly
+a cold-start cost). This is local-network latency (loopback to
+solana-test-validator / the ephemeral rollup / the query filter on the same
+machine), not a production figure.
+
+**Bundle size, measured against a production build** (`npx next build && npx next start`,
+counting every script byte the browser actually requests, not just
+`.next/static/chunks` on disk): dev mode loads ~1.53 MB on arrival and never
+loads more. Rollup mode loads the same ~1.53 MB on arrival, then a separate
+~16 KB (two small chunks) only once a wallet is created - the point at
+which `LazyRollupTradingClient` resolves its dynamic `import("./rollupClient")`.
+This finishes what the third pass's "unresolved cost" note flagged: no
+`createTradingClient()` async-initialisation change was actually needed in
+the end, because the laziness lives one level down, inside the
+`TradingClient` implementation itself (`rollupClientLazy.ts`), so
+`useTrading.ts`'s synchronous call to `createTradingClient()` did not need
+to change at all.
+
+**Local-only runtime choice, not a repository change:** sim-noirwire's
+per-IP fund rate limit (`FUND_IP_RATE_LIMIT`, default low) was hit during
+rapid automated testing and raised in a scratch env file used only to start
+the local test instance - never in the repo's own `.env`/`.env.example`,
+and not a code change in either repository.
+
+**What would help from the order book repository, if anything:** nothing
+required. Two n8n-adjacent asides, mentioned in case they are easy
+elsewhere: there is no on-chain error-code-to-name endpoint or exported
+map, so the real on-chain refusal above was decoded by hand from
+`programs/noirwire-orderbook/src/errors.rs` (wire code `6000 + N`); and
+`openOrders` in rollup mode is scoped to one market, the one last traded
+(noted in the third pass, still true) - worth keeping in mind if a future
+pass wants "open orders across every market" without a per-market refetch.
 
 ## Known non-blocking issue
 

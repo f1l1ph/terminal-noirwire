@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { env } from "@/lib/env";
 import { MARKET_IDS } from "@/lib/market-data/types";
 import type { CandleInterval } from "@/lib/market-data/types";
@@ -62,7 +62,17 @@ export function Terminal() {
   const [phoneView, setPhoneView] = useState<"trade" | "market">("trade");
 
   const wallet = useWallet();
-  const marketSettings = (id: string) => data.markets.find((item) => item.id === id);
+  // Stable across renders (depends only on the markets array, which
+  // changes rarely) so that useTrading's useMemo does not rebuild the
+  // whole trading client - and in rollup mode, re-sign-in and re-subscribe
+  // to the rollup - on every tick of `now` (every second). It did exactly
+  // that before this was memoized: a brand new session and websocket
+  // subscription every second, piling up faster than any of them could
+  // close, until Chrome refused new ones ("Insufficient resources").
+  const marketSettings = useCallback(
+    (id: string) => data.markets.find((item) => item.id === id),
+    [data.markets],
+  );
   const trading = useTrading(wallet.account, marketSettings);
 
   const [orderSession, setOrderSession] = useState<OrderSession | null>(null);
@@ -167,6 +177,9 @@ export function Terminal() {
     trading.client.mode === "rollup"
       ? deriveRollupOwnFills(tape, trading.rollupSecrets)
       : deriveOwnFills(tape, trading.ownTags);
+  // The tape/chart's "yours" marking takes sequence numbers, not a tag or a
+  // receipt: the one identifier that means the same thing in both modes.
+  const ownSequences = new Set(ownFillsForMarket.map((fill) => fill.sequence));
 
   // Rollup mode: a resting order's own fill does not update this trader's
   // view until `sync_view` runs (see TradingClient.syncMarket). Detected
@@ -201,7 +214,7 @@ export function Terminal() {
                 at: now,
               },
             ]
-          : relevantSession.trackedOrderId && trackedFills.length > 0
+          : trackedFills.length > 0
             ? [
                 {
                   type: "filled" as RailStepType,
@@ -297,7 +310,7 @@ export function Terminal() {
               candles={candles}
               mark={mark}
               publicFills={tape}
-              ownTags={trading.ownTags}
+              ownSequences={ownSequences}
               connectionState={data.connectionState}
               loading={candlesLoading}
               onRetry={() => setRetryToken((token) => token + 1)}
@@ -308,7 +321,7 @@ export function Terminal() {
               fills={tape}
               priceDecimals={market ? priceDecimalsOf(market) : 2}
               sizeDecimals={market ? sizeDecimalsOf(market) : 4}
-              ownTags={trading.ownTags}
+              ownSequences={ownSequences}
             />
           </div>
         </div>
@@ -394,7 +407,7 @@ export function Terminal() {
               candles={candles}
               mark={mark}
               publicFills={tape}
-              ownTags={trading.ownTags}
+              ownSequences={ownSequences}
               connectionState={data.connectionState}
               loading={candlesLoading}
               onRetry={() => setRetryToken((token) => token + 1)}
@@ -404,7 +417,7 @@ export function Terminal() {
             fills={tape}
             priceDecimals={market ? priceDecimalsOf(market) : 2}
             sizeDecimals={market ? sizeDecimalsOf(market) : 4}
-            ownTags={trading.ownTags}
+            ownSequences={ownSequences}
           />
           <VenuePulse stats={data.stats} now={now} />
           <PublicView market={selectedMarketId} checkPrivacy={trading.checkPrivacy} />

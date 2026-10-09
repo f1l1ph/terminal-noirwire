@@ -48,6 +48,24 @@ export function marketUnitsFromLotSize(lotSize: string): MarketUnits {
   return { lotsPerUnit, sizePerLot };
 }
 
+/**
+ * The authoritative version: built directly from `/v1/deployment`'s raw
+ * on-chain `baseLot` (atoms per lot) and `baseDecimals` - exactly
+ * sim-noirwire's own `marketUnits()` (`src/rollup/units.ts` there), no
+ * longer re-derived from a human decimal string.
+ */
+export function marketUnitsFromChain(baseLot: bigint, baseDecimals: number): MarketUnits {
+  const atomsPerUnit = 10n ** BigInt(baseDecimals);
+  if (baseLot <= 0n || atomsPerUnit % baseLot !== 0n) {
+    throw new Error(`a lot of ${baseLot} base atoms does not divide one base unit`);
+  }
+  const lotsPerUnit = atomsPerUnit / baseLot;
+  if (SIM_SCALE % lotsPerUnit !== 0n) {
+    throw new Error(`a lot of ${baseLot} base atoms is finer than 6 decimals`);
+  }
+  return { lotsPerUnit, sizePerLot: SIM_SCALE / lotsPerUnit };
+}
+
 /** Whole base units (a decimal string) to a whole number of lots. Throws if not a clean multiple. */
 export function sizeToLots(units: MarketUnits, humanSize: string): bigint {
   const simSize = toSimScale(humanSize);

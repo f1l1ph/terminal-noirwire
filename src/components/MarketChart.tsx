@@ -14,7 +14,6 @@ import { formatClockTime, formatDecimal, UNAVAILABLE } from "@/lib/format";
 import type { ConnectionState } from "@/lib/market-data/socket";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
 import type { Candle, MarketInfo, PublicFill } from "@/lib/market-data/types";
-import { isOwnFill } from "@/lib/trading/tags";
 import { btnGhost } from "@/components/ui/styles";
 
 const MIN_VALID_CANDLES = 2;
@@ -37,7 +36,7 @@ export function MarketChart({
   candles,
   mark,
   publicFills,
-  ownTags,
+  ownSequences,
   connectionState,
   loading,
   onRetry,
@@ -46,7 +45,8 @@ export function MarketChart({
   candles: Candle[];
   mark: { price: string; time: number } | null;
   publicFills: PublicFill[];
-  ownTags: ReadonlySet<string>;
+  /** This trader's own fills' sequence numbers (mode-agnostic; see PublicTape.tsx). */
+  ownSequences: ReadonlySet<number>;
   connectionState: ConnectionState;
   loading: boolean;
   onRetry: () => void;
@@ -209,17 +209,20 @@ export function MarketChart({
     const ascending = [...publicFills].sort((a, b) => a.timestampMs - b.timestampMs).slice(-80);
     try {
       candleSeriesRef.current.setMarkers(
-        ascending.map((fill) => ({
-          time: toUtcSeconds(fill.timestampMs),
-          position: isOwnFill(fill, ownTags) ? ("aboveBar" as const) : ("inBar" as const),
-          color: isOwnFill(fill, ownTags) ? "#f5f3ee" : "#515458",
-          shape: "circle" as const,
-        })),
+        ascending.map((fill) => {
+          const mine = ownSequences.has(fill.sequence);
+          return {
+            time: toUtcSeconds(fill.timestampMs),
+            position: mine ? ("aboveBar" as const) : ("inBar" as const),
+            color: mine ? "#f5f3ee" : "#515458",
+            shape: "circle" as const,
+          };
+        }),
       );
     } catch {
       // Markers are decorative; a malformed set is dropped rather than throwing.
     }
-  }, [publicFills, ownTags]);
+  }, [publicFills, ownSequences]);
 
   const frozen = connectionState !== "open";
   const lastUpdateLabel = mark ? formatClockTime(new Date(mark.time)) : UNAVAILABLE;

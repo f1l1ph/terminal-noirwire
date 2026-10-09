@@ -1,18 +1,24 @@
 import { formatClockTime, formatDecimal } from "@/lib/format";
-import { isOwnFill } from "@/lib/trading/tags";
 import type { PublicFill } from "@/lib/market-data/types";
 import { panel, sectionLabel } from "@/components/ui/styles";
 
+/**
+ * Which fills are this trader's own, as the fill sequence numbers already
+ * computed by `deriveOwnFills` (dev mode's tag) or `deriveRollupOwnFills`
+ * (rollup mode's receipt) - a sequence number is mode-agnostic, unlike the
+ * tag/receipt fields themselves, so this component never needs to know
+ * which mode it is in.
+ */
 export function PublicTape({
   fills,
   priceDecimals,
   sizeDecimals,
-  ownTags,
+  ownSequences,
 }: {
   fills: PublicFill[];
   priceDecimals: number;
   sizeDecimals: number;
-  ownTags: ReadonlySet<string>;
+  ownSequences: ReadonlySet<number>;
 }) {
   return (
     <div className={`${panel} flex min-h-0 flex-1 flex-col`}>
@@ -27,7 +33,7 @@ export function PublicTape({
           aria-label="Public fills, no account identity"
         >
           {fills.map((fill, index) => {
-            const mine = isOwnFill(fill, ownTags);
+            const mine = ownSequences.has(fill.sequence);
             return (
               <li
                 key={`${fill.sequence}-${index}`}

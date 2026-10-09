@@ -1,5 +1,11 @@
-import type { PublicKey } from "@solana/web3.js";
-import { browserLocalStorage, type KeyValueStore, type WalletAccount } from "../wallet/index";
+import { PublicKey } from "@solana/web3.js";
+import {
+  browserLocalStorage,
+  bytesToHex,
+  type KeyValueStore,
+  type WalletAccount,
+} from "../wallet/index";
+import type { DeploymentOverrides } from "../rollup/deployment";
 import { openAndFund } from "../rollup/fundingClient";
 import { cancelToResult, placedToResult, thrownToResult } from "../rollup/outcome";
 import { trackSecret } from "../rollup/secretStore";
@@ -8,7 +14,6 @@ import {
   connectionTo,
   ORDER_TYPE_CODE,
   programAddresses,
-  PROGRAM_ID,
   SIDE_CODE,
   randomSecret,
   type View,
@@ -17,15 +22,13 @@ import {
   amountToQuoteAtoms,
   chainAtomsToPrice,
   lotsToSize,
-  marketUnitsFromLotSize,
+  marketUnitsFromChain,
   type MarketUnits,
   priceToChainAtoms,
   quoteAtomsToAmount,
   sizeToLots,
 } from "../rollup/units";
-import type { ResolvedDeployment } from "../rollup/marketIds";
 import { priceDecimalsOf, sizeDecimalsOf } from "../market-data/precision";
-import { MARKET_IDS } from "../sim-api/schema";
 import type {
   Balance,
   CancelResult,
@@ -44,20 +47,18 @@ import type {
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 /**
- * Conservative: the private endpoint's sign-in token lifetime is not stated
- * by `@noirwire/orderbook` (its `signIn`/`privateConnection` return a token
- * with no exposed expiry), so this refreshes well inside any plausible TTL
- * rather than waiting to be rejected. See docs/BUILD-NOTES.md.
+ * Conservative: the rollup's sign-in token lifetime is not stated by
+ * `@noirwire/orderbook` (`signIn`/`privateConnection` return a token with no
+ * exposed expiry), so this refreshes well inside any plausible TTL rather
+ * than waiting to be rejected. See docs/BUILD-NOTES.md.
  */
 const SESSION_REFRESH_MS = 4 * 60 * 1000;
 const GOOD_FOR_SECONDS: Record<"1m" | "1h", bigint> = { "1m": 60n, "1h": 3_600n };
 
 export interface RollupTradingClientOptions {
   simUrl: string;
-  rollupRpcUrl: string;
-  rollupWsUrl: string;
-  rollupPrivateUrl: string;
-  programId?: PublicKey;
+  /** Overrides for `/v1/deployment`'s URLs/program id - a container or a hosted deployment reaching the network at an address the browser cannot. */
+  overrides?: DeploymentOverrides;
   marketSettingsLookup: MarketSettingsLookup;
   storage?: KeyValueStore;
   fetchFn?: typeof fetch;
@@ -69,7 +70,7 @@ export interface RollupTradingClientOptions {
   buildSession?: (wallet: WalletAccount, deps: RollupSessionDeps) => Promise<RollupSession>;
 }
 
-/** This terminal's string market id, resolved against the on-chain numeric one. */
+/** This terminal's string market id, bound against `/v1/deployment`'s numeric one. */
 interface MarketBinding {
   marketId: string;
   numericId: number;
@@ -77,8 +78,8 @@ interface MarketBinding {
   sizeDecimals: number;
   priceDecimals: number;
   isPerp: boolean;
-  baseToken: number;
-  quoteToken: number;
+  baseTokenSymbol: string | null;
+  quoteTokenSymbol: string;
 }
 
 function ownerSecretOf(wallet: WalletIdentity): WalletAccount {
@@ -91,34 +92,28 @@ function ownerSecretOf(wallet: WalletIdentity): WalletAccount {
 }
 
 /**
- * Builds every `MarketBinding` by matching each of this terminal's known
- * string market ids (`sim-api/schema.ts`'s `MARKET_IDS`, from
- * `/v1/markets`) against the on-chain `Market` accounts resolved by
- * `resolveDeployment` (base/quote/kind, since the chain has no string id of
- * its own). A market `marketSettingsLookup` does not know about (not yet
- * reported by `/v1/markets`) or that has no on-chain match is left out.
+ * Every `/v1/deployment` market this terminal's `marketSettingsLookup` also
+ * knows about, matched by its string symbol (identical on both sides - no
+ * base/quote/kind matching needed now that the deployment names markets by
+ * the same id `/v1/markets` uses).
  */
 function bindMarkets(
-  deployment: ResolvedDeployment,
+  session: RollupSession,
   marketSettingsLookup: MarketSettingsLookup,
 ): Map<string, MarketBinding> {
   const bindings = new Map<string, MarketBinding>();
-  for (const marketId of MARKET_IDS) {
-    const settings = marketSettingsLookup(marketId);
+  for (const market of session.deployment.markets) {
+    const settings = marketSettingsLookup(market.symbol);
     if (!settings) continue;
-    const resolved = deployment.markets.find(
-      (m) => m.base === settings.base && m.quote === settings.quote && m.kind === settings.kind,
-    );
-    if (!resolved) continue;
-    bindings.set(marketId, {
-      marketId,
-      numericId: resolved.numericId,
-      units: marketUnitsFromLotSize(settings.lotSize),
+    bindings.set(market.symbol, {
+      marketId: market.symbol,
+      numericId: market.marketId,
+      units: marketUnitsFromChain(BigInt(market.lotSize), market.baseDecimals),
       sizeDecimals: sizeDecimalsOf(settings),
       priceDecimals: priceDecimalsOf(settings),
-      isPerp: settings.kind === "perp",
-      baseToken: resolved.baseToken,
-      quoteToken: resolved.quoteToken,
+      isPerp: market.kind === "perp",
+      baseTokenSymbol: market.baseToken?.symbol ?? null,
+      quoteTokenSymbol: market.quoteToken.symbol,
     });
   }
   return bindings;
@@ -151,7 +146,6 @@ function riskMarketIds(bindings: Map<string, MarketBinding>): number[] {
  */
 export class RollupTradingClient implements TradingClient {
   readonly mode = "rollup" as const;
-  private readonly programId?: PublicKey;
   private readonly storage: KeyValueStore;
   private readonly fetchFn: typeof fetch;
   private readonly pollIntervalMs: number;
@@ -165,7 +159,6 @@ export class RollupTradingClient implements TradingClient {
   private sessions = new Map<string, Promise<RollupSession>>();
 
   constructor(private readonly options: RollupTradingClientOptions) {
-    this.programId = options.programId;
     this.storage = options.storage ?? browserLocalStorage();
     this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -177,10 +170,9 @@ export class RollupTradingClient implements TradingClient {
 
   private sessionDeps(): RollupSessionDeps {
     return {
-      rollupRpcUrl: this.options.rollupRpcUrl,
-      rollupWsUrl: this.options.rollupWsUrl,
-      rollupPrivateUrl: this.options.rollupPrivateUrl,
-      programId: this.programId ?? PROGRAM_ID,
+      simUrl: this.options.simUrl,
+      overrides: this.options.overrides,
+      fetchFn: this.fetchFn,
       now: this.now,
     };
   }
@@ -223,9 +215,8 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
-  private async bindings(session: RollupSession): Promise<Map<string, MarketBinding>> {
-    const deployment = await session.deployment();
-    return bindMarkets(deployment, this.options.marketSettingsLookup);
+  private bindings(session: RollupSession): Map<string, MarketBinding> {
+    return bindMarkets(session, this.options.marketSettingsLookup);
   }
 
   async openAccount(wallet: WalletIdentity): Promise<void> {
@@ -257,14 +248,28 @@ export class RollupTradingClient implements TradingClient {
       // The session's client was built before the account existed, so its
       // reader may not yet see the view; a fresh session re-establishes it
       // cleanly rather than guessing whether a retry is needed.
-      await this.refreshSession(wallet);
+      const funded = await this.refreshSession(wallet);
+      // The deposit instruction credits the ledger's seat directly; it does
+      // not touch the TraderView (only an order-key-signed instruction
+      // does, as a side effect of its own seat copy). Without this, the
+      // dashboard would show 0 available until the trader's first order.
+      const anyMarket = funded.deployment.markets[0];
+      if (anyMarket) {
+        try {
+          await funded.client.syncView(anyMarket.marketId);
+          funded.saveKeyCheckpoint();
+        } catch {
+          // Best effort: the first trade's own instruction will refresh the
+          // view regardless, and the belt-and-braces poll will catch up too.
+        }
+      }
     }
     return outcome;
   }
 
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
     return this.withSession(wallet, async (session) => {
-      const bindings = await this.bindings(session);
+      const bindings = this.bindings(session);
       const binding = bindings.get(order.market);
       if (!binding) throw new Error(`${order.market} was not found on chain`);
       const price = priceToChainAtoms(binding.units, order.price);
@@ -298,7 +303,13 @@ export class RollupTradingClient implements TradingClient {
       }
       session.saveKeyCheckpoint();
       trackSecret(this.storage, wallet.address, order.market, secret);
-      return result;
+      // `tag` is the handle the witness rail uses to find this order's own
+      // fills (Terminal.tsx tracks it as `trackedTag`, matched against
+      // `OwnFillRecord.tag`). Dev mode's tag is the venue-assigned number;
+      // rollup mode has none, so the order's own secret (hex) plays the
+      // same role here - `ownFills.ts` sets the exact same string on every
+      // fill it derives for this secret.
+      return { ...result, tag: bytesToHex(secret) };
     });
   }
 
@@ -308,8 +319,7 @@ export class RollupTradingClient implements TradingClient {
     orderId: string,
   ): Promise<CancelResult> {
     return this.withSession(wallet, async (session) => {
-      const bindings = await this.bindings(session);
-      const binding = bindings.get(market);
+      const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const result = await session.client.cancelOrder(binding.numericId, BigInt(orderId));
       session.saveKeyCheckpoint();
@@ -319,8 +329,7 @@ export class RollupTradingClient implements TradingClient {
 
   async cancelAllInMarket(wallet: WalletIdentity, market: string): Promise<CancelResult> {
     return this.withSession(wallet, async (session) => {
-      const bindings = await this.bindings(session);
-      const binding = bindings.get(market);
+      const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const result = await session.client.cancelAll(binding.numericId);
       session.saveKeyCheckpoint();
@@ -334,13 +343,16 @@ export class RollupTradingClient implements TradingClient {
     amount: string,
   ): Promise<TransferResult> {
     return this.withSession(wallet, async (session) => {
-      const bindings = await this.bindings(session);
+      const bindings = this.bindings(session);
       const spot = [...bindings.values()].find((binding) => !binding.isPerp);
-      if (!spot) return { kind: "error", message: "No spot market to transfer into." };
+      const quoteIndex = spot ? session.tokenIndexBySymbol.get(spot.quoteTokenSymbol) : undefined;
+      if (!spot || quoteIndex === undefined) {
+        return { kind: "error", message: "No spot market to transfer into." };
+      }
       try {
         await session.client.transferBetweenBalances(
           !toSpot,
-          spot.quoteToken,
+          quoteIndex,
           amountToQuoteAtoms(amount),
           riskMarketIds(bindings),
         );
@@ -357,8 +369,7 @@ export class RollupTradingClient implements TradingClient {
 
   async syncMarket(wallet: WalletIdentity, market: string): Promise<void> {
     await this.withSession(wallet, async (session) => {
-      const bindings = await this.bindings(session);
-      const binding = bindings.get(market);
+      const binding = this.bindings(session).get(market);
       if (!binding) return;
       await session.client.syncView(binding.numericId);
       session.saveKeyCheckpoint();
@@ -368,18 +379,24 @@ export class RollupTradingClient implements TradingClient {
   /**
    * The concrete evidence behind "nobody but the program can read the book"
    * (DESIGN.md section 1): reads this trader's own view account and
-   * `market`'s book account straight from the rollup's PUBLIC RPC - no
-   * sign-in, the same unsigned connection any visitor could open - and
-   * reports whether each came back empty. A private account read by a
-   * non-member returns nothing, which is exactly what this demonstrates.
+   * `market`'s book account straight from the rollup's query filter, with
+   * no sign-in token on this connection - the same unsigned read any
+   * visitor could make - and reports whether each came back empty. A
+   * private account read by a non-member returns nothing, which is exactly
+   * what this demonstrates. The book's address is not in `/v1/deployment`
+   * (DESIGN.md: a book is "the program only" readable, so there is no
+   * reason to publish it) but is a deterministic PDA of programId +
+   * marketId, computed here, not read from anywhere.
    */
   async checkPrivacy(wallet: WalletIdentity, market: string): Promise<PrivacyCheck> {
     return this.withSession(wallet, async (session) => {
-      const bindings = await this.bindings(session);
-      const binding = bindings.get(market);
+      const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
-      const addresses = programAddresses(this.programId ?? PROGRAM_ID);
-      const anonymous = connectionTo(this.options.rollupRpcUrl, this.options.rollupWsUrl);
+      const addresses = programAddresses(new PublicKey(session.deployment.programId));
+      const anonymous = connectionTo(
+        session.deployment.rollupRpcUrl,
+        session.deployment.rollupWsUrl,
+      );
       const viewAddress = addresses.view(session.owner.publicKey);
       const bookAddress = addresses.book(binding.numericId);
       const [viewAccount, bookAccount] = await Promise.all([
@@ -396,7 +413,7 @@ export class RollupTradingClient implements TradingClient {
   }
 
   async fetchState(wallet: WalletIdentity): Promise<TraderState> {
-    return this.withSession(wallet, (session) => this.mapView(session));
+    return this.withSession(wallet, (session) => Promise.resolve(this.mapView(session)));
   }
 
   subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void {
@@ -407,9 +424,7 @@ export class RollupTradingClient implements TradingClient {
       const session = await this.ensureSession(wallet);
       if (cancelled) return;
       const emit = (view: View) => {
-        void this.mapViewFrom(session, view).then((state) => {
-          if (!cancelled) listener(state);
-        });
+        if (!cancelled) listener(this.mapViewFrom(session, view));
       };
       try {
         emit(await session.client.view());
@@ -437,28 +452,30 @@ export class RollupTradingClient implements TradingClient {
     };
   }
 
-  private async mapView(session: RollupSession): Promise<TraderState> {
-    return this.mapViewFrom(session, await session.client.view());
+  private mapView(session: RollupSession): Promise<TraderState> {
+    return session.client.view().then((view) => this.mapViewFrom(session, view));
   }
 
-  private async mapViewFrom(session: RollupSession, view: View): Promise<TraderState> {
-    const deployment = await session.deployment();
-    const bindings = await this.bindings(session);
+  private mapViewFrom(session: RollupSession, view: View): TraderState {
+    const bindings = this.bindings(session);
     const seat = view.snapshot.seat;
 
     const balances: Record<string, Balance> = {};
-    for (const [tokenIndex, symbol] of deployment.tokenSymbols) {
-      const slot = seat.spot[tokenIndex];
-      if (!slot) continue;
-      const decimals = await session.mintDecimals.decimalsOf(tokenIndex);
-      const available = atomsToAmount(slot.available, decimals);
-      const reserved = atomsToAmount(slot.locked, decimals);
-      balances[symbol] = {
-        asset: symbol,
-        available,
-        reserved,
-        total: addDecimalStrings(available, reserved),
-      };
+    for (const market of session.deployment.markets) {
+      for (const token of [market.baseToken, market.quoteToken]) {
+        if (!token || balances[token.symbol]) continue;
+        const tokenIndex = session.tokenIndexBySymbol.get(token.symbol);
+        const slot = tokenIndex !== undefined ? seat.spot[tokenIndex] : undefined;
+        if (!slot) continue;
+        const available = atomsToAmount(slot.available, token.decimals);
+        const reserved = atomsToAmount(slot.locked, token.decimals);
+        balances[token.symbol] = {
+          asset: token.symbol,
+          available,
+          reserved,
+          total: addDecimalStrings(available, reserved),
+        };
+      }
     }
 
     const positions: Record<string, Position> = {};
