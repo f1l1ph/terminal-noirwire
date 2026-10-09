@@ -21,3 +21,7 @@ export const btnDanger = `${btnBase} bg-danger text-(--color-base) hover:opacity
 
 export const input =
   "bg-surface-raised border border-line rounded-tile px-3 py-2 text-[14px] text-ink placeholder:text-faint focus:border-line-strong outline-none w-full";
+
+export const sectionLabel = "text-faint text-[11px] tracking-wide uppercase";
+
+export const rangeBrand = "range-brand w-full";

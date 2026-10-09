@@ -1,27 +1,66 @@
+import type { PublicFill } from "../market-data/types";
+import type { Side } from "./types";
+
 /**
- * Each order this browser places carries a random 64-bit tag, chosen here
- * and sent with the order. The tape publishes a fill's tag the same way it
- * publishes price and size; nobody else can link a tag back to a person, but
- * this browser can recognise its own fill on the public tape by the tag it
- * already holds locally.
+ * Recognising "yours" on the public tape, without a client-generated tag.
+ *
+ * sim-noirwire assigns a random 64-bit tag to every order when it is
+ * placed (`PlaceOrderResult.tag`), and the same tag is echoed on that
+ * order's own open-order row and on every public tape fill it takes part
+ * in (`takerTag` / `makerTag`). This browser never sends or invents a tag:
+ * it only remembers the tags the venue itself handed back for orders this
+ * session placed, then checks whether a tape row's `takerTag` or
+ * `makerTag` is one of them. A stable, client-chosen tag would let a public
+ * observer link a trader's fills together; a venue-assigned, per-order tag
+ * does not, and is exactly what the venue already publishes.
  */
-export function generateClientTag(randomBytes: () => Uint8Array = defaultRandomBytes): string {
-  const bytes = randomBytes();
-  if (bytes.length !== 8) {
-    throw new Error("A client tag needs exactly 8 random bytes (64 bits)");
+
+export function isOwnFill(fill: PublicFill, ownTags: ReadonlySet<string>): boolean {
+  return ownTags.has(fill.takerTag) || ownTags.has(fill.makerTag);
+}
+
+export interface OwnFillRecord {
+  sequence: number;
+  market: string;
+  /** This trader's side in the fill: the taker's side if this trader was the taker, its opposite otherwise. */
+  side: Side;
+  price: string;
+  size: string;
+  timestampMs: number;
+  role: "taker" | "maker";
+  /** This trader's own tag that matched (whichever of takerTag/makerTag was in `ownTags`), so a caller can narrow to one order's fills. */
+  tag: string;
+}
+
+const opposite = (side: Side): Side => (side === "buy" ? "sell" : "buy");
+
+/**
+ * Derives this trader's own fills from the public tape plus its known
+ * tags: a fill where its tag is `takerTag` is a fill it took, one where
+ * its tag is `makerTag` is a fill its resting order received. A fill can
+ * only be found this way from the moment its tag became known (this
+ * session's own orders); it is not a persisted history. See
+ * docs/BUILD-NOTES.md, "Own fill history is session-only."
+ */
+export function deriveOwnFills(
+  fills: readonly PublicFill[],
+  ownTags: ReadonlySet<string>,
+): OwnFillRecord[] {
+  const records: OwnFillRecord[] = [];
+  for (const fill of fills) {
+    const asTaker = ownTags.has(fill.takerTag);
+    const asMaker = ownTags.has(fill.makerTag);
+    if (!asTaker && !asMaker) continue;
+    records.push({
+      sequence: fill.sequence,
+      market: fill.market,
+      side: asTaker ? fill.takerSide : opposite(fill.takerSide),
+      price: fill.price,
+      size: fill.size,
+      timestampMs: fill.timestampMs,
+      role: asTaker ? "taker" : "maker",
+      tag: asTaker ? fill.takerTag : fill.makerTag,
+    });
   }
-  return Array.from(bytes)
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function defaultRandomBytes(): Uint8Array {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return bytes;
-}
-
-export function isOwnTag(tag: string | null | undefined, ownTags: ReadonlySet<string>): boolean {
-  if (!tag) return false;
-  return ownTags.has(tag);
+  return records;
 }

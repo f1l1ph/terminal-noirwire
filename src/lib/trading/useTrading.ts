@@ -2,12 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createTradingClient } from "./index";
-import { generateClientTag } from "./tags";
-import type { NewOrderInput, PlaceOrderResult, TraderState, WalletIdentity } from "./types";
+import type {
+  FundOutcome,
+  NewOrderInput,
+  PlaceOrderResult,
+  TraderState,
+  WalletIdentity,
+} from "./types";
 
-const EMPTY_STATE: TraderState = { balances: [], positions: [], openOrders: [], ownFills: [] };
-
-export type NewOrderDraft = Omit<NewOrderInput, "clientOrderId" | "clientTag">;
+const EMPTY_STATE: TraderState = {
+  trader: "",
+  equity: "0",
+  balances: {},
+  positions: {},
+  openOrders: [],
+};
 
 export interface PlacedOrderOutcome {
   result: PlaceOrderResult;
@@ -17,8 +26,10 @@ export interface PlacedOrderOutcome {
 
 /**
  * One trading session: the selected trading client (dev today, rollup
- * later), the trader's live state, and the set of client tags this browser
- * has placed, for matching "yours" fills on the public tape.
+ * later), the trader's live state, and the set of venue-assigned order tags
+ * this browser has learned (from its own placeOrder responses and its own
+ * open orders), for matching "yours" fills on the public tape. See
+ * `src/lib/trading/tags.ts`.
  */
 export function useTrading(address: string | null) {
   const client = useMemo(() => createTradingClient(), []);
@@ -27,7 +38,7 @@ export function useTrading(address: string | null) {
   const ownTagsRef = useRef<Set<string>>(new Set());
 
   const addOwnTag = useCallback((tag: string) => {
-    if (ownTagsRef.current.has(tag)) return;
+    if (!tag || ownTagsRef.current.has(tag)) return;
     ownTagsRef.current.add(tag);
     setOwnTags(new Set(ownTagsRef.current));
   }, []);
@@ -37,47 +48,36 @@ export function useTrading(address: string | null) {
     const wallet: WalletIdentity = { address };
     return client.subscribe(wallet, (next) => {
       setState(next);
-      for (const order of next.openOrders) addOwnTag(order.clientTag);
-      for (const fill of next.ownFills) addOwnTag(fill.clientTag);
+      for (const order of next.openOrders) addOwnTag(order.tag);
     });
   }, [client, address, addOwnTag]);
 
   const effectiveState = address ? state : EMPTY_STATE;
 
-  const fund = useCallback(async () => {
-    if (!address) throw new Error("No wallet to fund");
+  const fund = useCallback(async (): Promise<FundOutcome> => {
+    if (!address) return { kind: "error", message: "No wallet to fund" };
     return client.fund({ address });
   }, [client, address]);
 
   const placeOrder = useCallback(
-    async (draft: NewOrderDraft): Promise<PlacedOrderOutcome> => {
+    async (draft: NewOrderInput): Promise<PlacedOrderOutcome> => {
       if (!address) throw new Error("No wallet to trade with");
-      const clientTag = generateClientTag();
-      const clientOrderId = `${Date.now()}-${clientTag}`;
-      addOwnTag(clientTag);
       const clickedAt = performance.now();
-      const result = await client.placeOrder({ address }, { ...draft, clientOrderId, clientTag });
+      const result = await client.placeOrder({ address }, draft);
       const clientDurationMs = performance.now() - clickedAt;
+      addOwnTag(result.tag);
       return { result, clientDurationMs };
     },
     [client, address, addOwnTag],
   );
 
-  const cancelOrder = useCallback(
-    async (market: string, orderId: string) => {
-      if (!address) throw new Error("No wallet to cancel for");
-      return client.cancelOrder({ address }, market, orderId);
-    },
-    [client, address],
-  );
-
-  const cancelAll = useCallback(
+  const cancelAllInMarket = useCallback(
     async (market: string) => {
       if (!address) throw new Error("No wallet to cancel for");
-      return client.cancelAll({ address }, market);
+      return client.cancelAllInMarket({ address }, market);
     },
     [client, address],
   );
 
-  return { client, state: effectiveState, ownTags, fund, placeOrder, cancelOrder, cancelAll };
+  return { client, state: effectiveState, ownTags, fund, placeOrder, cancelAllInMarket };
 }

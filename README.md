@@ -22,19 +22,21 @@ database and no backend of its own: the browser talks directly to
 [sim-noirwire](../sim-noirwire), the always-on service that makes the test
 order book feel alive and measurable.
 
-| Path                   | What it is                                                                                                                                                                                                                                                   |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/lib/env.ts`       | Zod-validated configuration; refuses to start with a missing simulation service URL                                                                                                                                                                          |
-| `src/lib/market-data/` | Typed HTTP + one reconnecting websocket client for the service's public routes; a framework-free store, and the hooks that wire it into React                                                                                                                |
-| `src/lib/trading/`     | The `TradingClient` interface, fixed-point order math (fees, margin, a liquidation estimate), order validation against market settings, the own-order tag used to recognise "yours" on the public tape, and `DevTradingClient` (today's only implementation) |
-| `src/lib/wallet/`      | The browser test wallet: generate, store, export and import an ed25519 keypair, entirely client-side                                                                                                                                                         |
-| `src/lib/format/`      | Number, price, duration and time formatting, matching the design concept                                                                                                                                                                                     |
-| `src/components/`      | The terminal's screens: market switcher, chart, venue pulse, public tape, the witness rail (the own-order timeline that replaces a depth ladder), order entry, the account dock, the public view panel                                                       |
-| `src/proxy.ts`         | Gives every page request its own Content-Security-Policy nonce, so inline bootstrap scripts can run under a strict `script-src`                                                                                                                              |
+| Path                   | What it is                                                                                                                                                                                                                                                             |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/lib/env.ts`       | Zod-validated configuration; refuses to start with a missing simulation service URL                                                                                                                                                                                    |
+| `src/lib/sim-api/`     | The one shared schema file (`schema.ts`) for every wire shape sim-noirwire returns - REST and websocket alike. Both the browser client and the in-repo mock service import from it, so the two can never drift apart                                                   |
+| `src/lib/market-data/` | Typed HTTP + one reconnecting websocket client for the service's public routes; a framework-free store, and the hooks that wire it into React                                                                                                                          |
+| `src/lib/trading/`     | The `TradingClient` interface, fixed-point order math (fees, margin, a liquidation estimate), order validation against market settings, own-fill recognition against the trader's reported fill sequence numbers, and `DevTradingClient` (today's only implementation) |
+| `src/lib/wallet/`      | The browser test wallet: generate, store, export and import an ed25519 keypair, entirely client-side                                                                                                                                                                   |
+| `src/lib/format/`      | Number, price, duration and time formatting, matching the design concept                                                                                                                                                                                               |
+| `src/components/`      | The terminal's screens: market switcher, chart (real candles plus volume), venue pulse, public tape, the witness rail (the own-order timeline that replaces a depth ladder), order entry, the account dock, the public view panel                                      |
+| `src/proxy.ts`         | Gives every page request its own Content-Security-Policy nonce, so inline bootstrap scripts can run under a strict `script-src`                                                                                                                                        |
 
 See `docs/BUILD-NOTES.md` for every place this terminal's build deviates from
-`docs/CONCEPT.md`, and every assumption it makes about sim-noirwire's API
-that needs reconciling once that service ships real code.
+`docs/CONCEPT.md`, every decision this second pass made reconciling against
+sim-noirwire's real code, and every remaining gap between what the UI wants
+and what the service currently returns.
 
 ## Quick start
 
@@ -48,17 +50,21 @@ npm run dev            # http://localhost:3000
 
 The terminal needs sim-noirwire running at the URL named in `.env.local`
 (`NEXT_PUBLIC_SIM_URL`, `NEXT_PUBLIC_SIM_WS_URL`) to show anything past the
-empty state. Until that service has its own `npm run dev`, point those
-variables at any server implementing the routes in
-`../sim-noirwire/docs/DESIGN.md` plus the dev trading routes `docs/BUILD-NOTES.md`
-assumes, or run this repo's own end-to-end mock (`node e2e/fake-sim/server.mts`)
-to see the terminal fully populated.
+empty state. Run the real service from `../sim-noirwire` (`make install` if
+needed, then `VENUE=memory DEV_TRADING=1` and its own `.env` - see that
+repo's README for every variable), or run this repo's own deterministic mock
+(`node e2e/fake-sim/server.mts`) to see the terminal fully populated without
+a second service. **The real service's `ALLOWED_ORIGINS` must include
+whatever origin the browser runs from** (`http://localhost:3000` for `npm run
+dev`, `http://localhost:3101` for `make e2e-live`'s build) or every request
+fails CORS silently in the browser console.
 
 ```bash
 make check       # lint + typecheck + format check
 make test        # vitest unit tests
-make e2e          # Playwright, against this repo's own mock of sim-noirwire
-make build        # production build
+make e2e         # Playwright, against this repo's own mock of sim-noirwire
+make e2e-live    # opt-in: the first-minute flow against a REAL sim-noirwire you already started
+make build       # production build
 ```
 
 See the Makefile (`make help`) for every command.
@@ -72,7 +78,7 @@ valid URL in each. See `.env.example` for the full comments.
 | --------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `NEXT_PUBLIC_SIM_URL`       | yes                         | sim-noirwire's HTTP origin                                                                                                                                                                                                                                       |
 | `NEXT_PUBLIC_SIM_WS_URL`    | yes                         | sim-noirwire's websocket URL (`/v1/stream`)                                                                                                                                                                                                                      |
-| `NEXT_PUBLIC_TRADING_MODE`  | no (default `dev`)          | `dev` talks to sim-noirwire's local-development trading routes; `rollup` is reserved for the implementation that signs transactions and sends them to the rollup directly, which does not exist yet — the terminal shows a plain "not connected" notice under it |
+| `NEXT_PUBLIC_TRADING_MODE`  | no (default `dev`)          | `dev` talks to sim-noirwire's local-development trading routes; `rollup` is reserved for the implementation that signs transactions and sends them to the rollup directly, which does not exist yet - the terminal shows a plain "not connected" notice under it |
 | `NEXT_PUBLIC_NETWORK_LABEL` | no (default `TEST NETWORK`) | the words shown beside every balance, volume and speed figure                                                                                                                                                                                                    |
 
 ## How numbers are labelled
@@ -84,7 +90,7 @@ valid URL in each. See `.env.example` for the full comments.
   sample size and window, and shows `Insufficient samples` or `Measurement
 unavailable` rather than a confident number it cannot back up.
 - A per-order "click to confirmation" time is measured on the device placing
-  the order, with a monotonic clock, and is labelled as such — a different
+  the order, with a monotonic clock, and is labelled as such - a different
   number from the venue-wide p50/p99.
 - The liquidation price shown in order entry and in the Margin tab is a
   client-computed **estimate**, labelled `(est.)`, because sim-noirwire does
@@ -110,15 +116,20 @@ the page reaches no other host.
   network, no browser.
 - **End-to-end** (`make e2e` / `npm run test:e2e`): Playwright against this
   repo's own production build, talking to a small mock of sim-noirwire this
-  repo starts and steers itself (`e2e/fake-sim/server.mts` — serves the
-  routes documented in `sim-noirwire/docs/DESIGN.md` plus a websocket with
-  scripted prices and fills; no dependency on that repo being runnable).
-  Covers the first-minute flow (wallet, funds, a filled market long), a
-  resting limit order and its cancel, a rejected order, connection lost and
-  recovered, the public view carrying no private rows, and the phone layout
-  at 390 wide. There is no unit/Playwright split for landing-page polish
-  here because this is a dense trading screen, not a marketing page — CI is
-  lint, types, format and the suites above.
+  repo starts and steers itself (`e2e/fake-sim/server.mts` - built on the
+  same `src/lib/sim-api/schema.ts` the browser client uses, so its shapes
+  cannot drift from the real service's; no dependency on that repo being
+  runnable). Covers the first-minute flow (wallet, funds, a filled market
+  long), a resting limit order and its cancel, a rejected order (reduce-only
+  in the wrong direction), a spot buy, connection lost and recovered, the
+  public view carrying no private rows, and the phone layout at 390 wide.
+  There is no unit/Playwright split for landing-page polish here because
+  this is a dense trading screen, not a marketing page - CI is lint, types,
+  format and the suite above.
+- **End-to-end against the real service** (`make e2e-live`, opt-in, never
+  CI): the same first-minute flow run against a real local sim-noirwire
+  instance (`SIM_LIVE_URL`, default `http://localhost:4100`). Start that
+  service yourself first; see the CORS note under Quick start.
 
 ## Security
 

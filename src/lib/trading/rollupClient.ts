@@ -1,6 +1,6 @@
 import type {
   CancelResult,
-  FundResult,
+  FundOutcome,
   NewOrderInput,
   PlaceOrderResult,
   TraderState,
@@ -23,7 +23,7 @@ export class NotConnectedRollupTradingClient implements TradingClient {
     throw new Error(NOT_CONNECTED);
   }
 
-  async fund(_wallet: WalletIdentity): Promise<FundResult> {
+  async fund(_wallet: WalletIdentity): Promise<FundOutcome> {
     throw new Error(NOT_CONNECTED);
   }
 
@@ -31,15 +31,7 @@ export class NotConnectedRollupTradingClient implements TradingClient {
     throw new Error(NOT_CONNECTED);
   }
 
-  async cancelOrder(
-    _wallet: WalletIdentity,
-    _market: string,
-    _orderId: string,
-  ): Promise<CancelResult> {
-    throw new Error(NOT_CONNECTED);
-  }
-
-  async cancelAll(_wallet: WalletIdentity, _market: string): Promise<CancelResult> {
+  async cancelAllInMarket(_wallet: WalletIdentity, _market: string): Promise<CancelResult> {
     throw new Error(NOT_CONNECTED);
   }
 

@@ -1,28 +1,43 @@
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
+import {
+  cancelAllResponseSchema,
+  candlesResponseSchema,
+  devOrderResponseSchema,
+  fundResponseSchema,
+  healthResponseSchema,
+  marketsResponseSchema,
+  statsResponseSchema,
+  tapeResponseSchema,
+  traderStateResponseSchema,
+  type CandleInterval,
+  type MarketInfo,
+  type MarketKind,
+  type OpenOrder,
+  type PublicFill,
+  type Side,
+} from "../../src/lib/sim-api/schema.ts";
 
 /**
- * A small stand-in for sim-noirwire, serving the routes documented in
- * sim-noirwire/docs/DESIGN.md plus the dev trading routes this terminal
- * assumes (see docs/BUILD-NOTES.md). It never talks to a real chain or a
- * real price feed; everything here is scripted or randomly walked, for the
- * Playwright suite only.
+ * A small stand-in for sim-noirwire, built to the exact wire shapes in
+ * `src/lib/sim-api/schema.ts` (every response is run through that schema's
+ * `.parse()` before being sent, so this server cannot silently drift from
+ * what the real DevTradingClient expects). Market configuration (tick, lot,
+ * max leverage) mirrors sim-noirwire's `src/engine/markets.ts`. It never
+ * talks to a real chain or a real price feed; everything here is scripted
+ * or randomly walked, for the Playwright suite only.
  */
 
 interface MarketConfig {
   id: string;
-  kind: "perp" | "spot";
-  baseSymbol: string;
-  quoteSymbol: string;
-  tickSize: string;
-  lotSize: string;
-  minSize: string;
-  maxSize: string;
+  kind: MarketKind;
+  base: string;
+  quote: string;
+  tickSize: number;
+  lotSize: number;
   maxLeverage: number;
-  priceDecimals: number;
-  sizeDecimals: number;
   takerFeeBps: number;
-  makerFeeBps: number;
   basePrice: number;
 }
 
@@ -30,58 +45,43 @@ const MARKETS: MarketConfig[] = [
   {
     id: "NSOL-PERP",
     kind: "perp",
-    baseSymbol: "NSOL",
-    quoteSymbol: "nUSD",
-    tickSize: "0.01",
-    lotSize: "0.1",
-    minSize: "0.1",
-    maxSize: "500",
-    maxLeverage: 20,
-    priceDecimals: 2,
-    sizeDecimals: 1,
-    takerFeeBps: 10,
-    makerFeeBps: 2,
+    base: "SOL",
+    quote: "nUSD",
+    tickSize: 0.01,
+    lotSize: 0.001,
+    maxLeverage: 10,
+    takerFeeBps: 5,
     basePrice: 150,
   },
   {
     id: "NNVDA-PERP",
     kind: "perp",
-    baseSymbol: "NNVDA",
-    quoteSymbol: "nUSD",
-    tickSize: "0.01",
-    lotSize: "0.01",
-    minSize: "0.01",
-    maxSize: "200",
+    base: "NVDAx",
+    quote: "nUSD",
+    tickSize: 0.01,
+    lotSize: 0.0001,
     maxLeverage: 10,
-    priceDecimals: 2,
-    sizeDecimals: 2,
-    takerFeeBps: 10,
-    makerFeeBps: 2,
+    takerFeeBps: 5,
     basePrice: 120,
   },
   {
     id: "NSOL-NUSD",
     kind: "spot",
-    baseSymbol: "NSOL",
-    quoteSymbol: "nUSD",
-    tickSize: "0.01",
-    lotSize: "0.1",
-    minSize: "0.1",
-    maxSize: "500",
-    maxLeverage: 1,
-    priceDecimals: 2,
-    sizeDecimals: 1,
-    takerFeeBps: 10,
-    makerFeeBps: 2,
+    base: "SOL",
+    quote: "nUSD",
+    tickSize: 0.01,
+    lotSize: 0.001,
+    maxLeverage: 0,
+    takerFeeBps: 5,
     basePrice: 150,
   },
 ];
 
 interface MarketState {
   markPrice: number;
-  markPriceUpdatedAt: number;
+  markPriceUpdatedAtMs: number;
   candles1m: {
-    startTime: number;
+    startMs: number;
     open: number;
     high: number;
     low: number;
@@ -95,90 +95,60 @@ interface MarketState {
   sequence: number;
 }
 
-interface PublicFill {
-  market: string;
-  price: string;
-  size: string;
-  takerSide: "buy" | "sell";
-  time: number;
-  sequence: number;
-  tag: string | null;
-}
-
 interface Balance {
-  asset: string;
-  total: number;
-  available: number;
+  balance: number;
+  locked: number;
 }
 
 interface Position {
-  market: string;
-  side: "buy" | "sell";
-  quantity: number;
+  size: number;
   entryPrice: number;
-  leverage: number;
-}
-
-interface OpenOrder {
-  orderId: string;
-  clientOrderId: string;
-  clientTag: string;
-  market: string;
-  side: "buy" | "sell";
-  orderType: "market" | "limit";
-  quantity: string;
-  filledQuantity: string;
-  limitPrice: string | null;
-  status: "resting" | "partiallyFilled";
-  placedAt: number;
-  reduceOnly: boolean;
-}
-
-interface OwnFill {
-  fillId: string;
-  orderId: string;
-  clientTag: string;
-  market: string;
-  side: "buy" | "sell";
-  price: string;
-  quantity: string;
-  fee: string;
-  time: number;
 }
 
 interface Trader {
   balances: Map<string, Balance>;
   positions: Map<string, Position>;
   openOrders: Map<string, OpenOrder>;
-  ownFills: OwnFill[];
   funded: boolean;
 }
 
 const marketStates = new Map<string, MarketState>();
 const traders = new Map<string, Trader>();
 let orderSeq = 0;
-let fillSeq = 0;
 const latenciesMs: number[] = [];
 let wsBlocked = false;
-const sockets = new Set<WebSocket>();
+const sockets = new Map<WebSocket, string>();
+
+function round(value: number, decimals = 6): string {
+  return value.toFixed(decimals);
+}
+
+function randomTag(): string {
+  return randomBytes(8).readBigUInt64BE(0).toString();
+}
 
 function resetState(): void {
   marketStates.clear();
   traders.clear();
   orderSeq = 0;
-  fillSeq = 0;
   latenciesMs.length = 0;
   wsBlocked = false;
   const now = Date.now();
+  // Minute-aligned, the same rounding the live tick below uses for its own
+  // in-progress candle: a seeded candle one second off that alignment
+  // produced a timestamp earlier than the tick's next "current minute"
+  // candle, which broke lightweight-charts' ascending-time requirement the
+  // moment the first live candle arrived.
+  const currentMinute = Math.floor(now / 60_000) * 60_000;
   for (const market of MARKETS) {
     const candles = [];
     let price = market.basePrice;
     for (let i = 20; i >= 0; i -= 1) {
-      const startTime = now - i * 60_000;
+      const startMs = currentMinute - i * 60_000;
       const open = price;
       price = price * (1 + (Math.random() - 0.5) * 0.004);
       candles.push({
-        startTime,
+        startMs,
         open,
         high: Math.max(open, price),
         low: Math.min(open, price),
@@ -188,7 +158,7 @@ function resetState(): void {
     }
     marketStates.set(market.id, {
       markPrice: price,
-      markPriceUpdatedAt: now,
+      markPriceUpdatedAtMs: now,
       candles1m: candles,
       tape: [],
       volume24h: 50_000,
@@ -197,20 +167,15 @@ function resetState(): void {
       sequence: 0,
     });
   }
-  // Seeded so the venue pulse shows a real reading immediately in the suite.
+  // Seeded so the venue pulse shows a real reading immediately in the suite
+  // (sim-noirwire's own /v1/stats never populates this: see docs/BUILD-NOTES.md).
   for (let i = 0; i < 40; i += 1) latenciesMs.push(80 + Math.random() * 400);
 }
 
 function getTrader(address: string): Trader {
   let trader = traders.get(address);
   if (!trader) {
-    trader = {
-      balances: new Map(),
-      positions: new Map(),
-      openOrders: new Map(),
-      ownFills: [],
-      funded: false,
-    };
+    trader = { balances: new Map(), positions: new Map(), openOrders: new Map(), funded: false };
     traders.set(address, trader);
   }
   return trader;
@@ -219,7 +184,7 @@ function getTrader(address: string): Trader {
 function getBalance(trader: Trader, asset: string): Balance {
   let balance = trader.balances.get(asset);
   if (!balance) {
-    balance = { asset, total: 0, available: 0 };
+    balance = { balance: 0, locked: 0 };
     trader.balances.set(asset, balance);
   }
   return balance;
@@ -231,250 +196,265 @@ function percentile(sorted: number[], p: number): number {
   return sorted[index];
 }
 
-function statsSnapshot() {
-  const sorted = [...latenciesMs].sort((a, b) => a - b);
-  return {
-    orders: orderSeq,
-    fills: fillSeq,
-    volume: "125000",
-    traders: traders.size,
-    latency: {
-      p50Ms: sorted.length ? Math.round(percentile(sorted, 50)) : null,
-      p99Ms: sorted.length ? Math.round(percentile(sorted, 99)) : null,
-      sampleCount: sorted.length,
-      windowStart: Date.now() - 900_000,
-      windowEnd: Date.now(),
-      measuredFrom: "order placement to venue confirmation",
-    },
-    updatedAt: Date.now(),
-    network: "devnet",
-    simulated: true,
-  };
-}
-
-function broadcast(message: unknown): void {
-  const payload = JSON.stringify(message);
-  for (const socket of sockets) {
-    if (socket.readyState === socket.OPEN) socket.send(payload);
-  }
-}
-
-function round(value: number, decimals: number): string {
-  return value.toFixed(decimals);
-}
-
-function marketInfoPayload(market: MarketConfig) {
-  const state = marketStates.get(market.id)!;
-  return {
-    id: market.id,
-    kind: market.kind,
-    baseSymbol: market.baseSymbol,
-    quoteSymbol: market.quoteSymbol,
-    tickSize: market.tickSize,
-    lotSize: market.lotSize,
-    minSize: market.minSize,
-    maxSize: market.maxSize,
-    maxLeverage: market.maxLeverage,
-    priceDecimals: market.priceDecimals,
-    sizeDecimals: market.sizeDecimals,
-    takerFeeBps: market.takerFeeBps,
-    makerFeeBps: market.makerFeeBps,
-    markPrice: round(state.markPrice, market.priceDecimals),
-    markPriceUpdatedAt: state.markPriceUpdatedAt,
-    change24h: state.change24h,
-    volume24h: round(state.volume24h, 2),
-    openInterest: market.kind === "perp" ? round(state.openInterest, market.sizeDecimals) : null,
-    network: "devnet",
-    simulated: true,
-  };
-}
-
 function recordLatency(): void {
   latenciesMs.push(40 + Math.random() * 300);
   if (latenciesMs.length > 500) latenciesMs.shift();
 }
 
-function nextOrderId(): string {
-  orderSeq += 1;
-  return `order-${orderSeq}`;
+function statsPayload() {
+  const sorted = [...latenciesMs].sort((a, b) => a - b);
+  return statsResponseSchema.parse({
+    network: "devnet",
+    orders: { user: orderSeq, bot: 60 },
+    fills: { user: 0, bot: 9 },
+    volume: { user: "0.000000", bot: "2.841818" },
+    tradersTotal: traders.size,
+    latency: {
+      medianMs: sorted.length ? Math.round(percentile(sorted, 50)) : 0,
+      p99Ms: sorted.length ? Math.round(percentile(sorted, 99)) : 0,
+      sampleSize: sorted.length,
+      measuredFrom: "http:request",
+    },
+    updatedAtMs: Date.now(),
+  });
 }
 
-function nextFillId(): string {
-  fillSeq += 1;
-  return `fill-${fillSeq}`;
+function wsStatsPayload() {
+  const full = statsPayload();
+  return {
+    user: { orders: full.orders.user, fills: full.fills.user, volume: full.volume.user },
+    bot: { orders: full.orders.bot, fills: full.fills.bot, volume: full.volume.bot },
+    tradersTotal: full.tradersTotal,
+    latency: full.latency,
+    updatedAtMs: full.updatedAtMs,
+  };
+}
+
+function marketInfoPayload(market: MarketConfig): MarketInfo {
+  const state = marketStates.get(market.id)!;
+  return {
+    id: market.id,
+    kind: market.kind,
+    base: market.base,
+    quote: market.quote,
+    tickSize: round(market.tickSize),
+    lotSize: round(market.lotSize),
+    maxLeverage: market.maxLeverage,
+    markPrice: round(state.markPrice),
+    markPriceUpdatedAtMs: state.markPriceUpdatedAtMs,
+    change24hPercent: state.change24h,
+    volume24h: round(state.volume24h),
+    openInterest: market.kind === "perp" ? round(state.openInterest) : null,
+  };
+}
+
+/** Float-safe "is `value` a whole multiple of `step`", scaling both to integers first. */
+function isMultipleOf(value: number, step: number): boolean {
+  const scale = 1e8;
+  const scaledValue = Math.round(value * scale);
+  const scaledStep = Math.round(step * scale);
+  if (scaledStep <= 0) return true;
+  return scaledValue % scaledStep === 0;
+}
+
+function nextOrderId(): string {
+  orderSeq += 1;
+  return `ord-${orderSeq}`;
+}
+
+function broadcast(market: string, message: unknown): void {
+  const payload = JSON.stringify(message);
+  for (const [socket, subscribedMarket] of sockets) {
+    if (subscribedMarket !== market) continue;
+    if (socket.readyState === socket.OPEN) socket.send(payload);
+  }
+}
+
+function broadcastToAll(message: unknown): void {
+  const payload = JSON.stringify(message);
+  for (const socket of sockets.keys()) {
+    if (socket.readyState === socket.OPEN) socket.send(payload);
+  }
 }
 
 function recordFill(params: {
   market: MarketConfig;
   trader: Trader;
-  address: string;
   orderId: string;
-  clientTag: string;
-  side: "buy" | "sell";
+  tag: string;
+  side: Side;
   quantity: number;
   price: number;
   fee: number;
-  leverage: number;
 }): void {
-  const { market, trader, orderId, clientTag, side, quantity, price, fee, leverage } = params;
-  const quote = getBalance(trader, market.quoteSymbol);
-  const base = getBalance(trader, market.baseSymbol);
+  const { market, trader, tag, side, quantity, price, fee } = params;
+  const quote = getBalance(trader, market.quote);
   if (market.kind === "spot") {
+    const base = getBalance(trader, market.base);
     if (side === "buy") {
-      const cost = quantity * price + fee;
-      quote.total -= cost;
-      quote.available -= cost;
-      base.total += quantity;
-      base.available += quantity;
+      quote.balance -= quantity * price + fee;
+      base.balance += quantity;
     } else {
-      const proceeds = quantity * price - fee;
-      quote.total += proceeds;
-      quote.available += proceeds;
-      base.total -= quantity;
-      base.available -= quantity;
+      quote.balance += quantity * price - fee;
+      base.balance -= quantity;
     }
   } else {
-    quote.total -= fee;
-    quote.available -= fee;
-    const existing = trader.positions.get(market.id);
-    if (!existing || existing.side === side) {
-      const priorQty = existing?.quantity ?? 0;
-      const priorEntry = existing?.entryPrice ?? price;
-      const newQty = priorQty + quantity;
-      const newEntry = (priorEntry * priorQty + price * quantity) / newQty;
+    quote.balance -= fee;
+    const existing = trader.positions.get(market.id) ?? { size: 0, entryPrice: 0 };
+    const signedDelta = side === "buy" ? quantity : -quantity;
+    const newSize = existing.size + signedDelta;
+    if (existing.size === 0 || Math.sign(existing.size) === Math.sign(signedDelta)) {
+      const oldNotional = Math.abs(existing.size) * existing.entryPrice;
+      const addedNotional = Math.abs(signedDelta) * price;
       trader.positions.set(market.id, {
-        market: market.id,
-        side,
-        quantity: newQty,
-        entryPrice: newEntry,
-        leverage,
+        size: newSize,
+        entryPrice: newSize === 0 ? 0 : (oldNotional + addedNotional) / Math.abs(newSize),
       });
     } else {
-      const remaining = existing.quantity - quantity;
-      if (remaining > 0) {
-        trader.positions.set(market.id, { ...existing, quantity: remaining });
-      } else {
-        trader.positions.delete(market.id);
-      }
+      const realized =
+        Math.min(Math.abs(signedDelta), Math.abs(existing.size)) *
+        Math.sign(existing.size) *
+        (price - existing.entryPrice);
+      quote.balance += realized;
+      trader.positions.set(market.id, {
+        size: newSize,
+        entryPrice: newSize === 0 ? 0 : existing.entryPrice,
+      });
     }
   }
-  const fillId = nextFillId();
-  const ownFill: OwnFill = {
-    fillId,
-    orderId,
-    clientTag,
-    market: market.id,
-    side,
-    price: round(price, market.priceDecimals),
-    quantity: round(quantity, market.sizeDecimals),
-    fee: round(fee, 2),
-    time: Date.now(),
-  };
-  trader.ownFills.unshift(ownFill);
   const state = marketStates.get(market.id)!;
   state.sequence += 1;
-  const publicFill: PublicFill = {
+  const fill: PublicFill = {
     market: market.id,
-    price: ownFill.price,
-    size: ownFill.quantity,
+    price: round(price),
+    size: round(quantity),
     takerSide: side,
-    time: ownFill.time,
+    takerTag: tag,
+    makerTag: randomTag(),
+    timestampMs: Date.now(),
     sequence: state.sequence,
-    tag: clientTag,
   };
-  state.tape.unshift(publicFill);
+  state.tape.unshift(fill);
   state.tape = state.tape.slice(0, 200);
-  broadcast({ type: "fill", market: market.id, fill: publicFill });
+  broadcast(market.id, { type: "fill", ...fill });
 }
 
-function placeOrder(body: Record<string, unknown>) {
-  const market = MARKETS.find((item) => item.id === body.market);
-  if (!market) return { httpStatus: 400, body: { error: "unknown market" } };
-  const address = String(body.address);
-  const trader = getTrader(address);
-  const state = marketStates.get(market.id)!;
-  const side = body.side as "buy" | "sell";
-  const orderType = body.orderType as "market" | "limit";
-  const quantity = Number(body.quantity);
-  const limitPrice = body.limitPrice ? Number(body.limitPrice) : null;
-  const leverage = Number(body.leverage ?? 1);
-  const effectivePrice = orderType === "market" ? state.markPrice : (limitPrice ?? state.markPrice);
-  const notional = quantity * effectivePrice;
-  const fee = (notional * market.takerFeeBps) / 10_000;
-  const marginNeeded = market.kind === "perp" ? notional / Math.max(leverage, 1) : notional;
-  const quoteBalance = getBalance(trader, market.quoteSymbol);
+type OrderOutcome = { httpStatus: number; body: unknown };
 
-  orderSeq += 1;
+function placeOrder(body: Record<string, unknown>): OrderOutcome {
+  const market = MARKETS.find((item) => item.id === body.market);
+  const tag = randomTag();
+  const orderId = nextOrderId();
   recordLatency();
 
-  if (side === "buy" && marginNeeded + fee > quoteBalance.available) {
-    return {
-      httpStatus: 200,
-      body: {
-        orderId: nextOrderId(),
-        clientOrderId: body.clientOrderId,
-        status: "rejected",
-        reason: "Insufficient test balance for this order.",
-        confirmedAt: Date.now(),
-      },
-    };
+  const reject = (reason: string, size: string): OrderOutcome => ({
+    httpStatus: 200,
+    body: devOrderResponseSchema.parse({
+      orderId,
+      tag,
+      status: "rejected",
+      filledSize: "0.000000",
+      remainingSize: size,
+      reason,
+    }),
+  });
+
+  if (!market) return reject("unknown market", String(body.size ?? "0"));
+
+  const trader = getTrader(String(body.address));
+  const side = body.side as Side;
+  const type = body.type as "market" | "limit";
+  const size = Number(body.size);
+  const price = Number(body.price);
+
+  if (!(size > 0)) return reject("size must be positive", String(body.size ?? "0"));
+  if (!isMultipleOf(size, market.lotSize)) {
+    return reject("size must be a multiple of the lot size", String(body.size));
+  }
+  if (!(price > 0)) return reject("price must be positive", String(body.size));
+  if (!isMultipleOf(price, market.tickSize)) {
+    return reject("price must be a multiple of the tick size", String(body.size));
+  }
+
+  if (market.kind === "perp" && body.reduceOnly) {
+    const existing = trader.positions.get(market.id);
+    const reducesDirection =
+      (side === "sell" && (existing?.size ?? 0) > 0) ||
+      (side === "buy" && (existing?.size ?? 0) < 0);
+    if (!reducesDirection) {
+      return reject("reduce-only: no position to reduce", String(body.size));
+    }
+  }
+
+  const state = marketStates.get(market.id)!;
+  const notional = size * price;
+  const fee = (notional * market.takerFeeBps) / 10_000;
+  const quote = getBalance(trader, market.quote);
+
+  if (market.kind === "spot") {
+    if (side === "buy" && quote.balance < notional + fee)
+      return reject("insufficient balance", String(body.size));
+    if (side === "sell") {
+      const base = getBalance(trader, market.base);
+      if (base.balance < size) return reject("insufficient balance", String(body.size));
+    }
+  } else {
+    // The venue has no per-order leverage field: margin is always the
+    // market's fixed ratio (equivalent to its advertised maxLeverage, see
+    // sim-noirwire's engine/markets.ts initialMarginBps), not a client choice.
+    const margin = notional / Math.max(1, market.maxLeverage);
+    if (quote.balance < margin + fee) return reject("insufficient margin", String(body.size));
   }
 
   const willFillNow =
-    orderType === "market" ||
-    (limitPrice !== null &&
-      (side === "buy" ? limitPrice >= state.markPrice : limitPrice <= state.markPrice));
-
-  const orderId = nextOrderId();
+    type === "market" || (side === "buy" ? price >= state.markPrice : price <= state.markPrice);
 
   if (!willFillNow) {
-    quoteBalance.available -= marginNeeded + fee;
-    trader.openOrders.set(orderId, {
+    const order: OpenOrder = {
       orderId,
-      clientOrderId: String(body.clientOrderId),
-      clientTag: String(body.clientTag),
+      tag,
       market: market.id,
       side,
-      orderType,
-      quantity: String(body.quantity),
-      filledQuantity: "0",
-      limitPrice: limitPrice !== null ? String(body.limitPrice) : null,
-      status: "resting",
-      placedAt: Date.now(),
+      type,
+      price: round(price),
+      size: round(size),
+      remainingSize: round(size),
       reduceOnly: Boolean(body.reduceOnly),
-    });
+    };
+    trader.openOrders.set(orderId, order);
     return {
       httpStatus: 200,
-      body: {
+      body: devOrderResponseSchema.parse({
         orderId,
-        clientOrderId: body.clientOrderId,
-        status: "accepted",
-        confirmedAt: Date.now(),
-      },
+        tag,
+        status: "open",
+        filledSize: "0.000000",
+        remainingSize: round(size),
+        reason: null,
+      }),
     };
   }
 
-  fillSeq += 1;
   recordFill({
     market,
     trader,
-    address,
     orderId,
-    clientTag: String(body.clientTag),
+    tag,
     side,
-    quantity,
-    price: orderType === "market" ? state.markPrice : (limitPrice ?? state.markPrice),
+    quantity: size,
+    price: type === "market" ? state.markPrice : price,
     fee,
-    leverage,
   });
   return {
     httpStatus: 200,
-    body: {
+    body: devOrderResponseSchema.parse({
       orderId,
-      clientOrderId: body.clientOrderId,
-      status: "accepted",
-      confirmedAt: Date.now(),
-    },
+      tag,
+      status: "filled",
+      filledSize: round(size),
+      remainingSize: "0.000000",
+      reason: null,
+    }),
   };
 }
 
@@ -483,57 +463,56 @@ function cancelAll(address: string, marketId: string) {
   let cancelled = 0;
   for (const [orderId, order] of trader.openOrders) {
     if (order.market !== marketId) continue;
-    const market = MARKETS.find((item) => item.id === marketId)!;
-    const quoteBalance = getBalance(trader, market.quoteSymbol);
-    const remaining = Number(order.quantity) - Number(order.filledQuantity);
-    const price = order.limitPrice
-      ? Number(order.limitPrice)
-      : marketStates.get(marketId)!.markPrice;
-    const releasedMargin = market.kind === "perp" ? (remaining * price) / 1 : remaining * price;
-    quoteBalance.available += releasedMargin;
     trader.openOrders.delete(orderId);
     cancelled += 1;
   }
-  return { cancelled };
+  return cancelAllResponseSchema.parse({ cancelled });
 }
 
 function traderStatePayload(address: string) {
   const trader = getTrader(address);
-  return {
-    balances: Array.from(trader.balances.values()).map((balance) => ({
-      asset: balance.asset,
-      total: round(balance.total, 2),
-      available: round(balance.available, 2),
-    })),
-    positions: Array.from(trader.positions.values()).map((position) => {
-      const market = MARKETS.find((item) => item.id === position.market)!;
-      return {
-        market: position.market,
-        side: position.side,
-        quantity: round(position.quantity, market.sizeDecimals),
-        entryPrice: round(position.entryPrice, market.priceDecimals),
-        leverage: position.leverage,
-        liquidationPrice: null,
-        unrealizedPnl: null,
-      };
-    }),
+  const balances: Record<string, { balance: string; locked: string }> = {};
+  for (const [asset, balance] of trader.balances) {
+    balances[asset] = { balance: round(balance.balance), locked: round(balance.locked) };
+  }
+  const positions: Record<string, { size: string; entryPrice: string }> = {};
+  for (const [marketId, position] of trader.positions) {
+    if (position.size !== 0)
+      positions[marketId] = { size: round(position.size), entryPrice: round(position.entryPrice) };
+  }
+  const equity =
+    (trader.balances.get("nUSD")?.balance ?? 0) + (trader.balances.get("nUSD")?.locked ?? 0);
+  return traderStateResponseSchema.parse({
+    trader: address,
+    equity: round(equity),
+    balances,
+    positions,
     openOrders: Array.from(trader.openOrders.values()),
-    ownFills: trader.ownFills.slice(0, 100),
-  };
+  });
 }
 
-function fund(address: string) {
+const FUNDED_ADDRESSES = new Set<string>();
+
+function fund(address: string): OrderOutcome {
+  if (FUNDED_ADDRESSES.has(address)) {
+    return { httpStatus: 409, body: { error: "this address already received its fund grant" } };
+  }
+  FUNDED_ADDRESSES.add(address);
   const trader = getTrader(address);
   const balance = getBalance(trader, "nUSD");
-  balance.total += 5000;
-  balance.available += 5000;
-  trader.funded = true;
-  return { amount: "5000", reference: `fund-${address.slice(0, 8)}-${Date.now()}` };
+  balance.balance += 5000;
+  return {
+    httpStatus: 200,
+    body: fundResponseSchema.parse({
+      amount: round(5000),
+      reference: `fund-${address.slice(0, 8)}-${Date.now()}`,
+    }),
+  };
 }
 
 function aggregateCandles(oneMinute: MarketState["candles1m"], minutesPerCandle: number) {
   const result: {
-    startTime: number;
+    startMs: number;
     open: string;
     high: string;
     low: string;
@@ -543,45 +522,33 @@ function aggregateCandles(oneMinute: MarketState["candles1m"], minutesPerCandle:
   for (let i = 0; i < oneMinute.length; i += minutesPerCandle) {
     const chunk = oneMinute.slice(i, i + minutesPerCandle);
     if (chunk.length === 0) continue;
-    const open = chunk[0].open;
-    const close = chunk[chunk.length - 1].close;
-    const high = Math.max(...chunk.map((c) => c.high));
-    const low = Math.min(...chunk.map((c) => c.low));
-    const volume = chunk.reduce((sum, c) => sum + c.volume, 0);
     result.push({
-      startTime: chunk[0].startTime,
-      open: round(open, 2),
-      high: round(high, 2),
-      low: round(low, 2),
-      close: round(close, 2),
-      volume: round(volume, 2),
+      startMs: chunk[0].startMs,
+      open: round(chunk[0].open),
+      high: round(Math.max(...chunk.map((c) => c.high))),
+      low: round(Math.min(...chunk.map((c) => c.low))),
+      close: round(chunk.at(-1)!.close),
+      volume: round(chunk.reduce((sum, c) => sum + c.volume, 0)),
     });
   }
   return result;
 }
 
-function candlesPayload(marketId: string, interval: string, limit: number) {
+function candlesPayload(marketId: string, interval: CandleInterval, limit: number) {
   const state = marketStates.get(marketId);
   if (!state) return [];
   const perCandle = interval === "1m" ? 1 : interval === "5m" ? 5 : interval === "15m" ? 15 : 60;
   return aggregateCandles(state.candles1m, perCandle).slice(-limit);
 }
 
-function tapePayload(marketId: string, limit: number) {
-  const state = marketStates.get(marketId);
-  if (!state) return [];
-  return state.tape.slice(0, limit);
-}
-
 function send(res: import("node:http").ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type, accept",
     "access-control-allow-methods": "GET, POST, OPTIONS",
   });
-  res.end(payload);
+  res.end(JSON.stringify(body));
 }
 
 async function readJsonBody(
@@ -590,8 +557,7 @@ async function readJsonBody(
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
   const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw) return {};
-  return JSON.parse(raw);
+  return raw ? JSON.parse(raw) : {};
 }
 
 const server = createServer((req, res) => {
@@ -604,32 +570,57 @@ const server = createServer((req, res) => {
   }
 
   if (req.method === "GET" && path === "/v1/health") {
-    send(res, 200, { ok: true, venue: "memory", network: "devnet" });
+    send(res, 200, healthResponseSchema.parse({ ok: true, venue: "memory", network: "devnet" }));
     return;
   }
 
   if (req.method === "GET" && path === "/v1/markets") {
-    send(res, 200, MARKETS.map(marketInfoPayload));
+    send(
+      res,
+      200,
+      marketsResponseSchema.parse({
+        network: "devnet",
+        simulated: true,
+        markets: MARKETS.map(marketInfoPayload),
+      }),
+    );
     return;
   }
 
   if (req.method === "GET" && path === "/v1/tape") {
     const market = url.searchParams.get("market") ?? "";
     const limit = Number(url.searchParams.get("limit") ?? "100");
-    send(res, 200, tapePayload(market, limit));
+    const state = marketStates.get(market);
+    send(
+      res,
+      200,
+      tapeResponseSchema.parse({
+        network: "devnet",
+        simulated: true,
+        fills: state ? state.tape.slice(0, limit) : [],
+      }),
+    );
     return;
   }
 
   if (req.method === "GET" && path === "/v1/candles") {
     const market = url.searchParams.get("market") ?? "";
-    const interval = url.searchParams.get("interval") ?? "1m";
+    const interval = (url.searchParams.get("interval") ?? "1m") as CandleInterval;
     const limit = Number(url.searchParams.get("limit") ?? "200");
-    send(res, 200, candlesPayload(market, interval, limit));
+    send(
+      res,
+      200,
+      candlesResponseSchema.parse({
+        network: "devnet",
+        simulated: true,
+        candles: candlesPayload(market, interval, limit),
+      }),
+    );
     return;
   }
 
   if (req.method === "GET" && path === "/v1/stats") {
-    send(res, 200, statsSnapshot());
+    send(res, 200, statsPayload());
     return;
   }
 
@@ -641,7 +632,8 @@ const server = createServer((req, res) => {
 
   if (req.method === "POST" && path === "/v1/fund") {
     void readJsonBody(req).then((body) => {
-      send(res, 200, fund(String(body.address)));
+      const result = fund(String(body.address));
+      send(res, result.httpStatus, result.body);
     });
     return;
   }
@@ -669,7 +661,7 @@ const server = createServer((req, res) => {
 
   if (req.method === "POST" && path === "/__control/disconnect") {
     wsBlocked = true;
-    for (const socket of sockets) socket.close();
+    for (const socket of sockets.keys()) socket.close();
     send(res, 200, { ok: true });
     return;
   }
@@ -684,12 +676,13 @@ const server = createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server, path: "/v1/stream" });
-wss.on("connection", (socket) => {
+wss.on("connection", (socket, request) => {
   if (wsBlocked) {
     socket.close();
     return;
   }
-  sockets.add(socket);
+  const market = new URL(request.url ?? "/", "http://localhost").searchParams.get("market") ?? "";
+  sockets.set(socket, market);
   socket.on("close", () => sockets.delete(socket));
 });
 
@@ -700,23 +693,23 @@ setInterval(() => {
   for (const market of MARKETS) {
     const state = marketStates.get(market.id)!;
     state.markPrice = Math.max(0.01, state.markPrice * (1 + (Math.random() - 0.5) * 0.003));
-    state.markPriceUpdatedAt = now;
-    broadcast({
+    state.markPriceUpdatedAtMs = now;
+    broadcast(market.id, {
       type: "price",
       market: market.id,
-      price: round(state.markPrice, market.priceDecimals),
-      time: now,
+      price: round(state.markPrice),
+      publishedAtMs: now,
     });
 
-    const lastCandle = state.candles1m[state.candles1m.length - 1];
+    const lastCandle = state.candles1m.at(-1);
     const candleStart = Math.floor(now / 60_000) * 60_000;
-    if (lastCandle && lastCandle.startTime === candleStart) {
+    if (lastCandle && lastCandle.startMs === candleStart) {
       lastCandle.close = state.markPrice;
       lastCandle.high = Math.max(lastCandle.high, state.markPrice);
       lastCandle.low = Math.min(lastCandle.low, state.markPrice);
     } else {
       state.candles1m.push({
-        startTime: candleStart,
+        startMs: candleStart,
         open: state.markPrice,
         high: state.markPrice,
         low: state.markPrice,
@@ -725,21 +718,22 @@ setInterval(() => {
       });
       if (state.candles1m.length > 500) state.candles1m.shift();
     }
-    broadcast({
+    const current = state.candles1m.at(-1)!;
+    broadcast(market.id, {
       type: "candle",
       market: market.id,
       interval: "1m",
       candle: {
-        startTime: candleStart,
-        open: round(lastCandle?.open ?? state.markPrice, market.priceDecimals),
-        high: round(lastCandle?.high ?? state.markPrice, market.priceDecimals),
-        low: round(lastCandle?.low ?? state.markPrice, market.priceDecimals),
-        close: round(state.markPrice, market.priceDecimals),
-        volume: round(lastCandle?.volume ?? 1, 2),
+        startMs: current.startMs,
+        open: round(current.open),
+        high: round(current.high),
+        low: round(current.low),
+        close: round(current.close),
+        volume: round(current.volume),
       },
     });
   }
-  broadcast({ type: "stats", stats: statsSnapshot() });
+  broadcastToAll({ type: "stats", stats: wsStatsPayload() });
 }, TICK_MS);
 
 resetState();

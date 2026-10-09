@@ -4,7 +4,7 @@ import type {
   CandleInterval,
   MarketInfo,
   PublicFill,
-  VenueStats,
+  StatsResponse,
   WsMessage,
 } from "./types";
 
@@ -21,7 +21,9 @@ export interface MarketDataState {
   marksByMarket: Record<string, MarkInfo>;
   tapeByMarket: Record<string, PublicFill[]>;
   candlesByMarket: Record<string, Partial<Record<CandleInterval, Candle[]>>>;
-  stats: VenueStats | null;
+  /** True from the moment a (market, interval) candle fetch starts until it settles, so the chart can show an honest "Loading" state instead of a shell with nothing in it. */
+  candlesLoading: Record<string, boolean>;
+  stats: StatsResponse | null;
   connectionState: ConnectionState;
 }
 
@@ -31,9 +33,14 @@ function emptyState(): MarketDataState {
     marksByMarket: {},
     tapeByMarket: {},
     candlesByMarket: {},
+    candlesLoading: {},
     stats: null,
     connectionState: "closed",
   };
+}
+
+function candlesLoadingKey(market: string, interval: CandleInterval): string {
+  return `${market}:${interval}`;
 }
 
 /**
@@ -57,9 +64,10 @@ export class MarketDataStore {
   setMarkets(markets: MarketInfo[]): void {
     const marksByMarket = { ...this.state.marksByMarket };
     for (const market of markets) {
+      if (market.markPrice === null || market.markPriceUpdatedAtMs === null) continue;
       const existing = marksByMarket[market.id];
-      if (!existing || market.markPriceUpdatedAt >= existing.time) {
-        marksByMarket[market.id] = { price: market.markPrice, time: market.markPriceUpdatedAt };
+      if (!existing || market.markPriceUpdatedAtMs >= existing.time) {
+        marksByMarket[market.id] = { price: market.markPrice, time: market.markPriceUpdatedAtMs };
       }
     }
     this.setState({ markets, marksByMarket });
@@ -79,6 +87,17 @@ export class MarketDataStore {
     });
   }
 
+  setCandlesLoading(market: string, interval: CandleInterval, loading: boolean): void {
+    const key = candlesLoadingKey(market, interval);
+    if (this.state.candlesLoading[key] === loading) return;
+    this.setState({ candlesLoading: { ...this.state.candlesLoading, [key]: loading } });
+  }
+
+  /** The REST `/v1/stats` shape (groups by metric, carries `network`); the websocket's `stats` message has a different shape (groups by user/bot) and goes through `applyMessage` instead. */
+  setStats(stats: StatsResponse): void {
+    this.setState({ stats });
+  }
+
   setConnectionState(connectionState: ConnectionState): void {
     if (this.state.connectionState === connectionState) return;
     this.setState({ connectionState });
@@ -87,16 +106,35 @@ export class MarketDataStore {
   applyMessage(message: WsMessage): void {
     switch (message.type) {
       case "price":
-        this.applyPrice(message.market, message.price, message.time);
+        this.applyPrice(message.market, message.price, message.publishedAtMs);
         return;
       case "fill":
-        this.applyFill(message.market, message.fill);
+        this.applyFill(message.market, {
+          market: message.market,
+          price: message.price,
+          size: message.size,
+          takerSide: message.takerSide,
+          takerTag: message.takerTag,
+          makerTag: message.makerTag,
+          timestampMs: message.timestampMs,
+          sequence: message.sequence,
+        });
         return;
       case "candle":
         this.applyCandle(message.market, message.interval, message.candle);
         return;
       case "stats":
-        this.setState({ stats: message.stats });
+        this.setState({
+          stats: {
+            network: this.state.stats?.network ?? "",
+            orders: { user: message.stats.user.orders, bot: message.stats.bot.orders },
+            fills: { user: message.stats.user.fills, bot: message.stats.bot.fills },
+            volume: { user: message.stats.user.volume, bot: message.stats.bot.volume },
+            tradersTotal: message.stats.tradersTotal,
+            latency: message.stats.latency,
+            updatedAtMs: message.stats.updatedAtMs,
+          },
+        });
         return;
     }
   }
@@ -120,7 +158,7 @@ export class MarketDataStore {
     const existing = forMarket[interval] ?? [];
     const last = existing[existing.length - 1];
     const next =
-      last && last.startTime === candle.startTime
+      last && last.startMs === candle.startMs
         ? [...existing.slice(0, -1), candle]
         : [...existing, candle].slice(-MAX_CANDLES);
     forMarket[interval] = next;

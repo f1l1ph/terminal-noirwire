@@ -101,3 +101,48 @@ button:disabled {
 .tnum {
   font-variant-numeric: tabular-nums;
 }
+
+/*
+ * The leverage slider, in brand tokens: no default blue. Track is a flat
+ * line, thumb is the strongest ink, both themed from the same tokens as
+ * everything else on the screen.
+ */
+.range-brand {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-line);
+  outline: none;
+}
+
+.range-brand::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-ink-strong);
+  border: none;
+  cursor: pointer;
+}
+
+.range-brand::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-ink-strong);
+  border: none;
+  cursor: pointer;
+}
+
+.range-brand::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-line);
+}
+
+/* A chart overlay for a stale or disconnected market, over the plot only. */
+.chart-overlay {
+  background: color-mix(in oklab, var(--color-surface) 88%, transparent);
+}

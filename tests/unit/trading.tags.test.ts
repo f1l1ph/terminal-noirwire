@@ -1,35 +1,76 @@
 import { describe, expect, it } from "vitest";
-import { generateClientTag, isOwnTag } from "@/lib/trading/tags";
+import { deriveOwnFills, isOwnFill } from "@/lib/trading/tags";
+import type { PublicFill } from "@/lib/market-data/types";
 
-describe("generateClientTag", () => {
-  it("produces a 16-character lowercase hex string (64 bits)", () => {
-    const tag = generateClientTag(() => new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]));
-    expect(tag).toBe("0001020304050607");
-    expect(tag).toMatch(/^[0-9a-f]{16}$/);
+function fill(overrides: Partial<PublicFill> = {}): PublicFill {
+  return {
+    market: "NSOL-PERP",
+    price: "150.000000",
+    size: "1.000000",
+    takerSide: "buy",
+    takerTag: "111",
+    makerTag: "222",
+    timestampMs: 1000,
+    sequence: 1,
+    ...overrides,
+  };
+}
+
+describe("isOwnFill", () => {
+  it("matches a fill where this browser's known tag is the taker", () => {
+    expect(isOwnFill(fill({ takerTag: "abc" }), new Set(["abc"]))).toBe(true);
   });
 
-  it("rejects a source that does not supply 8 bytes", () => {
-    expect(() => generateClientTag(() => new Uint8Array([1, 2, 3]))).toThrow();
+  it("matches a fill where this browser's known tag is the maker", () => {
+    expect(isOwnFill(fill({ makerTag: "abc" }), new Set(["abc"]))).toBe(true);
   });
 
-  it("produces different tags from different random sources", () => {
-    const a = generateClientTag(() => new Uint8Array([1, 1, 1, 1, 1, 1, 1, 1]));
-    const b = generateClientTag(() => new Uint8Array([2, 2, 2, 2, 2, 2, 2, 2]));
-    expect(a).not.toBe(b);
+  it("does not match a fill carrying neither known tag", () => {
+    expect(isOwnFill(fill({ takerTag: "x", makerTag: "y" }), new Set(["abc"]))).toBe(false);
+  });
+
+  it("never matches with an empty own-tag set", () => {
+    expect(isOwnFill(fill(), new Set())).toBe(false);
   });
 });
 
-describe("isOwnTag", () => {
-  it("matches a tag this browser placed", () => {
-    expect(isOwnTag("abc123", new Set(["abc123", "def456"]))).toBe(true);
+describe("deriveOwnFills", () => {
+  it("reports the taker's own side when this trader was the taker", () => {
+    const records = deriveOwnFills(
+      [fill({ takerTag: "mine", takerSide: "buy" })],
+      new Set(["mine"]),
+    );
+    expect(records).toEqual([
+      {
+        sequence: 1,
+        market: "NSOL-PERP",
+        side: "buy",
+        price: "150.000000",
+        size: "1.000000",
+        timestampMs: 1000,
+        role: "taker",
+        tag: "mine",
+      },
+    ]);
   });
 
-  it("does not match a tag from another browser", () => {
-    expect(isOwnTag("zzz999", new Set(["abc123"]))).toBe(false);
+  it("flips to the opposite side when this trader was the resting maker", () => {
+    const records = deriveOwnFills(
+      [fill({ makerTag: "mine", takerSide: "buy" })],
+      new Set(["mine"]),
+    );
+    expect(records[0]).toMatchObject({ side: "sell", role: "maker", tag: "mine" });
   });
 
-  it("does not match a missing tag", () => {
-    expect(isOwnTag(null, new Set(["abc123"]))).toBe(false);
-    expect(isOwnTag(undefined, new Set(["abc123"]))).toBe(false);
+  it("skips a fill that matches no known tag", () => {
+    expect(deriveOwnFills([fill()], new Set(["unrelated"]))).toEqual([]);
+  });
+
+  it("keeps fills in the order given, not resorted", () => {
+    const records = deriveOwnFills(
+      [fill({ sequence: 5, takerTag: "mine" }), fill({ sequence: 2, takerTag: "mine" })],
+      new Set(["mine"]),
+    );
+    expect(records.map((r) => r.sequence)).toEqual([5, 2]);
   });
 });

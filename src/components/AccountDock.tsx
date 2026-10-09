@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { formatClockTime, formatMoney, formatPrice, formatSize, UNAVAILABLE } from "@/lib/format";
+import { formatClockTime, formatDecimal, formatMoney, UNAVAILABLE } from "@/lib/format";
+import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
-import type { Balance, OpenOrder, OwnFill, Position } from "@/lib/trading/types";
-import type { MarketSettingsLookup } from "@/lib/trading/types";
-import { panel } from "@/components/ui/styles";
+import type { OwnFillRecord } from "@/lib/trading/tags";
+import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
+import { panel, sectionLabel } from "@/components/ui/styles";
 
 type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
 
@@ -20,14 +21,14 @@ const TABS: { id: Tab; label: string }[] = [
 export function AccountDock({
   positions,
   openOrders,
-  fills,
+  ownFills,
   balances,
   marketSettings,
   hasWallet,
 }: {
   positions: Position[];
   openOrders: OpenOrder[];
-  fills: OwnFill[];
+  ownFills: OwnFillRecord[];
   balances: Balance[];
   marketSettings: MarketSettingsLookup;
   hasWallet: boolean;
@@ -35,9 +36,9 @@ export function AccountDock({
   const [tab, setTab] = useState<Tab>("positions");
 
   return (
-    <div className={`${panel} flex flex-col`}>
+    <div className={`${panel} flex min-h-0 flex-1 flex-col`}>
       <div
-        className="border-line-subtle flex gap-1 border-b p-2"
+        className="border-line-subtle flex shrink-0 gap-1 border-b p-2"
         role="tablist"
         aria-label="Account"
       >
@@ -48,7 +49,7 @@ export function AccountDock({
             role="tab"
             aria-selected={tab === item.id}
             onClick={() => setTab(item.id)}
-            className={`rounded-tile min-h-11 px-3 text-[13px] ${
+            className={`rounded-tile min-h-9 px-3 text-[13px] ${
               tab === item.id ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
             }`}
           >
@@ -56,7 +57,7 @@ export function AccountDock({
           </button>
         ))}
       </div>
-      <div className="max-h-[220px] overflow-y-auto p-3" role="tabpanel">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3" role="tabpanel">
         {!hasWallet && (
           <p className="text-dim text-[13px]">Create a test wallet to see your account.</p>
         )}
@@ -67,7 +68,7 @@ export function AccountDock({
           <OpenOrdersTable openOrders={openOrders} marketSettings={marketSettings} />
         )}
         {hasWallet && tab === "fills" && (
-          <FillsTable fills={fills} marketSettings={marketSettings} />
+          <FillsTable fills={ownFills} marketSettings={marketSettings} />
         )}
         {hasWallet && tab === "balances" && <BalancesTable balances={balances} />}
         {hasWallet && tab === "margin" && (
@@ -85,35 +86,30 @@ function PositionsTable({
   positions: Position[];
   marketSettings: MarketSettingsLookup;
 }) {
-  if (positions.length === 0) return <p className="text-faint text-[13px]">No open positions.</p>;
+  const open = positions.filter((position) => Number(position.size) !== 0);
+  if (open.length === 0) return <p className="text-faint text-[13px]">No open positions.</p>;
   return (
     <table className="tnum w-full text-left text-[13px]">
       <thead className="text-faint text-[11px] uppercase">
         <tr>
           <th className="font-normal">Market</th>
           <th className="font-normal">Side</th>
-          <th className="font-normal">Quantity</th>
+          <th className="font-normal">Size</th>
           <th className="font-normal">Entry</th>
-          <th className="font-normal">Leverage</th>
-          <th className="font-normal">Est. liquidation</th>
         </tr>
       </thead>
       <tbody>
-        {positions.map((position) => {
+        {open.map((position) => {
           const settings = marketSettings(position.market);
+          const size = Number(position.size);
+          const long = size > 0;
           return (
             <tr key={position.market} className="border-line-subtle border-t">
               <td className="py-1.5">{position.market}</td>
-              <td className={position.side === "buy" ? "text-safe" : "text-danger"}>
-                {position.side === "buy" ? "long" : "short"}
-              </td>
-              <td>{formatSize(position.quantity, settings?.sizeDecimals ?? 4)}</td>
-              <td>{formatPrice(position.entryPrice, settings?.priceDecimals ?? 2)}</td>
-              <td>{position.leverage}x</td>
+              <td className={long ? "text-safe" : "text-danger"}>{long ? "long" : "short"}</td>
+              <td>{formatDecimal(Math.abs(size), settings ? sizeDecimalsOf(settings) : 4)}</td>
               <td>
-                {position.liquidationPrice
-                  ? formatPrice(position.liquidationPrice, settings?.priceDecimals ?? 2)
-                  : UNAVAILABLE}
+                {formatDecimal(position.entryPrice, settings ? priceDecimalsOf(settings) : 2)}
               </td>
             </tr>
           );
@@ -137,10 +133,9 @@ function OpenOrdersTable({
         <tr>
           <th className="font-normal">Market</th>
           <th className="font-normal">Side</th>
-          <th className="font-normal">Quantity</th>
-          <th className="font-normal">Filled</th>
+          <th className="font-normal">Type</th>
           <th className="font-normal">Price</th>
-          <th className="font-normal">Placed</th>
+          <th className="font-normal">Remaining</th>
         </tr>
       </thead>
       <tbody>
@@ -152,14 +147,13 @@ function OpenOrdersTable({
               <td className={order.side === "buy" ? "text-safe" : "text-danger"}>
                 {order.side === "buy" ? "buy" : "sell"}
               </td>
-              <td>{formatSize(order.quantity, settings?.sizeDecimals ?? 4)}</td>
-              <td>{formatSize(order.filledQuantity, settings?.sizeDecimals ?? 4)}</td>
+              <td className="text-dim">{order.type}</td>
               <td>
-                {order.limitPrice
-                  ? formatPrice(order.limitPrice, settings?.priceDecimals ?? 2)
-                  : "market"}
+                {order.price
+                  ? formatDecimal(order.price, settings ? priceDecimalsOf(settings) : 2)
+                  : UNAVAILABLE}
               </td>
-              <td>{formatClockTime(new Date(order.placedAt))}</td>
+              <td>{formatDecimal(order.remainingSize, settings ? sizeDecimalsOf(settings) : 4)}</td>
             </tr>
           );
         })}
@@ -172,10 +166,11 @@ function FillsTable({
   fills,
   marketSettings,
 }: {
-  fills: OwnFill[];
+  fills: OwnFillRecord[];
   marketSettings: MarketSettingsLookup;
 }) {
-  if (fills.length === 0) return <p className="text-faint text-[13px]">No fills yet.</p>;
+  if (fills.length === 0)
+    return <p className="text-faint text-[13px]">No fills yet this session.</p>;
   return (
     <table className="tnum w-full text-left text-[13px]">
       <thead className="text-faint text-[11px] uppercase">
@@ -183,8 +178,7 @@ function FillsTable({
           <th className="font-normal">Market</th>
           <th className="font-normal">Side</th>
           <th className="font-normal">Price</th>
-          <th className="font-normal">Quantity</th>
-          <th className="font-normal">Fee</th>
+          <th className="font-normal">Size</th>
           <th className="font-normal">Time</th>
         </tr>
       </thead>
@@ -192,15 +186,14 @@ function FillsTable({
         {fills.map((fill) => {
           const settings = marketSettings(fill.market);
           return (
-            <tr key={fill.fillId} className="border-line-subtle border-t">
+            <tr key={fill.sequence} className="border-line-subtle border-t">
               <td className="py-1.5">{fill.market}</td>
               <td className={fill.side === "buy" ? "text-safe" : "text-danger"}>
                 {fill.side === "buy" ? "buy" : "sell"}
               </td>
-              <td>{formatPrice(fill.price, settings?.priceDecimals ?? 2)}</td>
-              <td>{formatSize(fill.quantity, settings?.sizeDecimals ?? 4)}</td>
-              <td>{formatMoney(fill.fee)}</td>
-              <td>{formatClockTime(new Date(fill.time))}</td>
+              <td>{formatDecimal(fill.price, settings ? priceDecimalsOf(settings) : 2)}</td>
+              <td>{formatDecimal(fill.size, settings ? sizeDecimalsOf(settings) : 4)}</td>
+              <td>{formatClockTime(new Date(fill.timestampMs))}</td>
             </tr>
           );
         })}
@@ -217,6 +210,7 @@ function BalancesTable({ balances }: { balances: Balance[] }) {
         <tr>
           <th className="font-normal">Asset</th>
           <th className="font-normal">Available</th>
+          <th className="font-normal">Reserved</th>
           <th className="font-normal">Total</th>
         </tr>
       </thead>
@@ -224,8 +218,21 @@ function BalancesTable({ balances }: { balances: Balance[] }) {
         {balances.map((balance) => (
           <tr key={balance.asset} className="border-line-subtle border-t">
             <td className="py-1.5">{balance.asset}</td>
-            <td>{formatMoney(balance.available)}</td>
-            <td>{formatMoney(balance.total)}</td>
+            <td>
+              {balance.asset === "nUSD"
+                ? formatMoney(balance.available)
+                : formatDecimal(balance.available, 6)}
+            </td>
+            <td>
+              {balance.asset === "nUSD"
+                ? formatMoney(balance.reserved)
+                : formatDecimal(balance.reserved, 6)}
+            </td>
+            <td>
+              {balance.asset === "nUSD"
+                ? formatMoney(balance.total)
+                : formatDecimal(balance.total, 6)}
+            </td>
           </tr>
         ))}
       </tbody>
@@ -240,41 +247,59 @@ function MarginTable({
   positions: Position[];
   marketSettings: MarketSettingsLookup;
 }) {
-  const perpPositions = positions.filter(
-    (position) => marketSettings(position.market)?.kind === "perp",
-  );
+  const perpPositions = positions.filter((position) => {
+    const settings = marketSettings(position.market);
+    return Number(position.size) !== 0 && settings?.kind === "perp";
+  });
   if (perpPositions.length === 0)
     return <p className="text-faint text-[13px]">No perp positions.</p>;
   return (
-    <table className="tnum w-full text-left text-[13px]">
-      <thead className="text-faint text-[11px] uppercase">
-        <tr>
-          <th className="font-normal">Market</th>
-          <th className="font-normal">Initial margin (est.)</th>
-          <th className="font-normal">Maintenance margin (est.)</th>
-        </tr>
-      </thead>
-      <tbody>
-        {perpPositions.map((position) => {
-          const settings = marketSettings(position.market);
-          if (!settings) return null;
-          const estimate = estimateOrderCost({
-            side: position.side,
-            quantity: position.quantity,
-            price: position.entryPrice,
-            leverage: position.leverage,
-            takerFeeBps: settings.takerFeeBps,
-          });
-          const display = displayOrderCost(estimate, settings.priceDecimals);
-          return (
-            <tr key={position.market} className="border-line-subtle border-t">
-              <td className="py-1.5">{position.market}</td>
-              <td>{formatMoney(display.initialMargin)}</td>
-              <td>{formatMoney(display.maintenanceMargin)}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <>
+      <table className="tnum w-full text-left text-[13px]">
+        <thead className="text-faint text-[11px] uppercase">
+          <tr>
+            <th className="font-normal">Market</th>
+            <th className="font-normal">Margin at max leverage (est.)</th>
+            <th className="font-normal">Closest est. liquidation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {perpPositions.map((position) => {
+            const settings = marketSettings(position.market);
+            if (!settings) return null;
+            const size = Number(position.size);
+            // sim-noirwire does not report the margin actually posted for an
+            // existing position, only its size and entry price, so the
+            // leverage behind it is unknown; this shows the closest
+            // (most conservative) estimate, at the market's maximum leverage.
+            const estimate = estimateOrderCost({
+              side: size > 0 ? "buy" : "sell",
+              quantity: String(Math.abs(size)),
+              price: position.entryPrice,
+              leverage: settings.maxLeverage,
+              maxLeverage: settings.maxLeverage,
+            });
+            const display = displayOrderCost(estimate, priceDecimalsOf(settings));
+            return (
+              <tr key={position.market} className="border-line-subtle border-t">
+                <td className="py-1.5">{position.market}</td>
+                <td>{formatMoney(display.initialMargin)}</td>
+                <td>
+                  {display.liquidationPrice
+                    ? formatDecimal(display.liquidationPrice, priceDecimalsOf(settings))
+                    : UNAVAILABLE}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className={`${sectionLabel} mt-2`}>Estimate, not a venue guarantee</p>
+      <p className="text-faint mt-1 text-[11px] leading-relaxed">
+        sim-noirwire does not publish a maintenance margin ratio or fee over the wire; this assumes
+        half the implied initial margin (10000 / max leverage) and a 0.05% taker fee, both read from
+        its current engine configuration, not from the API. See docs/BUILD-NOTES.md.
+      </p>
+    </>
   );
 }

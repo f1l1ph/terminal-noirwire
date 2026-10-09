@@ -1,14 +1,27 @@
-import { formatClockTime, formatDuration, formatMoney, formatSize } from "@/lib/format";
-import type { OpenOrder, OwnFill } from "@/lib/trading/types";
-import { btnGhost, panel } from "@/components/ui/styles";
+import { formatClockTime, formatDecimal, formatDuration, formatRelativeAge } from "@/lib/format";
+import type { OwnFillRecord } from "@/lib/trading/tags";
+import type { OpenOrder, Side } from "@/lib/trading/types";
+import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
 
 export type RailStepType =
-  "submitted" | "confirmed" | "resting" | "partiallyFilled" | "filled" | "rejected";
+  "submitted" | "confirmed" | "resting" | "partiallyFilled" | "filled" | "cancelled" | "rejected";
 
 export interface RailStep {
   type: RailStepType;
   at: number;
   detail?: string;
+}
+
+export interface OrderDescriptor {
+  market: string;
+  side: Side;
+  type: "market" | "limit";
+  price: string;
+  size: string;
+  baseUnit: string;
+  quoteUnit: string;
+  priceDecimals: number;
+  sizeDecimals: number;
 }
 
 const STEP_LABELS: Record<RailStepType, string> = {
@@ -17,94 +30,116 @@ const STEP_LABELS: Record<RailStepType, string> = {
   resting: "Resting",
   partiallyFilled: "Partially filled",
   filled: "Filled",
+  cancelled: "Cancelled",
   rejected: "Rejected",
 };
 
+function describeOrder(order: OrderDescriptor): string {
+  const direction = order.side === "buy" ? "Long" : "Short";
+  const size = formatDecimal(order.size, order.sizeDecimals);
+  const typeLabel =
+    order.type === "market"
+      ? `Market, max ${order.side === "buy" ? "buy" : "sell"} ${formatDecimal(order.price, order.priceDecimals)} ${order.quoteUnit}`
+      : `Limit ${formatDecimal(order.price, order.priceDecimals)} ${order.quoteUnit}`;
+  return `${direction} ${size} ${order.baseUnit} · ${typeLabel}`;
+}
+
 export function WitnessRail({
+  order,
   steps,
   openOrder,
-  fills,
-  sizeDecimals,
+  ownFills,
   clientDurationMs,
-  onCancel,
+  onCancelAll,
   cancelling,
+  now,
 }: {
+  order: OrderDescriptor | null;
   steps: RailStep[];
   openOrder: OpenOrder | null;
-  fills: OwnFill[];
-  sizeDecimals: number;
+  ownFills: OwnFillRecord[];
   clientDurationMs: number | null;
-  onCancel: () => void;
+  onCancelAll: () => void;
   cancelling: boolean;
+  now: number;
 }) {
-  if (steps.length === 0) {
+  if (!order || steps.length === 0) {
     return (
-      <div className={`${panel} p-4`}>
-        <p className="text-faint text-[11px] tracking-wide uppercase">Witness rail</p>
-        <p className="text-dim mt-3 text-[13px]">
+      <div className={`${panel} flex min-h-0 flex-1 flex-col p-3`}>
+        <p className={sectionLabel}>Witness rail</p>
+        <p className="text-dim mt-2 text-[13px]">
           Your orders appear here. Public fills appear in the tape.
         </p>
       </div>
     );
   }
 
+  const lastStep = steps.at(-1);
+
   return (
-    <div className={`${panel} p-4`} aria-live="polite">
-      <p className="text-faint text-[11px] tracking-wide uppercase">Witness rail</p>
-      <ol className="mt-3 flex flex-col gap-2">
+    <div className={`${panel} flex min-h-0 flex-1 flex-col overflow-y-auto p-3`} aria-live="polite">
+      <p className={sectionLabel}>Witness rail</p>
+      <p className="text-ink mt-2 text-[13px] font-medium">{describeOrder(order)}</p>
+
+      <ol className="mt-2 flex flex-col gap-1.5">
         {steps.map((step, index) => (
           <li
             key={`${step.type}-${index}`}
-            className="rail-step-in flex items-baseline justify-between gap-3 text-[13px]"
+            className="rail-step-in flex items-baseline justify-between gap-3 text-[12px]"
           >
             <span className={step.type === "rejected" ? "text-danger" : "text-ink"}>
               {STEP_LABELS[step.type]}
             </span>
-            <span className="tnum text-faint text-[12px]">
-              {formatClockTime(new Date(step.at))}
-            </span>
+            <span className="tnum text-faint">{formatClockTime(new Date(step.at))}</span>
           </li>
         ))}
       </ol>
-      {steps.at(-1)?.type === "rejected" && steps.at(-1)?.detail && (
-        <p className="text-danger mt-2 text-[12px]">{steps.at(-1)?.detail}</p>
+
+      {lastStep?.type === "rejected" && lastStep.detail && (
+        <p className="text-danger mt-1 text-[12px]">{lastStep.detail}</p>
       )}
+      {lastStep?.type === "cancelled" && lastStep.detail && (
+        <p className="text-faint mt-1 text-[12px]">{lastStep.detail}</p>
+      )}
+
       {clientDurationMs !== null && (
-        <p className="tnum text-faint mt-3 text-[12px]">
-          Click to confirmation: {formatDuration(clientDurationMs)} · this device
+        <p className="tnum text-faint mt-2 text-[12px]">
+          This device, click to venue response: {formatDuration(clientDurationMs)}
         </p>
       )}
+
       {openOrder && (
-        <div className="border-line-subtle mt-3 border-t pt-3 text-[13px]">
+        <div className="border-line-subtle mt-2 border-t pt-2 text-[12px]">
           <p className="tnum text-ink">
-            {formatSize(openOrder.quantity, sizeDecimals)} at{" "}
-            {openOrder.limitPrice ? openOrder.limitPrice : "market"} · remaining{" "}
-            {formatSize(
-              (Number(openOrder.quantity) - Number(openOrder.filledQuantity)).toString(),
-              sizeDecimals,
+            Remaining {formatDecimal(openOrder.remainingSize, order.sizeDecimals)} {order.baseUnit}{" "}
+            of {formatDecimal(openOrder.size, order.sizeDecimals)} {"·"} age{" "}
+            {formatRelativeAge(
+              Math.max(now - (steps.find((s) => s.type === "resting")?.at ?? now), 0),
             )}
           </p>
-          <p className="text-faint mt-1 text-[12px]">Order {openOrder.orderId}</p>
+          <p className="text-faint mt-0.5">Order {openOrder.orderId}</p>
           <button
             type="button"
-            className={`${btnGhost} mt-2 h-9 px-3 text-[12px]`}
+            className={`${btnGhost} mt-2 h-8 w-full px-3 text-[12px]`}
             disabled={cancelling}
-            onClick={onCancel}
+            onClick={onCancelAll}
           >
-            {cancelling ? "Cancelling…" : "Cancel order"}
+            {cancelling ? "Cancelling…" : `Cancel all ${order.market} orders`}
           </button>
         </div>
       )}
-      {fills.length > 0 && (
-        <div className="border-line-subtle mt-3 border-t pt-3">
-          <p className="text-faint text-[11px] tracking-wide uppercase">Fills</p>
-          <ul className="mt-2 flex flex-col gap-1">
-            {fills.map((fill) => (
-              <li key={fill.fillId} className="tnum flex justify-between text-[12px]">
+
+      {ownFills.length > 0 && (
+        <div className="border-line-subtle mt-2 border-t pt-2">
+          <p className={sectionLabel}>Fills</p>
+          <ul className="mt-1 flex flex-col gap-1">
+            {ownFills.map((fill) => (
+              <li key={fill.sequence} className="tnum flex justify-between text-[12px]">
                 <span className="text-ink">
-                  {formatSize(fill.quantity, sizeDecimals)} @ {fill.price}
+                  {formatDecimal(fill.size, order.sizeDecimals)} {order.baseUnit} @{" "}
+                  {formatDecimal(fill.price, order.priceDecimals)}
                 </span>
-                <span className="text-faint">fee {formatMoney(fill.fee)}</span>
+                <span className="text-faint">{fill.role}</span>
               </li>
             ))}
           </ul>

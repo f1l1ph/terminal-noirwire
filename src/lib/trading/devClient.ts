@@ -1,16 +1,19 @@
 import {
-  cancelResponseSchema,
+  cancelAllResponseSchema,
+  devOrderResponseSchema,
+  errorResponseSchema,
   fundResponseSchema,
-  placeOrderResponseSchema,
-  traderStateSchema,
-} from "./schemas";
+  traderStateResponseSchema,
+} from "../sim-api/schema";
 import type {
+  Balance,
   CancelResult,
-  FundResult,
+  FundOutcome,
   NewOrderInput,
   PlaceOrderResult,
-  TradingClient,
+  Position,
   TraderState,
+  TradingClient,
   WalletIdentity,
 } from "./types";
 
@@ -35,13 +38,26 @@ export interface DevTradingClientOptions {
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 
+function toBalance(asset: string, wire: { balance: string; locked: string }): Balance {
+  const availableNum = Number(wire.balance);
+  const reservedNum = Number(wire.locked);
+  const total =
+    Number.isFinite(availableNum) && Number.isFinite(reservedNum)
+      ? (availableNum + reservedNum).toFixed(6)
+      : wire.balance;
+  return { asset, available: wire.balance, reserved: wire.locked, total };
+}
+
+function toPosition(market: string, wire: { size: string; entryPrice: string }): Position {
+  return { market, size: wire.size, entryPrice: wire.entryPrice };
+}
+
 /**
- * Talks to the simulation service's local-development trading routes.
- * Assumptions about request and response shapes are recorded in
- * docs/BUILD-NOTES.md; the biggest is that there is no per-order cancel
- * route, only cancel-all, so `cancelOrder` cancels every resting order in
- * the market (correct for a single resting order, which is the dev/test
- * flow this terminal exercises).
+ * Talks to sim-noirwire's local-development trading routes (`POST
+ * /v1/dev/orders`, `POST /v1/dev/cancel-all`, `GET /v1/dev/trader`, `POST
+ * /v1/fund`), registered only when that service runs with `VENUE=memory`
+ * and `DEV_TRADING=1`. Shapes come from `src/lib/sim-api/schema.ts`, read
+ * from sim-noirwire's own source.
  */
 export class DevTradingClient implements TradingClient {
   readonly mode = "dev" as const;
@@ -65,19 +81,43 @@ export class DevTradingClient implements TradingClient {
   }
 
   async openAccount(wallet: WalletIdentity): Promise<void> {
-    // There is no documented open-account route. GET /v1/dev/trader for an
-    // address the venue has not seen yet is treated as "not opened"; fund()
-    // is what actually creates the trader server-side.
+    // There is no open-account route; GET /v1/dev/trader for an address the
+    // venue has not seen yet still answers 200 with empty balances (the
+    // venue opens a trader lazily), so this is a best-effort warm-up, not a
+    // requirement.
     try {
       await this.fetchState(wallet);
     } catch {
-      // Not yet opened. fund() opens it.
+      // Ignored; fund() or placeOrder() will still work.
     }
   }
 
-  async fund(wallet: WalletIdentity): Promise<FundResult> {
-    const response = await this.post("/v1/fund", { address: wallet.address });
-    return fundResponseSchema.parse(response);
+  async fund(wallet: WalletIdentity): Promise<FundOutcome> {
+    const url = `${this.baseUrl}/v1/fund`;
+    let response: Response;
+    try {
+      response = await this.fetchFn(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ address: wallet.address }),
+      });
+    } catch {
+      return { kind: "error", message: `Could not reach the simulation service at ${url}` };
+    }
+    if (response.status === 409) return { kind: "alreadyFunded" };
+    if (response.status === 429) return { kind: "rateLimited" };
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const parsedError = errorResponseSchema.safeParse(body);
+      return {
+        kind: "error",
+        message: parsedError.success
+          ? parsedError.data.error
+          : `${url} answered ${response.status}`,
+      };
+    }
+    const granted = fundResponseSchema.parse(await response.json());
+    return { kind: "granted", amount: granted.amount, reference: granted.reference };
   }
 
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
@@ -85,36 +125,37 @@ export class DevTradingClient implements TradingClient {
       address: wallet.address,
       market: order.market,
       side: order.side,
-      orderType: order.orderType,
-      quantity: order.quantity,
-      limitPrice: order.limitPrice,
-      protectionPrice: order.protectionPrice,
-      timeInForce: order.timeInForce,
-      postOnly: order.postOnly ?? false,
-      reduceOnly: order.reduceOnly ?? false,
-      leverage: order.leverage,
-      clientOrderId: order.clientOrderId,
-      clientTag: order.clientTag,
+      type: order.type,
+      price: order.price,
+      size: order.size,
+      reduceOnly: order.reduceOnly,
     });
-    return placeOrderResponseSchema.parse(response);
+    return devOrderResponseSchema.parse(response);
   }
 
-  async cancelOrder(
-    wallet: WalletIdentity,
-    market: string,
-    _orderId: string,
-  ): Promise<CancelResult> {
-    return this.cancelAll(wallet, market);
-  }
-
-  async cancelAll(wallet: WalletIdentity, market: string): Promise<CancelResult> {
+  async cancelAllInMarket(wallet: WalletIdentity, market: string): Promise<CancelResult> {
     const response = await this.post("/v1/dev/cancel-all", { address: wallet.address, market });
-    return cancelResponseSchema.parse(response);
+    return cancelAllResponseSchema.parse(response);
   }
 
   async fetchState(wallet: WalletIdentity): Promise<TraderState> {
     const response = await this.get(`/v1/dev/trader?address=${encodeURIComponent(wallet.address)}`);
-    return traderStateSchema.parse(response);
+    const wire = traderStateResponseSchema.parse(response);
+    const balances: Record<string, Balance> = {};
+    for (const [asset, balance] of Object.entries(wire.balances)) {
+      balances[asset] = toBalance(asset, balance);
+    }
+    const positions: Record<string, Position> = {};
+    for (const [market, position] of Object.entries(wire.positions)) {
+      positions[market] = toPosition(market, position);
+    }
+    return {
+      trader: wire.trader,
+      equity: wire.equity,
+      balances,
+      positions,
+      openOrders: wire.openOrders,
+    };
   }
 
   subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void {

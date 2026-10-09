@@ -5,23 +5,36 @@ import {
   mulFixedPoint,
   toFixedPoint,
 } from "./decimal";
-import type { OrderSide } from "./types";
+import type { Side } from "./types";
 
 /**
- * The maintenance margin used for the client-side liquidation estimate.
- * There is no documented risk-engine read endpoint in sim-noirwire's design
- * (see docs/BUILD-NOTES.md): this is a plain, fixed maintenance rate against
- * notional, the same shape most perpetual venues publish, not a number the
- * venue itself has confirmed. The estimate is always labelled as such.
+ * `GET /v1/markets` does not expose a taker fee, a maintenance margin ratio,
+ * or an initial margin ratio (only `maxLeverage`): see
+ * sim-noirwire/src/http/routes/markets.ts. These two constants are this
+ * terminal's estimate, read from the same repository's engine source
+ * (`src/engine/markets.ts`) rather than from the wire contract, so every
+ * figure built from them is labelled an estimate, never an authoritative
+ * venue number. docs/BUILD-NOTES.md asks sim-noirwire to publish both.
  */
-export const MAINTENANCE_MARGIN_BPS = 50;
+export const ASSUMED_TAKER_FEE_BPS = 5;
+
+/** A market's implied initial margin ratio from its advertised `maxLeverage` (10000 / maxLeverage). Null for a market with no leverage (spot). */
+export function impliedInitialMarginBps(maxLeverage: number): number | null {
+  if (maxLeverage <= 0) return null;
+  return Math.round(10_000 / maxLeverage);
+}
+
+/** Estimated as half the implied initial margin, the common convention and, for this service's current markets, the actual value. */
+export function impliedMaintenanceMarginBps(maxLeverage: number): number | null {
+  const initial = impliedInitialMarginBps(maxLeverage);
+  return initial === null ? null : Math.round(initial / 2);
+}
 
 export interface OrderCostEstimate {
   notional: bigint;
   fee: bigint;
   initialMargin: bigint;
-  maintenanceMargin: bigint;
-  /** Null when there isn't enough information to estimate (e.g. no leverage). */
+  /** Null when the market has no leverage concept (spot). */
   liquidationPrice: bigint | null;
 }
 
@@ -29,42 +42,43 @@ export interface OrderCostEstimateDisplay {
   notional: string;
   fee: string;
   initialMargin: string;
-  maintenanceMargin: string;
   liquidationPrice: string | null;
 }
 
 /**
- * All-integer (bigint, fixed-point) estimate of notional, fee, initial and
- * maintenance margin, and an estimated liquidation price for an opening
- * perp order. For a spot order, pass `leverage: 1` and ignore the margin
- * and liquidation fields in the result.
+ * All-integer (bigint, fixed-point) estimate of notional, fee, initial
+ * margin, and an estimated liquidation price for an opening perp order. For
+ * a spot order, pass `maxLeverage: 0` and ignore the margin and liquidation
+ * fields in the result.
  */
 export function estimateOrderCost(params: {
-  side: OrderSide;
+  side: Side;
   quantity: string;
   price: string;
   leverage: number;
-  takerFeeBps: number;
+  maxLeverage: number;
+  takerFeeBps?: number;
 }): OrderCostEstimate {
   const quantityFp = toFixedPoint(params.quantity);
   const priceFp = toFixedPoint(params.price);
   const notional = mulFixedPoint(quantityFp, priceFp);
-  const fee = bpsOfFixedPoint(notional, params.takerFeeBps);
-  const leverageFp = toFixedPoint(String(params.leverage));
-  const initialMargin = params.leverage > 0 ? divFixedPoint(notional, leverageFp) : notional;
-  const maintenanceMargin = bpsOfFixedPoint(notional, MAINTENANCE_MARGIN_BPS);
+  const fee = bpsOfFixedPoint(notional, params.takerFeeBps ?? ASSUMED_TAKER_FEE_BPS);
+  const isPerp = params.maxLeverage > 0;
+  const leverageFp = toFixedPoint(String(Math.max(params.leverage, 1)));
+  const initialMargin = isPerp ? divFixedPoint(notional, leverageFp) : notional;
 
   let liquidationPrice: bigint | null = null;
-  if (params.leverage > 0 && priceFp > 0n) {
+  const maintenanceBps = impliedMaintenanceMarginBps(params.maxLeverage);
+  if (isPerp && maintenanceBps !== null && priceFp > 0n) {
     const leverageInverse = divFixedPoint(toFixedPoint("1"), leverageFp);
-    const maintenanceRate = divFixedPoint(maintenanceMargin, notional === 0n ? 1n : notional);
+    const maintenanceRate = bpsOfFixedPoint(toFixedPoint("1"), maintenanceBps);
     const buffer = leverageInverse - maintenanceRate;
     const delta = mulFixedPoint(priceFp, buffer);
     liquidationPrice = params.side === "buy" ? priceFp - delta : priceFp + delta;
     if (liquidationPrice < 0n) liquidationPrice = 0n;
   }
 
-  return { notional, fee, initialMargin, maintenanceMargin, liquidationPrice };
+  return { notional, fee, initialMargin, liquidationPrice };
 }
 
 export function displayOrderCost(
@@ -76,7 +90,6 @@ export function displayOrderCost(
     notional: fromFixedPoint(estimate.notional, moneyDecimals),
     fee: fromFixedPoint(estimate.fee, moneyDecimals),
     initialMargin: fromFixedPoint(estimate.initialMargin, moneyDecimals),
-    maintenanceMargin: fromFixedPoint(estimate.maintenanceMargin, moneyDecimals),
     liquidationPrice:
       estimate.liquidationPrice === null
         ? null

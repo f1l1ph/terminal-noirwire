@@ -1,15 +1,15 @@
 import {
-  candlesSchema,
-  healthSchema,
-  marketListSchema,
-  tapeSchema,
-  venueStatsSchema,
+  candlesResponseSchema,
+  healthResponseSchema,
+  marketsResponseSchema,
+  statsResponseSchema,
+  tapeResponseSchema,
   type Candle,
   type CandleInterval,
   type MarketInfo,
   type PublicFill,
-  type VenueStats,
-} from "./types";
+  type StatsResponse,
+} from "@/lib/sim-api/schema";
 
 export class MarketDataRequestError extends Error {
   constructor(
@@ -37,11 +37,11 @@ async function getJson(baseUrl: string, path: string): Promise<unknown> {
 }
 
 export async function fetchHealth(baseUrl: string) {
-  return healthSchema.parse(await getJson(baseUrl, "/v1/health"));
+  return healthResponseSchema.parse(await getJson(baseUrl, "/v1/health"));
 }
 
 export async function fetchMarkets(baseUrl: string): Promise<MarketInfo[]> {
-  return marketListSchema.parse(await getJson(baseUrl, "/v1/markets"));
+  return marketsResponseSchema.parse(await getJson(baseUrl, "/v1/markets")).markets;
 }
 
 export async function fetchTape(
@@ -50,7 +50,7 @@ export async function fetchTape(
   limit = 100,
 ): Promise<PublicFill[]> {
   const path = `/v1/tape?market=${encodeURIComponent(market)}&limit=${limit}`;
-  return tapeSchema.parse(await getJson(baseUrl, path));
+  return tapeResponseSchema.parse(await getJson(baseUrl, path)).fills;
 }
 
 export async function fetchCandles(
@@ -60,9 +60,9 @@ export async function fetchCandles(
   limit = 200,
 ): Promise<Candle[]> {
   const path = `/v1/candles?market=${encodeURIComponent(market)}&interval=${interval}&limit=${limit}`;
-  return candlesSchema.parse(await getJson(baseUrl, path));
+  return candlesResponseSchema.parse(await getJson(baseUrl, path)).candles;
 }
 
-export async function fetchStats(baseUrl: string): Promise<VenueStats> {
-  return venueStatsSchema.parse(await getJson(baseUrl, "/v1/stats"));
+export async function fetchStats(baseUrl: string): Promise<StatsResponse> {
+  return statsResponseSchema.parse(await getJson(baseUrl, "/v1/stats"));
 }

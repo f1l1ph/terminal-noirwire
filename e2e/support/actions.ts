@@ -2,12 +2,12 @@ import type { Page } from "@playwright/test";
 import { expect } from "./test";
 
 export async function createWallet(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Create test wallet" }).first().click();
-  await expect(page.getByRole("button", { name: "Get 5,000 test USD" })).toBeVisible();
+  await page.getByRole("button", { name: "Create test wallet" }).click();
+  await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
 }
 
 export async function fundWallet(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Get 5,000 test USD" }).click();
+  await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
   await expect(page.getByText("Available: 5,000.00 nUSD")).toBeVisible();
 }
 

@@ -119,13 +119,18 @@ describe("MarketSocket reconnect", () => {
     );
     socket.connect();
     sockets[0].onmessage?.({
-      data: JSON.stringify({ type: "price", market: "NSOL-PERP", price: "150.25", time: 1 }),
+      data: JSON.stringify({
+        type: "price",
+        market: "NSOL-PERP",
+        price: "150.25",
+        publishedAtMs: 1,
+      }),
     });
     expect(onMessage).toHaveBeenCalledWith({
       type: "price",
       market: "NSOL-PERP",
       price: "150.25",
-      time: 1,
+      publishedAtMs: 1,
     });
 
     sockets[0].onmessage?.({ data: JSON.stringify({ type: "unknown" }) });

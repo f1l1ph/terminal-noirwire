@@ -17,7 +17,11 @@ export function useMarketDataState(store: MarketDataStore): MarketDataState {
 /**
  * Wires one MarketDataStore to the simulation service: fetches markets,
  * tape and candles once, then keeps everything live over one websocket
- * with reconnect and backoff. Created once per terminal session.
+ * with reconnect and backoff. sim-noirwire's stream is scoped to one
+ * market per connection (`WS /v1/stream?market=`), so switching the
+ * selected market closes the old socket and opens a new one; `stats`
+ * messages go to every connected socket regardless of its market, so
+ * nothing is lost across that reconnect.
  */
 export function useMarketDataConnection(
   store: MarketDataStore,
@@ -25,6 +29,7 @@ export function useMarketDataConnection(
   simWsUrl: string,
   selectedMarket: string,
   interval: CandleInterval,
+  retryToken = 0,
 ): void {
   useEffect(() => {
     let cancelled = false;
@@ -45,21 +50,25 @@ export function useMarketDataConnection(
         if (!cancelled) store.setInitialTape(selectedMarket, tape);
       })
       .catch(() => {});
+    store.setCandlesLoading(selectedMarket, interval, true);
     fetchCandles(simUrl, selectedMarket, interval)
       .then((candles) => {
         if (!cancelled) store.setInitialCandles(selectedMarket, interval, candles);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) store.setCandlesLoading(selectedMarket, interval, false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [store, simUrl, selectedMarket, interval]);
+  }, [store, simUrl, selectedMarket, interval, retryToken]);
 
   useEffect(() => {
     let cancelled = false;
     fetchStats(simUrl)
       .then((stats) => {
-        if (!cancelled) store.applyMessage({ type: "stats", stats });
+        if (!cancelled) store.setStats(stats);
       })
       .catch(() => {});
     return () => {
@@ -68,8 +77,9 @@ export function useMarketDataConnection(
   }, [store, simUrl]);
 
   useEffect(() => {
+    const url = `${simWsUrl}?market=${encodeURIComponent(selectedMarket)}`;
     const socket = new MarketSocket(
-      simWsUrl,
+      url,
       {
         onMessage: (message) => store.applyMessage(message),
         onStateChange: (state) => store.setConnectionState(state),
@@ -78,7 +88,7 @@ export function useMarketDataConnection(
     );
     socket.connect();
     return () => socket.close();
-  }, [store, simWsUrl]);
+  }, [store, simWsUrl, selectedMarket]);
 }
 
 export function useSharedMarketDataStore(): MarketDataStore {

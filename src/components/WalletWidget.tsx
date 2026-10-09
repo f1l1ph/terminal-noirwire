@@ -3,36 +3,18 @@
 import { useState } from "react";
 import { formatShortAddress } from "@/lib/format";
 import type { WalletHookResult } from "@/lib/wallet/useWallet";
-import { btnGhost, btnPrimary, input, panel } from "@/components/ui/styles";
+import { btnGhost, input, panel } from "@/components/ui/styles";
 
 export function WalletWidget({ wallet }: { wallet: WalletHookResult }) {
   const [open, setOpen] = useState(false);
   const [importValue, setImportValue] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
+  // No wallet yet: the order panel is the one place that creates one (never
+  // a second "Create test wallet" button here too).
   if (!wallet.ready) return <span className="text-faint text-[12px]">Loading wallet…</span>;
-
-  if (!wallet.account) {
-    return (
-      <button
-        type="button"
-        className={`${btnPrimary} h-9 px-3 text-[13px]`}
-        disabled={creating}
-        onClick={() => {
-          setCreating(true);
-          try {
-            wallet.create();
-          } finally {
-            setCreating(false);
-          }
-        }}
-      >
-        {creating ? "Creating…" : "Create test wallet"}
-      </button>
-    );
-  }
+  if (!wallet.account) return null;
 
   return (
     <div className="relative">

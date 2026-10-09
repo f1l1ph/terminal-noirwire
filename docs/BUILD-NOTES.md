@@ -27,7 +27,7 @@ the real service.
 3. **No account-state push channel is documented** (the public websocket
    covers `price` / `fill` / `candle` / `stats` only). `DevTradingClient`
    polls `GET /v1/dev/trader` once immediately on `subscribe()` and then
-   every `pollIntervalMs` (default 1000 ms — lowered from an initial 2000 ms
+   every `pollIntervalMs` (default 1000 ms - lowered from an initial 2000 ms
    so a fill shows up within about a second, closer to the "fast as a
    centralised exchange" goal). A position, fill or cancellation can
    therefore lag up to one poll interval behind the witness rail's
@@ -52,7 +52,7 @@ the real service.
    0.50% maintenance-margin assumption against notional) and every place it
    is shown is labelled `(est.)`. At minimum leverage this estimate is
    correctly very close to zero (it would take price falling by roughly the
-   inverse of leverage to erase the margin) — a near-zero number at 1x is
+   inverse of leverage to erase the margin) - a near-zero number at 1x is
    expected output, not a bug.
 7. **No time-in-force enumeration is documented** on `MarketInfo`. Limit
    orders are always sent with `timeInForce: "gtc"`. The concept's
@@ -67,7 +67,7 @@ the real service.
    updating; nothing else does.
 9. `e2e/fake-sim/server.mts`'s `/v1/fund` grants another 5,000 nUSD on every
    call, not once per address as the design doc's "one grant per address"
-   says — a deliberate simplification for repeatable local test runs, not a
+   says - a deliberate simplification for repeatable local test runs, not a
    claim about the real service.
 
 ## Deviations from docs/CONCEPT.md
@@ -78,7 +78,7 @@ These are required by the brief's explicit overrides, or cut for scope
 - **No separate routed screens for "Markets" / "Activity".** The top bar's
   nav items from the concept's ASCII layout are folded into the one
   terminal screen (`MarketSwitcher` + `AccountDock` tabs already cover that
-  ground) rather than built as their own pages — in the spirit of "one idea
+  ground) rather than built as their own pages - in the spirit of "one idea
   per screen" and the brief's own 3-day-build cuts (no saved layouts, no
   cross-market search).
 - **No review sheet.** Per the task's explicit override: the order summary
@@ -91,8 +91,8 @@ These are required by the brief's explicit overrides, or cut for scope
   fully closes asks again, unless "Do not ask again" was ticked).
 - **"always with the word too"** (the brief's phrasing for the safe/danger
   side-button and tape-row override) is read as: color never carries
-  direction alone, it is always paired with the literal word — "Buy"/"Sell"
-  on buttons, "buy"/"sell" on tape rows — not as literally appending the
+  direction alone, it is always paired with the literal word - "Buy"/"Sell"
+  on buttons, "buy"/"sell" on tape rows - not as literally appending the
   word "too" to any label. `Place test long` / `Place test short` are the
   submit-button labels; no "too" suffix is added anywhere.
 - **No time-in-force selector, no Post only control.** See assumption 7
@@ -102,11 +102,14 @@ These are required by the brief's explicit overrides, or cut for scope
   feed to drive one honestly (assumption 6). Instead, every open perp
   position's estimated liquidation price is shown in the Positions and
   Margin tabs of the account dock, each labelled an estimate.
-- **The chart is one ivory line series**, not candlesticks, reading
-  section 9 literally ("a thin ivory line and quiet event ticks"), built
-  from `/v1/candles` closes with the live mark as the newest point, plus
-  neutral (non-side-colored) circular markers for public fills — "quiet,"
-  per the same section, rather than colored by taker side.
+- **The chart is real OHLC candles plus a volume histogram** (second pass,
+  superseding the original one-line-series build): `/v1/candles` rows map
+  directly onto `lightweight-charts`' candlestick + histogram series, with
+  the live mark drawn as a price line and fill markers split into "yours"
+  (above the bar) and public (inside the bar, dimmer) - no client tag is
+  sent or expected; "yours" is read off the trader's own reported fill
+  sequence numbers against the public tape's sequence field, so an
+  observer watching the tape alone can never link a fill to a trader.
 - **`ConnectionStatus` shows "Connection lost" for both `reconnecting` and
   `closed`** (only the dot color differs): an unexpected drop always
   retries on its own, so there is no action for the trader to take either
@@ -124,7 +127,7 @@ Unit tests never caught it because they always inject a plain mock function
 for these; only the Playwright suite, against a real browser, did
 (`DevTradingClient` and `MarketSocket` now wrap every such default in an
 arrow function that performs the call bare). `lightweight-charts`' own
-`setMarkers` also required its input sorted ascending by time — the public
+`setMarkers` also required its input sorted ascending by time - the public
 tape is stored newest-first for display, so markers are now re-sorted
 before being handed to the chart.
 

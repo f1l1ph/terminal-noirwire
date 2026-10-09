@@ -1,4 +1,8 @@
-import { MIN_LATENCY_SAMPLE_SIZE, type VenueStats } from "./types";
+import { MIN_LATENCY_SAMPLE_SIZE, type StatsResponse } from "./types";
+
+export function candlesLoadingKey(market: string, interval: string): string {
+  return `${market}:${interval}`;
+}
 
 export const STALE_MARK_MS = 10_000;
 export const STALE_STATS_MS = 30_000;
@@ -19,41 +23,37 @@ export function isStale(
 
 export type LatencyDisplay =
   | { status: "unavailable"; lastValidAt: number | null }
-  | { status: "insufficient"; sampleCount: number }
+  | { status: "insufficient"; sampleSize: number }
   | {
       status: "ok";
       p50Ms: number;
       p99Ms: number;
-      sampleCount: number;
-      windowStart: number;
-      windowEnd: number;
-      updatedAt: number;
+      sampleSize: number;
+      measuredFrom: string;
+      updatedAtMs: number;
     };
 
 /**
  * Never carries a "fast" label over stale data: a venue-wide reading past
  * STALE_STATS_MS reports unavailable even if its own numbers once looked
  * good, and a reading below the displayed sample threshold says so with the
- * real count rather than a confident p50/p99.
+ * real count rather than a confident p50/p99. `/v1/stats` has no rolling
+ * time window in its wire shape (only `measuredFrom` and a sample size), so
+ * this never invents one.
  */
-export function latencyDisplay(stats: VenueStats | null, now: number): LatencyDisplay {
-  if (!stats || isStale(stats.updatedAt, now, STALE_STATS_MS)) {
-    return { status: "unavailable", lastValidAt: stats?.updatedAt ?? null };
+export function latencyDisplay(stats: StatsResponse | null, now: number): LatencyDisplay {
+  if (!stats || isStale(stats.updatedAtMs, now, STALE_STATS_MS)) {
+    return { status: "unavailable", lastValidAt: stats?.updatedAtMs ?? null };
   }
-  if (
-    stats.latency.sampleCount < MIN_LATENCY_SAMPLE_SIZE ||
-    stats.latency.p50Ms === null ||
-    stats.latency.p99Ms === null
-  ) {
-    return { status: "insufficient", sampleCount: stats.latency.sampleCount };
+  if (stats.latency.sampleSize < MIN_LATENCY_SAMPLE_SIZE) {
+    return { status: "insufficient", sampleSize: stats.latency.sampleSize };
   }
   return {
     status: "ok",
-    p50Ms: stats.latency.p50Ms,
+    p50Ms: stats.latency.medianMs,
     p99Ms: stats.latency.p99Ms,
-    sampleCount: stats.latency.sampleCount,
-    windowStart: stats.latency.windowStart,
-    windowEnd: stats.latency.windowEnd,
-    updatedAt: stats.updatedAt,
+    sampleSize: stats.latency.sampleSize,
+    measuredFrom: stats.latency.measuredFrom,
+    updatedAtMs: stats.updatedAtMs,
   };
 }

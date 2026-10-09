@@ -18,6 +18,9 @@ const BUILD_ENV = {
 export default defineConfig({
   testDir: "./e2e",
   testMatch: "*.spec.ts",
+  // e2e/live/*.live.spec.ts needs a real sim-noirwire instance; it runs
+  // only through `make e2e-live` (playwright.live.config.ts), never here.
+  testIgnore: "live/**",
   // Serial on purpose: the specs share one app server and one fake sim,
   // which each spec resets and steers.
   fullyParallel: false,
