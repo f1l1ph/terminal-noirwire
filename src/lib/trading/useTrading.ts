@@ -48,6 +48,16 @@ export function useTrading(
 ) {
   const client = useMemo(() => createTradingClient(marketSettingsLookup), [marketSettingsLookup]);
   const [state, setState] = useState<TraderState>(EMPTY_STATE);
+  // The one piece of truth the footer's sync status reads (item 8 of the
+  // second design review): set every time this hook actually writes `state`
+  // from the venue, including the initial subscribe on reload, so the
+  // footer can never say "not yet synced" beside a dock that already shows
+  // a position - the two now read the same event, not two independent ones.
+  const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
+  const setStateSynced = useCallback((next: TraderState) => {
+    setState(next);
+    setLastSyncedAtMs(Date.now());
+  }, []);
   const [ownTags, setOwnTags] = useState<ReadonlySet<string>>(new Set());
   const [rollupSecrets, setRollupSecrets] = useState<Uint8Array[]>([]);
   const ownTagsRef = useRef<Set<string>>(new Set());
@@ -80,12 +90,13 @@ export function useTrading(
   useEffect(() => {
     if (!wallet) return;
     return client.subscribe(walletOf(wallet), (next) => {
-      setState(next);
+      setStateSynced(next);
       for (const order of next.openOrders) addOwnTag(order.tag);
     });
-  }, [client, wallet, addOwnTag]);
+  }, [client, wallet, addOwnTag, setStateSynced]);
 
   const effectiveState = wallet ? state : EMPTY_STATE;
+  const effectiveLastSyncedAtMs = wallet ? lastSyncedAtMs : null;
 
   const fund = useCallback(async (): Promise<FundOutcome> => {
     if (!wallet) return { kind: "error", message: "No wallet to fund" };
@@ -111,14 +122,14 @@ export function useTrading(
       // dock can show the pre-fill state until the next poll tick, up to a
       // second later (seen in a screenshot taken right after "Filled").
       try {
-        setState(await client.fetchState(walletOf(wallet)));
+        setStateSynced(await client.fetchState(walletOf(wallet)));
       } catch {
         // The regular subscription will catch up; this was a best-effort nudge.
       }
       return { result, clientDurationMs };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- readRollupSecrets closes over wallet/client, already deps
-    [client, wallet, addOwnTag],
+    [client, wallet, addOwnTag, setStateSynced],
   );
 
   const cancelAllInMarket = useCallback(
@@ -163,16 +174,17 @@ export function useTrading(
       const result = await client.transferBetweenBalances(walletOf(wallet), toSpot, amount);
       if (result.kind === "ok") {
         const next = await client.fetchState(walletOf(wallet));
-        setState(next);
+        setStateSynced(next);
       }
       return result;
     },
-    [client, wallet],
+    [client, wallet, setStateSynced],
   );
 
   return {
     client,
     state: effectiveState,
+    lastSyncedAtMs: effectiveLastSyncedAtMs,
     ownTags,
     rollupSecrets,
     fund,

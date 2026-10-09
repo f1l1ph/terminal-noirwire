@@ -131,11 +131,25 @@ export type TransferResult =
   /** Set only while the outcome is not yet certain; see `PendingSettlement`. */
   | { kind: "pending"; pending: PendingSettlement<TransferResult> };
 
+/**
+ * What one unsigned account read actually established, never collapsed to
+ * a single boolean: `notReturned` is the pass case (no data without
+ * sign-in); `returned` is a real fail (the read came back with data); a
+ * thrown request (timeout, RPC error, transport failure) is `checkFailed`,
+ * never silently counted as `notReturned` - the second design review's
+ * "a failed or errored unsigned read must never show as empty."
+ */
+export type AccountReadOutcome =
+  { kind: "notReturned" } | { kind: "returned" } | { kind: "checkFailed"; reason: string };
+
 export interface PrivacyCheck {
-  viewAddress: string;
-  viewEmpty: boolean;
-  bookAddress: string;
-  bookEmpty: boolean;
+  /** From the deployment description (e.g. "localnet", "devnet"). */
+  network: string;
+  checkedAtMs: number;
+  /** The unsigned RPC endpoint this check read from. */
+  endpoint: string;
+  view: { address: string; outcome: AccountReadOutcome };
+  book: { address: string; outcome: AccountReadOutcome };
 }
 
 export type FundOutcome =

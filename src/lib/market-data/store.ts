@@ -23,6 +23,15 @@ export interface MarketDataState {
   candlesByMarket: Record<string, Partial<Record<CandleInterval, Candle[]>>>;
   /** True from the moment a (market, interval) candle fetch starts until it settles, so the chart can show an honest "Loading" state instead of a shell with nothing in it. */
   candlesLoading: Record<string, boolean>;
+  /**
+   * True only when the initial candle fetch itself threw (network/HTTP
+   * failure) - never set merely because the market genuinely has fewer
+   * than two candles yet. The chart's "Price history unavailable" message
+   * is reserved for this case (second design review, item 1); a market
+   * with real history simply not fetched yet, or a market too new to have
+   * two candles, is a different, non-error state.
+   */
+  candlesError: Record<string, boolean>;
   stats: StatsResponse | null;
   connectionState: ConnectionState;
 }
@@ -34,6 +43,7 @@ function emptyState(): MarketDataState {
     tapeByMarket: {},
     candlesByMarket: {},
     candlesLoading: {},
+    candlesError: {},
     stats: null,
     connectionState: "closed",
   };
@@ -91,6 +101,12 @@ export class MarketDataStore {
     const key = candlesLoadingKey(market, interval);
     if (this.state.candlesLoading[key] === loading) return;
     this.setState({ candlesLoading: { ...this.state.candlesLoading, [key]: loading } });
+  }
+
+  setCandlesError(market: string, interval: CandleInterval, failed: boolean): void {
+    const key = candlesLoadingKey(market, interval);
+    if (this.state.candlesError[key] === failed) return;
+    this.setState({ candlesError: { ...this.state.candlesError, [key]: failed } });
   }
 
   /** The REST `/v1/stats` shape (groups by metric, carries `network`); the websocket's `stats` message has a different shape (groups by user/bot) and goes through `applyMessage` instead. */

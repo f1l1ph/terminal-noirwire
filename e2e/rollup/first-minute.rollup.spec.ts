@@ -93,16 +93,12 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
     await shot(page, "07-spot-filled");
 
     // The public view's second check: this trader's own on-chain view and
-    // the market's book, read unsigned, both come back empty.
-    await page
-      .locator("text=ON-CHAIN ACCOUNTS")
-      .locator("..")
-      .getByRole("button", { name: "Check" })
-      .click();
-    await expect(page.getByText("Your view account, read unsigned: empty")).toBeVisible({
+    // the market's book, read unsigned, both report no data returned.
+    await page.getByRole("button", { name: "Check unsigned accounts" }).click();
+    await expect(page.getByText("Trader view · no data returned")).toBeVisible({
       timeout: 10_000,
     });
-    await expect(page.getByText("This market's book, read unsigned: empty")).toBeVisible();
+    await expect(page.getByText(/book · no data returned/)).toBeVisible();
     await shot(page, "08-privacy-check");
 
     // Own fills marked on the tape before reload.

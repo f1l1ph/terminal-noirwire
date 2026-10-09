@@ -41,6 +41,9 @@ interface MarketConfig {
   basePrice: number;
 }
 
+/** See the partial-fill affordance in `placeOrder` below. */
+const PARTIAL_FILL_TEST_THRESHOLD = 3;
+
 const MARKETS: MarketConfig[] = [
   {
     id: "NSOL-PERP",
@@ -408,6 +411,50 @@ function placeOrder(body: Record<string, unknown>): OrderOutcome {
 
   const willFillNow =
     type === "market" || (side === "buy" ? price >= state.markPrice : price <= state.markPrice);
+
+  // Test-only affordance for the Playwright suite's partial-fill screenshot:
+  // this fake engine is otherwise strictly all-or-nothing (sim-noirwire's
+  // real book can of course match less than a resting order's full size
+  // against thin depth; this fixture has no depth model to produce that
+  // naturally). A size above PARTIAL_FILL_TEST_THRESHOLD fills only that
+  // much now and rests the remainder, exactly like a real partial match.
+  if (willFillNow && size > PARTIAL_FILL_TEST_THRESHOLD) {
+    const filledNow = PARTIAL_FILL_TEST_THRESHOLD;
+    const remaining = round(size - filledNow);
+    recordFill({
+      market,
+      trader,
+      orderId,
+      tag,
+      side,
+      quantity: filledNow,
+      price: type === "market" ? state.markPrice : price,
+      fee: fee * (filledNow / size),
+    });
+    const order: OpenOrder = {
+      orderId,
+      tag,
+      market: market.id,
+      side,
+      type,
+      price: round(price),
+      size: round(size),
+      remainingSize: remaining,
+      reduceOnly: Boolean(body.reduceOnly),
+    };
+    trader.openOrders.set(orderId, order);
+    return {
+      httpStatus: 200,
+      body: devOrderResponseSchema.parse({
+        orderId,
+        tag,
+        status: "partiallyFilled",
+        filledSize: round(filledNow),
+        remainingSize: remaining,
+        reason: null,
+      }),
+    };
+  }
 
   if (!willFillNow) {
     const order: OpenOrder = {

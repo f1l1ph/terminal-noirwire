@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import { formatDecimal, formatPercent, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
@@ -18,6 +21,8 @@ export function MarketContextBar({
   mark: { price: string; time: number } | null;
   now: number;
 }) {
+  const [showDetails, setShowDetails] = useState(false);
+
   if (!market) {
     return (
       <div className={`${panel} text-faint flex h-14 items-center px-4 text-[13px]`}>
@@ -31,7 +36,7 @@ export function MarketContextBar({
   const age = ageMs(mark?.time, now);
 
   return (
-    <div className={`${panel} flex h-14 items-center gap-6 px-4 text-[13px]`}>
+    <div className={`${panel} relative flex h-14 items-center gap-6 px-4 text-[13px]`}>
       <span className="text-ink-strong font-semibold">{market.id}</span>
       <span className="tnum text-ink-strong flex items-baseline gap-2">
         {mark && !stale ? formatDecimal(mark.price, priceDecimals) : UNAVAILABLE}
@@ -56,7 +61,23 @@ export function MarketContextBar({
           {market.base}
         </span>
       )}
-      <span className="text-faint ml-auto text-[11px]">TEST NETWORK</span>
+      <button
+        type="button"
+        className="text-faint tnum ml-auto text-[11px] underline"
+        onClick={() => setShowDetails((value) => !value)}
+        aria-expanded={showDetails}
+      >
+        Market details
+      </button>
+      {showDetails && (
+        <div className="bg-surface border-line-strong rounded-panel tnum absolute top-full right-4 z-10 mt-1 flex flex-col gap-1 border p-3 text-[12px] shadow-lg">
+          <span className="text-dim">Tick {market.tickSize}</span>
+          <span className="text-dim">Lot {market.lotSize}</span>
+          {market.kind === "perp" && (
+            <span className="text-dim">Max leverage {market.maxLeverage}x</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

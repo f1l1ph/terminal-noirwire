@@ -29,12 +29,10 @@ export function TerminalShell({
       <header className="border-line-subtle flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4">
         <div className="flex items-center gap-2">
           <Mark size={18} title="NoirWire" />
-          <span className="text-ink-strong text-[13px] font-semibold tracking-tight">
-            NoirWire terminal
-          </span>
+          <span className="text-ink-strong text-[13px] font-semibold tracking-tight">NoirWire</span>
+          <NetworkBadge />
         </div>
         <div className="flex items-center gap-3">
-          <NetworkBadge />
           <ConnectionStatus state={connectionState} />
           <WalletWidget wallet={wallet} />
         </div>

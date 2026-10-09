@@ -10,7 +10,7 @@ test.describe("Public view carries no private rows", () => {
     await page.goto("/");
     await expect(page.getByText("Create a test wallet to see your account.")).toBeVisible();
 
-    await page.getByRole("button", { name: "Check" }).click();
+    await page.getByRole("button", { name: "Check public tape" }).click();
     // check() opens the detail panel itself; no second click needed.
     const toggle = page.getByRole("button", { name: /Checked at/ });
     await expect(toggle).toBeVisible();

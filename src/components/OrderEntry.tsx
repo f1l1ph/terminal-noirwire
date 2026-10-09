@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   formatDecimal,
   formatMoney,
@@ -44,6 +44,21 @@ function readFlag(storage: Storage | null, key: string): boolean {
   return storage.getItem(key) === "1";
 }
 
+/**
+ * A dock row's "Close" (reduce-only, full size, submits through the usual
+ * confirmation) or "Reduce" (prefills only) request. `requestId` always
+ * changes so a second click with identical values still re-triggers the
+ * effect below.
+ */
+export interface PrefillRequest {
+  market: string;
+  side: Side;
+  size: string;
+  reduceOnly: boolean;
+  submit: boolean;
+  requestId: number;
+}
+
 export function OrderEntry({
   market,
   mark,
@@ -61,6 +76,8 @@ export function OrderEntry({
   onTransferToSpot,
   supportsGoodFor,
   placeOrderPending,
+  prefillRequest,
+  compact,
 }: {
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
@@ -87,6 +104,15 @@ export function OrderEntry({
    * order-key slot.
    */
   placeOrderPending: boolean;
+  /** A dock row's Close/Reduce request for this market; applied once per `requestId`, ignored for any other market (switching markets remounts this component via its own `key`, so a stale request for a market just left behind can never apply here). */
+  prefillRequest?: PrefillRequest | null;
+  /**
+   * Phone only: leverage and the full cost breakdown collapse behind a
+   * disclosure, off by default, so the primary action lands in the first
+   * viewport alongside side, quantity and available balance (second design
+   * review, item 10) - nothing is removed, it is one tap away.
+   */
+  compact?: boolean;
 }) {
   const isPerp = market?.kind === "perp";
   const [side, setSide] = useState<Side>("buy");
@@ -102,9 +128,34 @@ export function OrderEntry({
   const [fundMessage, setFundMessage] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showDetails, setShowDetails] = useState(!compact);
   const [skipFuture, setSkipFuture] = useState(false);
   const quantityInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
+  const appliedPrefillIdRef = useRef<number | null>(null);
+
+  // Applies a dock row's Close/Reduce request once per `requestId`. Scoped
+  // to this exact market: a market switch remounts this component (its
+  // `key` is the market id), so a request meant for the market just left
+  // can never leak into the freshly-mounted form for the new one.
+  // Syncing this form's state to an external request (a dock row's
+  // Close/Reduce click) is exactly the documented case for an effect, not
+  // a derived-state anti-pattern; it cannot be done during render since it
+  // reacts to a prop set by a sibling component's own event handler.
+  useEffect(() => {
+    if (!prefillRequest || !market || prefillRequest.market !== market.id) return;
+    if (appliedPrefillIdRef.current === prefillRequest.requestId) return;
+    appliedPrefillIdRef.current = prefillRequest.requestId;
+    setOrderType("market");
+    setSide(prefillRequest.side);
+    setQuantityText(prefillRequest.size);
+    setQuantityTouched(true);
+    setPriceOverride(null);
+    setPriceTouched(false);
+    setReduceOnly(prefillRequest.reduceOnly);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (prefillRequest.submit) setShowConfirm(true);
+  }, [prefillRequest, market]);
 
   const storage = typeof window === "undefined" ? null : window.localStorage;
   const sessionStorageRef = typeof window === "undefined" ? null : window.sessionStorage;
@@ -415,7 +466,9 @@ export function OrderEntry({
   return (
     <div
       ref={containerRef}
-      className="bg-surface border-line-subtle rounded-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-1.5"
+      className={`bg-surface border-line-subtle rounded-panel flex flex-col gap-0.5 p-1.5 ${
+        compact ? "" : "min-h-0 flex-1 overflow-y-auto"
+      }`}
     >
       <p className="text-ink-strong text-[13px] font-medium">
         Trade {market.id} · {market.kind === "perp" ? "Perpetual, cross margin" : "Spot"}
@@ -527,7 +580,7 @@ export function OrderEntry({
           id="order-price"
           className={`${input} mt-1`}
           inputMode="decimal"
-          placeholder={orderType === "limit" ? "0.00" : undefined}
+          placeholder={orderType === "limit" ? "" : undefined}
           value={priceText}
           aria-describedby={priceError ? "order-price-error" : "order-price-hint"}
           onBlur={() => setPriceTouched(true)}
@@ -572,7 +625,32 @@ export function OrderEntry({
         </div>
       )}
 
-      {isPerp && (
+      {compact && (
+        <button
+          type="button"
+          className="text-faint self-start text-[11px] underline"
+          onClick={() => setShowDetails((value) => !value)}
+          aria-expanded={showDetails}
+        >
+          {showDetails ? "Hide" : "Show"} leverage &amp; order details
+        </button>
+      )}
+
+      {/* Reduce only stays visible even collapsed: it changes what the
+          order DOES, not just a cost estimate, so it is not "secondary
+          evidence" in the sense the phone layout collapses. */}
+      {isPerp && position && Number(position.size) !== 0 && (
+        <label className="text-dim flex items-center gap-2 text-[12px]">
+          <input
+            type="checkbox"
+            checked={reduceOnly}
+            onChange={(event) => setReduceOnly(event.target.checked)}
+          />
+          Reduce only
+        </label>
+      )}
+
+      {isPerp && showDetails && (
         <div>
           <label
             className="text-faint flex justify-between text-[12px]"
@@ -594,16 +672,6 @@ export function OrderEntry({
             onChange={(event) => setLeverage(Number(event.target.value))}
             className={`${rangeBrand} mt-1`}
           />
-          {position && Number(position.size) !== 0 && (
-            <label className="text-dim mt-1 flex items-center gap-2 text-[12px]">
-              <input
-                type="checkbox"
-                checked={reduceOnly}
-                onChange={(event) => setReduceOnly(event.target.checked)}
-              />
-              Reduce only
-            </label>
-          )}
         </div>
       )}
 
@@ -625,13 +693,15 @@ export function OrderEntry({
         </p>
       )}
 
-      <OrderSummary
-        side={side}
-        isPerp={isPerp}
-        display={estimateDisplay}
-        priceDecimals={priceDecimals}
-        remainingAvailable={remainingAvailable}
-      />
+      {showDetails && (
+        <OrderSummary
+          side={side}
+          isPerp={isPerp}
+          display={estimateDisplay}
+          priceDecimals={priceDecimals}
+          remainingAvailable={remainingAvailable}
+        />
+      )}
 
       <button
         type="button"

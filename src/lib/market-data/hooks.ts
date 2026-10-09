@@ -53,9 +53,14 @@ export function useMarketDataConnection(
     store.setCandlesLoading(selectedMarket, interval, true);
     fetchCandles(simUrl, selectedMarket, interval)
       .then((candles) => {
-        if (!cancelled) store.setInitialCandles(selectedMarket, interval, candles);
+        if (!cancelled) {
+          store.setInitialCandles(selectedMarket, interval, candles);
+          store.setCandlesError(selectedMarket, interval, false);
+        }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) store.setCandlesError(selectedMarket, interval, true);
+      })
       .finally(() => {
         if (!cancelled) store.setCandlesLoading(selectedMarket, interval, false);
       });

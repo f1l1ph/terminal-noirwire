@@ -1,15 +1,21 @@
 "use client";
 
-import { useState } from "react";
-import { formatClockTime, formatDecimal, formatMoney, UNAVAILABLE } from "@/lib/format";
+import {
+  formatClockTime,
+  formatDecimal,
+  formatMoney,
+  formatRelativeAge,
+  UNAVAILABLE,
+} from "@/lib/format";
+import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
-import { panel, sectionLabel } from "@/components/ui/styles";
+import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 
-type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
+export type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "positions", label: "Positions" },
@@ -20,27 +26,46 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 export function AccountDock({
+  tab,
+  onTabChange,
   positions,
   openOrders,
+  openOrderFirstSeenAtMs,
   ownFills,
   balances,
   collateral,
   marketSettings,
+  marksByMarket,
+  now,
   hasWallet,
   onTransfer,
+  onClosePosition,
+  onReducePosition,
+  onCancelOrder,
+  cancellingOrderId,
 }: {
+  tab: Tab;
+  onTabChange: (tab: Tab) => void;
   positions: Position[];
   openOrders: OpenOrder[];
+  /** This device's own first-seen time per order id (there is no venue-reported placement time on `OpenOrder`): an honest, session-local age, not a fabricated venue timestamp. */
+  openOrderFirstSeenAtMs: Record<string, number>;
   ownFills: OwnFillRecord[];
   balances: Balance[];
   /** The separate perpetuals collateral account. `null` in dev mode: one balance, not two. */
   collateral: Balance | null;
   marketSettings: MarketSettingsLookup;
+  marksByMarket: Record<string, { price: string; time: number } | null>;
+  now: number;
   hasWallet: boolean;
   onTransfer: TransferFn | null;
+  /** A reduce-only market order for the position's full size, one click after the usual confirmation. */
+  onClosePosition: (position: Position) => void;
+  /** Prefills the order form with this position's closing direction and size, without submitting. */
+  onReducePosition: (position: Position) => void;
+  onCancelOrder: ((market: string, orderId: string) => void) | null;
+  cancellingOrderId: string | null;
 }) {
-  const [tab, setTab] = useState<Tab>("positions");
-
   return (
     <div className={`${panel} flex min-h-0 flex-1 flex-col`}>
       <div
@@ -54,7 +79,7 @@ export function AccountDock({
             type="button"
             role="tab"
             aria-selected={tab === item.id}
-            onClick={() => setTab(item.id)}
+            onClick={() => onTabChange(item.id)}
             className={`rounded-tile min-h-9 px-3 text-[13px] ${
               tab === item.id ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
             }`}
@@ -68,10 +93,24 @@ export function AccountDock({
           <p className="text-dim text-[13px]">Create a test wallet to see your account.</p>
         )}
         {hasWallet && tab === "positions" && (
-          <PositionsTable positions={positions} marketSettings={marketSettings} />
+          <PositionsTable
+            positions={positions}
+            marketSettings={marketSettings}
+            marksByMarket={marksByMarket}
+            now={now}
+            onClose={onClosePosition}
+            onReduce={onReducePosition}
+          />
         )}
         {hasWallet && tab === "openOrders" && (
-          <OpenOrdersTable openOrders={openOrders} marketSettings={marketSettings} />
+          <OpenOrdersTable
+            openOrders={openOrders}
+            marketSettings={marketSettings}
+            firstSeenAtMs={openOrderFirstSeenAtMs}
+            now={now}
+            onCancel={onCancelOrder}
+            cancellingOrderId={cancellingOrderId}
+          />
         )}
         {hasWallet && tab === "fills" && (
           <FillsTable fills={ownFills} marketSettings={marketSettings} />
@@ -90,9 +129,17 @@ export function AccountDock({
 function PositionsTable({
   positions,
   marketSettings,
+  marksByMarket,
+  now,
+  onClose,
+  onReduce,
 }: {
   positions: Position[];
   marketSettings: MarketSettingsLookup;
+  marksByMarket: Record<string, { price: string; time: number } | null>;
+  now: number;
+  onClose: (position: Position) => void;
+  onReduce: (position: Position) => void;
 }) {
   const open = positions.filter((position) => Number(position.size) !== 0);
   if (open.length === 0) return <p className="text-faint text-[13px]">No open positions.</p>;
@@ -104,6 +151,11 @@ function PositionsTable({
           <th className="font-normal">Side</th>
           <th className="font-normal">Size</th>
           <th className="font-normal">Entry</th>
+          <th className="font-normal">Mark</th>
+          <th className="font-normal">Unrealised P&amp;L</th>
+          <th className="font-normal">Margin used (est.)</th>
+          <th className="font-normal">Liquidation (est.)</th>
+          <th className="font-normal"></th>
         </tr>
       </thead>
       <tbody>
@@ -111,13 +163,67 @@ function PositionsTable({
           const settings = marketSettings(position.market);
           const size = Number(position.size);
           const long = size > 0;
+          const priceDecimals = settings ? priceDecimalsOf(settings) : 2;
+          const sizeDecimals = settings ? sizeDecimalsOf(settings) : 4;
+          const mark = marksByMarket[position.market] ?? null;
+          const markUsable = mark && !isStale(mark.time, now, STALE_MARK_MS);
+          const unrealised = markUsable
+            ? (Number(mark.price) - Number(position.entryPrice)) * size
+            : null;
+
+          let marginUsed: string | null = null;
+          let liquidation: string | null = null;
+          if (settings && settings.kind === "perp") {
+            const estimate = estimateOrderCost({
+              side: long ? "buy" : "sell",
+              quantity: String(Math.abs(size)),
+              price: position.entryPrice,
+              leverage: settings.maxLeverage,
+              maxLeverage: settings.maxLeverage,
+            });
+            const display = displayOrderCost(estimate, priceDecimals);
+            marginUsed = display.initialMargin;
+            liquidation = display.liquidationPrice;
+          }
+
           return (
             <tr key={position.market} className="border-line-subtle border-t">
               <td className="py-1.5">{position.market}</td>
               <td className={long ? "text-safe" : "text-danger"}>{long ? "long" : "short"}</td>
-              <td>{formatDecimal(Math.abs(size), settings ? sizeDecimalsOf(settings) : 4)}</td>
-              <td>
-                {formatDecimal(position.entryPrice, settings ? priceDecimalsOf(settings) : 2)}
+              <td>{formatDecimal(Math.abs(size), sizeDecimals)}</td>
+              <td>{formatDecimal(position.entryPrice, priceDecimals)}</td>
+              <td>{markUsable ? formatDecimal(mark!.price, priceDecimals) : UNAVAILABLE}</td>
+              <td
+                className={
+                  unrealised === null ? "text-faint" : unrealised >= 0 ? "text-safe" : "text-danger"
+                }
+              >
+                {unrealised !== null ? formatMoney(unrealised) : "Unavailable - no live mark"}
+              </td>
+              <td>{marginUsed !== null ? formatMoney(marginUsed) : UNAVAILABLE}</td>
+              <td
+                title="Estimate: half the market's implied initial margin, computed on this device. Not a venue-confirmed threshold."
+                className="underline decoration-dotted"
+              >
+                {liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE}
+              </td>
+              <td className="py-1.5 text-right">
+                <div className="flex justify-end gap-1">
+                  <button
+                    type="button"
+                    className={`${btnGhost} h-7 px-2 text-[11px]`}
+                    onClick={() => onReduce(position)}
+                  >
+                    Reduce
+                  </button>
+                  <button
+                    type="button"
+                    className={`${btnGhost} h-7 px-2 text-[11px]`}
+                    onClick={() => onClose(position)}
+                  >
+                    Close
+                  </button>
+                </div>
               </td>
             </tr>
           );
@@ -130,9 +236,17 @@ function PositionsTable({
 function OpenOrdersTable({
   openOrders,
   marketSettings,
+  firstSeenAtMs,
+  now,
+  onCancel,
+  cancellingOrderId,
 }: {
   openOrders: OpenOrder[];
   marketSettings: MarketSettingsLookup;
+  firstSeenAtMs: Record<string, number>;
+  now: number;
+  onCancel: ((market: string, orderId: string) => void) | null;
+  cancellingOrderId: string | null;
 }) {
   if (openOrders.length === 0) return <p className="text-faint text-[13px]">No open orders.</p>;
   return (
@@ -144,11 +258,15 @@ function OpenOrdersTable({
           <th className="font-normal">Type</th>
           <th className="font-normal">Price</th>
           <th className="font-normal">Remaining</th>
+          <th className="font-normal">Age</th>
+          <th className="font-normal"></th>
         </tr>
       </thead>
       <tbody>
         {openOrders.map((order) => {
           const settings = marketSettings(order.market);
+          const seenAt = firstSeenAtMs[order.orderId];
+          const age = seenAt !== undefined ? ageMs(seenAt, now) : null;
           return (
             <tr key={order.orderId} className="border-line-subtle border-t">
               <td className="py-1.5">{order.market}</td>
@@ -162,6 +280,26 @@ function OpenOrdersTable({
                   : UNAVAILABLE}
               </td>
               <td>{formatDecimal(order.remainingSize, settings ? sizeDecimalsOf(settings) : 4)}</td>
+              <td
+                className="text-faint"
+                title="Since this device first observed the order, not the venue's own placement time"
+              >
+                {age !== null ? formatRelativeAge(age) : UNAVAILABLE}
+              </td>
+              <td className="py-1.5 text-right">
+                {onCancel && (
+                  <button
+                    type="button"
+                    className={`${btnGhost} h-7 px-2 text-[11px]`}
+                    disabled={cancellingOrderId === order.orderId}
+                    onClick={() => onCancel(order.market, order.orderId)}
+                  >
+                    {cancellingOrderId === order.orderId
+                      ? "Cancelling…"
+                      : `Cancel #${order.orderId}`}
+                  </button>
+                )}
+              </td>
             </tr>
           );
         })}

@@ -90,3 +90,29 @@ export function formatShortAddress(address: string): string {
   if (address.length <= 12) return address;
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
+
+/**
+ * The rollup deployment's own `network` field (sim-noirwire's
+ * `GET /v1/deployment`, e.g. "localnet"/"devnet"), turned into the label a
+ * speed or latency figure sits beside - per the second design review, a
+ * number measured against a local stack must never be shown without saying
+ * so. `isLocalNetwork` is the matching predicate every "local" qualifier
+ * (the pulse card, a per-order speed line) reads before adding that word.
+ */
+export function networkDisplayLabel(network: string): string {
+  switch (network) {
+    case "localnet":
+      return "LOCAL DEMO";
+    case "devnet":
+      return "DEVNET";
+    case "mainnet":
+    case "mainnet-beta":
+      return "MAINNET";
+    default:
+      return network.toUpperCase();
+  }
+}
+
+export function isLocalNetwork(network: string): boolean {
+  return network === "localnet";
+}

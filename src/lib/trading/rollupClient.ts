@@ -1,4 +1,4 @@
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, type Connection } from "@solana/web3.js";
 import {
   browserLocalStorage,
   bytesToHex,
@@ -36,6 +36,7 @@ import {
 } from "../rollup/units";
 import { priceDecimalsOf, sizeDecimalsOf } from "../market-data/precision";
 import type {
+  AccountReadOutcome,
   Balance,
   CancelResult,
   FundOutcome,
@@ -50,6 +51,28 @@ import type {
   TransferResult,
   WalletIdentity,
 } from "./types";
+
+/**
+ * One unsigned read, with a real three-way outcome: a thrown request
+ * (transport/RPC error) is `checkFailed`, never collapsed into the same
+ * "empty" result a genuine no-data response produces. Fixes the earlier
+ * `.catch(() => null)` pattern the second design review flagged - that
+ * made a failed read indistinguishable from a passing one.
+ */
+async function readAccountUnsigned(
+  connection: Connection,
+  address: PublicKey,
+): Promise<AccountReadOutcome> {
+  try {
+    const account = await connection.getAccountInfo(address);
+    return account === null ? { kind: "notReturned" } : { kind: "returned" };
+  } catch (error) {
+    return {
+      kind: "checkFailed",
+      reason: error instanceof Error ? error.message : "The unsigned read did not complete.",
+    };
+  }
+}
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 /**
@@ -446,15 +469,16 @@ export class RollupTradingClient implements TradingClient {
       );
       const viewAddress = addresses.view(session.owner.publicKey);
       const bookAddress = addresses.book(binding.numericId);
-      const [viewAccount, bookAccount] = await Promise.all([
-        anonymous.getAccountInfo(viewAddress).catch(() => null),
-        anonymous.getAccountInfo(bookAddress).catch(() => null),
+      const [viewOutcome, bookOutcome] = await Promise.all([
+        readAccountUnsigned(anonymous, viewAddress),
+        readAccountUnsigned(anonymous, bookAddress),
       ]);
       return {
-        viewAddress: viewAddress.toBase58(),
-        viewEmpty: viewAccount === null,
-        bookAddress: bookAddress.toBase58(),
-        bookEmpty: bookAccount === null,
+        network: session.deployment.network,
+        checkedAtMs: Date.now(),
+        endpoint: session.deployment.rollupRpcUrl,
+        view: { address: viewAddress.toBase58(), outcome: viewOutcome },
+        book: { address: bookAddress.toBase58(), outcome: bookOutcome },
       };
     });
   }

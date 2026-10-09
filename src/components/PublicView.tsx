@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { formatClockTime } from "@/lib/format";
+import { formatClockTime, formatShortAddress, networkDisplayLabel } from "@/lib/format";
 import { env } from "@/lib/env";
-import type { PrivacyCheck } from "@/lib/trading/types";
+import type { AccountReadOutcome, PrivacyCheck } from "@/lib/trading/types";
 import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
 
 interface PublicSnapshot {
@@ -24,6 +24,30 @@ const TAPE_FIELDS = [
   "sequence",
 ];
 
+const WHAT_THIS_SHOWS =
+  "These two account reads returned no data without sign-in at the checked time. Public trade prints remain visible. This check does not establish anonymity or rule out timing correlation.";
+
+/** Pass is green, a real fail is red, a failed read is neutral (never green) - the second design review's "a failed or errored unsigned read must never show as empty." */
+function readRowTone(outcome: AccountReadOutcome): string {
+  if (outcome.kind === "notReturned") return "text-safe";
+  if (outcome.kind === "returned") return "text-danger";
+  return "text-warning";
+}
+
+function readRowText(outcome: AccountReadOutcome): string {
+  if (outcome.kind === "notReturned") return "no data returned";
+  if (outcome.kind === "returned") return "data returned";
+  return `check failed - ${outcome.reason}`;
+}
+
+function AccountReadRow({ label, outcome }: { label: string; outcome: AccountReadOutcome }) {
+  return (
+    <p className={`${readRowTone(outcome)} text-[14px] leading-snug`}>
+      <span className="text-ink-strong">{label}</span> · {readRowText(outcome)}
+    </p>
+  );
+}
+
 /**
  * An independent, unsigned fetch of this market's public tape: no wallet
  * credential, no account ID, the same request any visitor's browser could
@@ -33,9 +57,9 @@ const TAPE_FIELDS = [
  * than a general "mark, fills, settings" claim. In rollup mode, a second,
  * independent check (`checkPrivacy`, present only there) reads this
  * trader's own on-chain view and the market's book account unsigned,
- * straight from the rollup, and shows both coming back empty - the actual
- * mechanism behind "nobody but the program can read the book," not just a
- * claim about it.
+ * straight from the rollup, with a real three-way outcome per address
+ * (no data / data / check failed) rather than collapsing a failed read
+ * into "empty" - the second design review's integrity fix.
  */
 export function PublicView({
   market,
@@ -53,6 +77,7 @@ export function PublicView({
   const [privacy, setPrivacy] = useState<PrivacyCheck | null>(null);
   const [privacyError, setPrivacyError] = useState<string | null>(null);
   const [privacyLoading, setPrivacyLoading] = useState(false);
+  const [showWhatThisShows, setShowWhatThisShows] = useState(false);
 
   async function check() {
     setLoading(true);
@@ -98,7 +123,7 @@ export function PublicView({
           className={`${btnGhost} h-7 px-2 text-[11px]`}
           onClick={() => void check()}
         >
-          {loading ? "Checking…" : snapshot ? "Check again" : "Check"}
+          {loading ? "Checking…" : snapshot ? "Check again" : "Check public tape"}
         </button>
       </div>
       {error && <p className="text-warning text-[11px]">{error}</p>}
@@ -140,33 +165,42 @@ export function PublicView({
       {checkPrivacy && (
         <div className="border-line-subtle mt-1 border-t pt-1.5">
           <div className="flex items-center justify-between">
-            <p className={sectionLabel}>On-chain accounts</p>
+            <p className={sectionLabel}>Unsigned account check</p>
             <button
               type="button"
               className={`${btnGhost} h-7 px-2 text-[11px]`}
               onClick={() => void checkOnChain()}
             >
-              {privacyLoading ? "Checking…" : privacy ? "Check again" : "Check"}
+              {privacyLoading ? "Checking…" : privacy ? "Check again" : "Check unsigned accounts"}
             </button>
           </div>
           {privacyError && <p className="text-warning text-[11px]">{privacyError}</p>}
           {privacy ? (
-            <div className="tnum mt-1 flex flex-col gap-0.5 text-[11px]">
-              <p className={privacy.viewEmpty ? "text-safe" : "text-danger"}>
-                Your view account, read unsigned: {privacy.viewEmpty ? "empty" : "NOT empty"}
+            <div className="mt-2 flex flex-col gap-1.5">
+              <AccountReadRow label="Trader view" outcome={privacy.view.outcome} />
+              <AccountReadRow label={`${market} book`} outcome={privacy.book.outcome} />
+              <p className="tnum text-faint mt-1 text-[11px]">
+                {networkDisplayLabel(privacy.network)} rollup RPC · checked{" "}
+                {formatClockTime(new Date(privacy.checkedAtMs))} · view{" "}
+                {formatShortAddress(privacy.view.address)} · book{" "}
+                {formatShortAddress(privacy.book.address)}
               </p>
-              <p className={privacy.bookEmpty ? "text-safe" : "text-danger"}>
-                This market&apos;s book, read unsigned: {privacy.bookEmpty ? "empty" : "NOT empty"}
-              </p>
-              <p className="text-faint">
-                Same unsigned connection as the tape above, reading two addresses this account
-                should never expose: your own trading account and the book&apos;s resting orders.
-              </p>
+              <button
+                type="button"
+                className="text-ink mt-0.5 self-start text-[11px] underline"
+                onClick={() => setShowWhatThisShows((value) => !value)}
+                aria-expanded={showWhatThisShows}
+              >
+                What this shows
+              </button>
+              {showWhatThisShows && (
+                <p className="text-faint text-[11px] leading-relaxed">{WHAT_THIS_SHOWS}</p>
+              )}
             </div>
           ) : (
             <p className="text-faint mt-1 text-[11px]">
               Reads your own on-chain account and this market&apos;s book, unsigned, straight from
-              the rollup - both should come back empty.
+              the rollup.
             </p>
           )}
         </div>

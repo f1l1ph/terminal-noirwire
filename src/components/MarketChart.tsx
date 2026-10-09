@@ -28,6 +28,8 @@ const MIN_VALID_CANDLES = 2;
  */
 const VISIBLE_CANDLE_COUNT = 60;
 const RIGHT_PADDING_BARS = 5;
+/** How many of this session's own mark ticks the "history building" line keeps - enough to draw a real line, not an unbounded array. */
+const MAX_LIVE_MARK_POINTS = 600;
 
 function toUtcSeconds(epochMs: number): UTCTimestamp {
   return Math.floor(epochMs / 1000) as UTCTimestamp;
@@ -51,6 +53,7 @@ export function MarketChart({
   ownSequences,
   connectionState,
   loading,
+  fetchFailed,
   onRetry,
 }: {
   market: MarketInfo | undefined;
@@ -63,12 +66,15 @@ export function MarketChart({
   ownSequences: ReadonlySet<number>;
   connectionState: ConnectionState;
   loading: boolean;
+  /** True only when the candle fetch itself failed (network/HTTP error) - never merely because the market has fewer than two candles yet. Only this drives "Price history unavailable" (second design review, item 1). */
+  fetchFailed: boolean;
   onRetry: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const liveMarkSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const priceDecimals = market ? priceDecimalsOf(market) : 2;
   const [legend, setLegend] = useState<OhlcvLegend | null>(null);
 
@@ -95,6 +101,10 @@ export function MarketChart({
         textColor: "#8d8b86",
         fontFamily: "var(--font-sans)",
         fontSize: 11,
+        // Toggled off only while nothing real is drawn yet (the
+        // "History building" state): the license's attribution
+        // requirement is met whenever an actual series is on screen.
+        attributionLogo: true,
       },
       grid: {
         horzLines: { color: "#272a2d" },
@@ -132,6 +142,20 @@ export function MarketChart({
       priceScaleId: "volume",
       color: "#36393c",
     });
+    // The "history building" line, drawn from this session's own mark
+    // ticks - never a synthesized candle. Hidden once real candles exist.
+    const liveMarkSeries = chart.addLineSeries({
+      color: "#e8e6e1",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      priceFormat: {
+        type: "price",
+        precision: priceDecimalsRef.current,
+        minMove: 1 / 10 ** priceDecimalsRef.current,
+      },
+    });
     chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.22 } });
 
@@ -155,6 +179,7 @@ export function MarketChart({
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
+    liveMarkSeriesRef.current = liveMarkSeries;
 
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -169,10 +194,47 @@ export function MarketChart({
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      liveMarkSeriesRef.current = null;
     };
   }, [market?.id]);
 
   const hasEnoughData = candles.length >= MIN_VALID_CANDLES;
+
+  // This session's own accumulated mark ticks, for the "history building"
+  // line - never fetched, never synthesized: exactly the mark updates this
+  // browser has actually received since it opened this market. Reset when
+  // the market changes (a different market's marks mean nothing here).
+  // `buildingSampleCount` mirrors the ref's length as state so the legend
+  // can read it during render without touching the ref there.
+  const liveMarksRef = useRef<{ time: UTCTimestamp; value: number }[]>([]);
+  const [buildingSampleCount, setBuildingSampleCount] = useState(0);
+
+  useEffect(() => {
+    liveMarksRef.current = [];
+    // A fresh series for the newly-selected market - not a derived value
+    // React could compute during render, since it must survive every
+    // later mark tick until the market changes again.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBuildingSampleCount(0);
+  }, [market?.id]);
+
+  useEffect(() => {
+    if (!mark || !market) return;
+    const value = Number(mark.price);
+    if (!Number.isFinite(value)) return;
+    const time = toUtcSeconds(mark.time);
+    const points = liveMarksRef.current;
+    const last = points.at(-1);
+    if (last && last.time === time) {
+      points[points.length - 1] = { time, value };
+    } else if (!last || time > last.time) {
+      points.push({ time, value });
+      if (points.length > MAX_LIVE_MARK_POINTS) points.shift();
+    }
+    // Mirrors the ref's new length into state, the documented way to
+    // expose an external accumulator's value to render.
+    setBuildingSampleCount(points.length);
+  }, [mark, market]);
 
   useEffect(() => {
     if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
@@ -230,6 +292,29 @@ export function MarketChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, hasEnoughData]);
 
+  // Switches which series is actually on screen: candles once there are
+  // enough of them, otherwise the session's own live mark line - never
+  // both, and never a synthesized candle standing in for missing history.
+  useEffect(() => {
+    candleSeriesRef.current?.applyOptions({ visible: hasEnoughData });
+    volumeSeriesRef.current?.applyOptions({ visible: hasEnoughData });
+    liveMarkSeriesRef.current?.applyOptions({ visible: !hasEnoughData });
+    chartRef.current?.applyOptions({ layout: { attributionLogo: hasEnoughData } });
+  }, [hasEnoughData]);
+
+  useEffect(() => {
+    if (!liveMarkSeriesRef.current || hasEnoughData) return;
+    const points = liveMarksRef.current;
+    try {
+      liveMarkSeriesRef.current.setData(points);
+      if (points.length > 0) chartRef.current?.timeScale().fitContent();
+    } catch {
+      // A malformed point is dropped rather than throwing.
+    }
+    // Re-runs on every mark tick (liveMarksRef mutates in place, so `mark`
+    // itself is the dependency that signals a new point landed).
+  }, [mark, hasEnoughData]);
+
   useEffect(() => {
     if (!candleSeriesRef.current || !mark) return;
     const value = Number(mark.price);
@@ -254,44 +339,57 @@ export function MarketChart({
   const candleDurationMs =
     candles.length >= 2 ? Math.abs(candles[1].startMs - candles[0].startMs) : 60_000;
 
-  useEffect(() => {
-    if (!candleSeriesRef.current) return;
+  function fillMarkers() {
     const ascending = [...publicFills].sort((a, b) => a.timestampMs - b.timestampMs).slice(-80);
+    const publicMarkers = ascending
+      .filter((fill) => !ownSequences.has(fill.sequence))
+      .map((fill) => ({
+        time: toUtcSeconds(fill.timestampMs),
+        position: "inBar" as const,
+        color: "#515458",
+        shape: "circle" as const,
+      }));
+    // Several own fills in one candle would otherwise render as multiple
+    // markers stacked at the same bar position (indistinguishable from a
+    // rendering glitch); grouped into one marker per candle bucket, with
+    // a count label once more than one fill landed there.
+    const ownByBucket = new Map<number, number>();
+    for (const fill of ascending) {
+      if (!ownSequences.has(fill.sequence)) continue;
+      const bucket = Math.floor(fill.timestampMs / candleDurationMs) * candleDurationMs;
+      ownByBucket.set(bucket, (ownByBucket.get(bucket) ?? 0) + 1);
+    }
+    const ownMarkers = [...ownByBucket.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([bucket, count]) => ({
+        time: toUtcSeconds(bucket),
+        position: "aboveBar" as const,
+        color: "#f5f3ee",
+        shape: "circle" as const,
+        text: count > 1 ? `×${count}` : undefined,
+      }));
+    return [...publicMarkers, ...ownMarkers].sort((a, b) => a.time - b.time);
+  }
+
+  useEffect(() => {
+    if (!candleSeriesRef.current || !hasEnoughData) return;
     try {
-      const publicMarkers = ascending
-        .filter((fill) => !ownSequences.has(fill.sequence))
-        .map((fill) => ({
-          time: toUtcSeconds(fill.timestampMs),
-          position: "inBar" as const,
-          color: "#515458",
-          shape: "circle" as const,
-        }));
-      // Several own fills in one candle would otherwise render as multiple
-      // markers stacked at the same bar position (indistinguishable from a
-      // rendering glitch); grouped into one marker per candle bucket, with
-      // a count label once more than one fill landed there.
-      const ownByBucket = new Map<number, number>();
-      for (const fill of ascending) {
-        if (!ownSequences.has(fill.sequence)) continue;
-        const bucket = Math.floor(fill.timestampMs / candleDurationMs) * candleDurationMs;
-        ownByBucket.set(bucket, (ownByBucket.get(bucket) ?? 0) + 1);
-      }
-      const ownMarkers = [...ownByBucket.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([bucket, count]) => ({
-          time: toUtcSeconds(bucket),
-          position: "aboveBar" as const,
-          color: "#f5f3ee",
-          shape: "circle" as const,
-          text: count > 1 ? `×${count}` : undefined,
-        }));
-      candleSeriesRef.current.setMarkers(
-        [...publicMarkers, ...ownMarkers].sort((a, b) => a.time - b.time),
-      );
+      candleSeriesRef.current.setMarkers(fillMarkers());
     } catch {
       // Markers are decorative; a malformed set is dropped rather than throwing.
     }
-  }, [publicFills, ownSequences, candleDurationMs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicFills, ownSequences, candleDurationMs, hasEnoughData]);
+
+  useEffect(() => {
+    if (!liveMarkSeriesRef.current || hasEnoughData) return;
+    try {
+      liveMarkSeriesRef.current.setMarkers(fillMarkers());
+    } catch {
+      // Markers are decorative; a malformed set is dropped rather than throwing.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicFills, ownSequences, candleDurationMs, hasEnoughData]);
 
   const frozen = connectionState !== "open";
   const lastUpdateLabel = mark ? formatClockTime(new Date(mark.time)) : UNAVAILABLE;
@@ -307,16 +405,25 @@ export function MarketChart({
     if (loading) {
       return { title: "Loading 1m history", detail: null, retry: false };
     }
-    if (!hasEnoughData) {
-      return { title: "Price history unavailable", detail: "Not enough candles yet.", retry: true };
+    // Reserved for an actual fetch failure only - a market genuinely too
+    // new to have two candles yet draws the live mark line below instead
+    // (second design review, item 1), never this message.
+    if (fetchFailed) {
+      return {
+        title: "Price history unavailable",
+        detail: "The candle history fetch failed.",
+        retry: true,
+      };
     }
     return null;
-  }, [frozen, loading, hasEnoughData, lastUpdateLabel]);
+  }, [frozen, loading, fetchFailed, lastUpdateLabel]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="text-faint flex items-center gap-3 px-1 pb-1 text-[11px]" aria-live="off">
-        {legend ? (
+        {!overlay && !hasEnoughData ? (
+          <span className="tnum">History building · n={buildingSampleCount}</span>
+        ) : legend ? (
           <span className="tnum">
             O {legend.open} H {legend.high} L {legend.low} C {legend.close} V {legend.volume}
             {legend.isLast ? " · close" : ""}
