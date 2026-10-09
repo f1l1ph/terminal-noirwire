@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+/* NoirWire terminal tokens. One dark theme, no toggle. */
+@theme {
+  --color-base: #0b0b0c;
+  --color-surface: #131315;
+  --color-surface-raised: #18181b;
+  --color-elevated: #1c1c1f;
+
+  --color-ink: #e8e6e1;
+  --color-ink-strong: #f5f3ee;
+  --color-dim: #b4b1aa;
+  --color-faint: #8d8b86;
+
+  --color-line-subtle: #272a2d;
+  --color-line: #36393c;
+  --color-line-strong: #515458;
+
+  --color-safe: #75bc97;
+  --color-warning: #d1ad70;
+  --color-danger: #f18d80;
+
+  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+
+  --radius-panel: 12px;
+  --radius-tile: 8px;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+::selection {
+  background-color: var(--color-ink);
+  color: var(--color-base);
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-ink-strong);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+:root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.rail-step-in {
+  animation: rail-step-in 180ms var(--ease-out) both;
+}
+
+@keyframes rail-step-in {
+  from {
+    background-color: var(--color-elevated);
+  }
+}
+
+.live-dot {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+button:not(:disabled),
+summary {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
