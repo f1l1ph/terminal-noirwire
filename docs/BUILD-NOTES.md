@@ -131,6 +131,178 @@ arrow function that performs the call bare). `lightweight-charts`' own
 tape is stored newest-first for display, so markers are now re-sorted
 before being handed to the chart.
 
+## Rollup trading client (third pass)
+
+`RollupTradingClient` (`src/lib/trading/rollupClient.ts`) implements the same
+`TradingClient` interface as `DevTradingClient`, signing and sending every
+order straight to the real on-chain order book via `@noirwire/orderbook`
+(currently 0.3.0, vendored under `vendor/` - `make sdk-update` copies a
+fresh release tarball from a sibling checkout). Every call into that
+package is isolated in `src/lib/rollup/sdk.ts`, the one file that imports
+it; everything else in `src/lib/rollup/` and `src/lib/trading/` sees the
+plain types and wrapper functions that file re-exports, so a future package
+upgrade is an edit to that one file (mirrors sim-noirwire's own
+`src/rollup/program.ts` for the same reason).
+
+**Keys.** The browser wallet's keypair (already in hand, no wallet-adapter
+flow) is the owner key. The 32-byte order-key seed is
+`sha256(nacl.sign.detached(domain-message, owner.secretKey))` -
+deterministic, so the same owner secret always rebuilds the same order
+keys, exactly as `keys.ts` states. Order-key recovery after a reload
+prefers a saved `OrderKeyManager.checkpoint()` (`checkpointStore.ts`,
+localStorage, keyed by owner address) over the full `fromView` search, and
+is saved again after every confirmed keyed call.
+
+**Sessions and sign-in refresh.** `session.ts`'s `buildRealSession` derives
+the owner/seed, connects to the rollup's public RPC, and signs in to the
+private endpoint immediately (before any send is attempted, not lazily on
+first trade - the hosted devnet needs a signed-in token to accept a send,
+not only to read privately). `RollupTradingClient.withSession` proactively
+rebuilds the session once it is older than four minutes (the package
+exposes no token TTL to read, so this is a conservative guess, not a
+measured value) and, on any thrown error from a call, rebuilds once and
+retries - this is how an actually-expired token recovers without the
+client trying to recognise the exact shape of an auth error itself.
+
+**Market id resolution.** `/v1/markets` names a market by string id and has
+no on-chain numeric id (the dev-mode engine has none to report), so
+`marketIds.ts` resolves it by scanning the program's `Market` accounts
+(public, DESIGN.md section 2) for a base/quote/kind match, once per program
+id, cached. The same scan incidentally yields a token-index -> symbol map
+for spot wallet balances, built only from spot markets' own
+`baseToken`/`quoteToken` - a perp market's own indices both name the
+collateral token (its "base" is cash-settled, not a real spot holding), so
+including them would corrupt the map.
+
+**Units.** `units.ts` converts between this terminal's existing decimal
+strings and the program's lots/atoms using only `market.lotSize` (already
+served by `/v1/markets`), re-deriving the same ratio sim-noirwire's own
+`src/rollup/units.ts` computes from the raw `baseLot` + token decimals -
+confirmed by reading that file, not guessed. Spot wallet balances (raw
+atoms at the token's own decimals, not 6) are converted via
+`mintDecimals.ts`, which reads the `Exchange` account for each token's
+mint and then that mint's own decimals (`@solana/spl-token`'s `getMint`) -
+the one place this dependency is used.
+
+**Outcome mapping.** `outcome.ts` maps every `RESULT_STATUS` code onto this
+terminal's existing `OrderStatus` wire enum (filled / open / partiallyFilled
+/ cancelled / rejected), so the witness rail needed no new step types.
+0.3.0 made `placeOrder` throw `OrderInvalid` (refused before signing) and
+`TransactionFailed` (landed and refused) instead of returning them as
+outcomes; `thrownToResult` catches both in `RollupTradingClient.placeOrder`
+and maps them to the same ordinary rejected state with a plain sentence,
+so a pre-sign refusal and a book-dependent one look the same to the trader.
+An order that never got a result before its expiry (`outcome: "expired"`)
+maps to rejected, "not placed," which is also the right read for a
+malformed instruction that the rollup silently never executes.
+**Assumption, not confirmed against a real refusal:** `OrderResult.cancelled`
+is read as a lot-size SIZE on a place-order result (the remainder that
+didn't rest) and as an order COUNT on a cancel/cancel-all result - the one
+field is shared across instruction kinds and neither document I read states
+the dual meaning explicitly; it is the only internally-consistent reading
+given the field's name either way.
+
+**Timing.** 0.3.0's `Timing` (`sentAt`/`resultAt`, both `performance.now()`)
+is carried onto `PlaceOrderResult` as `sentAtMs`/`resultAtMs`;
+`useTrading.ts`'s `placeOrder` prefers `resultAtMs - clickedAt` over timing
+the whole call from outside, which would also count this function's own
+promise-resolution overhead.
+
+**Own-fill recognition.** There is no venue-assigned tag in rollup mode,
+only the 16-byte secret chosen per order. **Assumption, isolated in
+`ownFills.ts`:** sim-noirwire's rollup-mode `/v1/tape` is assumed to reuse
+`PublicFill`'s existing `takerTag`/`makerTag` string fields to carry the
+on-chain receipt reinterpreted as a big-endian u64 decimal string (read
+directly from that repository's `src/rollup/rollup-venue.ts`: `const tagOf
+= (receipt) => Buffer.from(receipt).readBigUInt64BE(0)`, then `tagString`
+on the route) rather than inventing new field names. `deriveRollupOwnFills`
+recomputes both role receipts per known secret per tape fill and compares
+against those fields directly - no client tag is ever sent or expected on
+the wire. Known secrets persist per owner address in `secretStore.ts`,
+capped at the most recent 20 (a simplification of "drop them when the order
+is gone": this is eviction by count, not by tracking each order's precise
+open/closed lifecycle).
+
+**Open orders, one market at a time.** The trader's view carries open
+orders for only the market the last trading instruction targeted
+(`snapshot.marketId`), not every market at once the way dev mode's
+`/v1/dev/trader` does. `TraderState.openOrders` is empty for every market
+except the one last traded in rollup mode - a real, not yet worked around,
+product difference from dev mode.
+
+**Two balances, the transfer control, and "move funds to spot."**
+`TraderState.collateral` (new, optional) carries the separate perpetuals
+collateral account; `balances` stays the spot wallet. `OrderEntry` reads
+`collateral` (not spot) as the available quote for a perp order (RULES.md
+section 6: perps draw on collateral, never the spot balance) - this was a
+real bug caught while wiring it in, not merely a missing feature.
+`needsSpotTransfer` (`trading/spotTransfer.ts`, pure and unit-tested) decides
+when a spot buy should offer "Move funds to spot" instead of a pointless
+repeat of the one-time faucet grant or a submit that would just fail.
+`TransferControl` is the compact amount+direction control, shown in the
+account dock's Balances tab and, pre-filled, from that primary button.
+
+**Per-order cancel and "Good for."** The real program has `cancel_order`
+(per order, by sequence number), unlike dev mode's cancel-all-only; the
+witness rail's cancel button becomes "Cancel order N" whenever
+`TradingClient.cancelOrder` exists. A rollup limit order may carry its own
+expiry (RULES.md section 4); `OrderEntry` offers "Good for: until cancelled
+/ 1 minute / 1 hour" only when `supportsGoodFor` (rollup mode) is true.
+
+**The "Public view" second check.** `PublicView` gained a second,
+independent check in rollup mode (`TradingClient.checkPrivacy`, optional):
+an unsigned read of this trader's own view account and the current
+market's book account, straight from the rollup's public RPC, no sign-in -
+the same connection any visitor's browser could open - reporting whether
+each came back empty. A private account read by a non-member returning
+nothing is the actual mechanism behind "nobody but the program can read
+the book," not a restated claim about it.
+
+**Daily funding limit.** sim-noirwire's rollup-mode `/v1/fund/submit` can
+now refuse with "daily limit reached" (503, the venue's own cap on new
+accounts per day, distinct from the per-IP rate limit sim-noirwire has
+always had). `FundOutcome`'s `rateLimited` variant gained an optional
+`message`, shown verbatim when the server gave one, so this reads as
+itself rather than the generic "too many requests" copy.
+
+**Config added:** `NEXT_PUBLIC_ROLLUP_RPC_URL`, `NEXT_PUBLIC_ROLLUP_WS_URL`,
+`NEXT_PUBLIC_ROLLUP_PRIVATE_URL` (all required only in rollup mode),
+`NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID` (optional, defaults to the package's own
+constant). **Deliberately not added:** `NEXT_PUBLIC_SOLANA_RPC_URL` -
+nothing in the trading path talks to base-layer Solana directly (open,
+fund and every trading instruction are rollup-only), so it would be
+configuration with no reader.
+
+### Rollup config the service doesn't expose yet
+
+Nothing publishes the rollup's own RPC/WS/private URLs or the program id
+over HTTP (no `/v1/deployment` route), so these are plain env vars instead
+of being read from the service, per the brief's own fallback. If sim-noirwire
+ever adds one, the shape to ask for is exactly its own internal `Deployment`
+type (`src/rollup/settings.ts`): `{ network, programId, gate, oracle,
+faucet, tokens: [{ index, symbol, decimals, mint }], markets: [{ id,
+symbol, kind, fundingTaskId? }] }`. That would also let `marketIds.ts`'s
+on-chain scan and `mintDecimals.ts`'s per-mint `getMint` calls be replaced
+with a single read, both a latency and a code-size win.
+
+### Bundle size: a real, unresolved cost
+
+Measured total `.next/static/chunks` size after a clean build:
+**dev mode 1,676,143 bytes, rollup mode 1,676,066 bytes** - functionally
+identical. That is not a clean build: `createTradingClient()` reads
+`env.tradingMode` (a property of a Zod-parsed object), not the literal
+`process.env.NEXT_PUBLIC_TRADING_MODE` expression Next.js's dead-code
+elimination for `NEXT_PUBLIC_*` vars needs to see directly, so it cannot
+prove the `rollup` branch is unreachable in a dev-mode build and bundles
+`@noirwire/orderbook` plus `@magicblock-labs/ephemeral-rollups-sdk` into
+every build regardless of mode. The fix is to load whichever
+`TradingClient` implementation is needed via a dynamic `import()` in
+`trading/index.ts` instead of a static one, which would code-split the
+rollup bundle out of a dev-only deployment; not done here, since
+`createTradingClient()` is called synchronously today and making it async
+touches `useTrading.ts`'s initialisation path too, which felt like the
+wrong thing to rush at the end of this pass.
+
 ## Known non-blocking issue
 
 A `lightweight-charts` internal error ("Value is null") was observed

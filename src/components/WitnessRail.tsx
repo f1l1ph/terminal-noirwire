@@ -51,6 +51,7 @@ export function WitnessRail({
   ownFills,
   clientDurationMs,
   onCancelAll,
+  onCancelOrder,
   cancelling,
   now,
 }: {
@@ -60,6 +61,8 @@ export function WitnessRail({
   ownFills: OwnFillRecord[];
   clientDurationMs: number | null;
   onCancelAll: () => void;
+  /** Present only when the trading client supports a per-order cancel (the real program does; sim-noirwire's dev routes do not). */
+  onCancelOrder: (() => void) | null;
   cancelling: boolean;
   now: number;
 }) {
@@ -122,9 +125,13 @@ export function WitnessRail({
             type="button"
             className={`${btnGhost} mt-2 h-8 w-full px-3 text-[12px]`}
             disabled={cancelling}
-            onClick={onCancelAll}
+            onClick={onCancelOrder ?? onCancelAll}
           >
-            {cancelling ? "Cancelling…" : `Cancel all ${order.market} orders`}
+            {cancelling
+              ? "Cancelling…"
+              : onCancelOrder
+                ? `Cancel order ${openOrder.orderId}`
+                : `Cancel all ${order.market} orders`}
           </button>
         </div>
       )}

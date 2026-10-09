@@ -7,6 +7,7 @@ import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
 import { panel, sectionLabel } from "@/components/ui/styles";
+import { TransferControl, type TransferFn } from "@/components/TransferControl";
 
 type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
 
@@ -23,15 +24,20 @@ export function AccountDock({
   openOrders,
   ownFills,
   balances,
+  collateral,
   marketSettings,
   hasWallet,
+  onTransfer,
 }: {
   positions: Position[];
   openOrders: OpenOrder[];
   ownFills: OwnFillRecord[];
   balances: Balance[];
+  /** The separate perpetuals collateral account. `null` in dev mode: one balance, not two. */
+  collateral: Balance | null;
   marketSettings: MarketSettingsLookup;
   hasWallet: boolean;
+  onTransfer: TransferFn | null;
 }) {
   const [tab, setTab] = useState<Tab>("positions");
 
@@ -70,7 +76,9 @@ export function AccountDock({
         {hasWallet && tab === "fills" && (
           <FillsTable fills={ownFills} marketSettings={marketSettings} />
         )}
-        {hasWallet && tab === "balances" && <BalancesTable balances={balances} />}
+        {hasWallet && tab === "balances" && (
+          <BalancesTable balances={balances} collateral={collateral} onTransfer={onTransfer} />
+        )}
         {hasWallet && tab === "margin" && (
           <MarginTable positions={positions} marketSettings={marketSettings} />
         )}
@@ -202,41 +210,61 @@ function FillsTable({
   );
 }
 
-function BalancesTable({ balances }: { balances: Balance[] }) {
-  if (balances.length === 0) return <p className="text-faint text-[13px]">No balances yet.</p>;
+function BalancesTable({
+  balances,
+  collateral,
+  onTransfer,
+}: {
+  balances: Balance[];
+  collateral: Balance | null;
+  onTransfer: TransferFn | null;
+}) {
+  const rows = collateral
+    ? [{ ...collateral, asset: "nUSD (perpetuals collateral)" }, ...balances]
+    : balances;
+  if (rows.length === 0) return <p className="text-faint text-[13px]">No balances yet.</p>;
   return (
-    <table className="tnum w-full text-left text-[13px]">
-      <thead className="text-faint text-[11px] uppercase">
-        <tr>
-          <th className="font-normal">Asset</th>
-          <th className="font-normal">Available</th>
-          <th className="font-normal">Reserved</th>
-          <th className="font-normal">Total</th>
-        </tr>
-      </thead>
-      <tbody>
-        {balances.map((balance) => (
-          <tr key={balance.asset} className="border-line-subtle border-t">
-            <td className="py-1.5">{balance.asset}</td>
-            <td>
-              {balance.asset === "nUSD"
-                ? formatMoney(balance.available)
-                : formatDecimal(balance.available, 6)}
-            </td>
-            <td>
-              {balance.asset === "nUSD"
-                ? formatMoney(balance.reserved)
-                : formatDecimal(balance.reserved, 6)}
-            </td>
-            <td>
-              {balance.asset === "nUSD"
-                ? formatMoney(balance.total)
-                : formatDecimal(balance.total, 6)}
-            </td>
+    <>
+      <table className="tnum w-full text-left text-[13px]">
+        <thead className="text-faint text-[11px] uppercase">
+          <tr>
+            <th className="font-normal">Asset</th>
+            <th className="font-normal">Available</th>
+            <th className="font-normal">Reserved</th>
+            <th className="font-normal">Total</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((balance) => (
+            <tr key={balance.asset} className="border-line-subtle border-t">
+              <td className="py-1.5">{balance.asset}</td>
+              <td>
+                {balance.asset.startsWith("nUSD")
+                  ? formatMoney(balance.available)
+                  : formatDecimal(balance.available, 6)}
+              </td>
+              <td>
+                {balance.asset.startsWith("nUSD")
+                  ? formatMoney(balance.reserved)
+                  : formatDecimal(balance.reserved, 6)}
+              </td>
+              <td>
+                {balance.asset.startsWith("nUSD")
+                  ? formatMoney(balance.total)
+                  : formatDecimal(balance.total, 6)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {onTransfer && collateral && (
+        <TransferControl
+          onTransfer={onTransfer}
+          collateral={collateral}
+          spot={balances.find((balance) => balance.asset === "nUSD") ?? null}
+        />
+      )}
+    </>
   );
 }
 

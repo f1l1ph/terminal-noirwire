@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { env } from "@/lib/env";
 import { MARKET_IDS } from "@/lib/market-data/types";
 import type { CandleInterval } from "@/lib/market-data/types";
@@ -12,7 +12,8 @@ import {
 import { candlesLoadingKey } from "@/lib/market-data/selectors";
 import { useWallet } from "@/lib/wallet/useWallet";
 import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
-import { deriveOwnFills } from "@/lib/trading/tags";
+import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
+import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { describeRejectReason } from "@/lib/trading/validation";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
@@ -52,15 +53,23 @@ export function Terminal() {
   const data = useMarketDataState(store);
   const now = useNow();
   const isDesktop = useMediaQuery("(min-width: 900px)");
+  // A shorter desktop viewport (1280x800 is the shortest this terminal is
+  // checked against) gives the workspace row relatively more of the shared
+  // height, so a perp market order still fits in the order entry column
+  // without its own scroll; the account dock already scrolls its table
+  // body internally, so it gives up height first.
+  const isShortViewport = useMediaQuery("(max-height: 850px)");
   const [phoneView, setPhoneView] = useState<"trade" | "market">("trade");
 
   const wallet = useWallet();
-  const trading = useTrading(wallet.account?.publicKey ?? null);
+  const marketSettings = (id: string) => data.markets.find((item) => item.id === id);
+  const trading = useTrading(wallet.account, marketSettings);
 
   const [orderSession, setOrderSession] = useState<OrderSession | null>(null);
   const [clientDurationMs, setClientDurationMs] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [accountRefreshedAt, setAccountRefreshedAt] = useState<number | null>(null);
+  const lastOwnFillCountRef = useRef(0);
 
   function appendStep(
     prev: RailStep[],
@@ -122,17 +131,55 @@ export function Terminal() {
     }
   }
 
+  async function handleCancelOrder(orderId: string): Promise<void> {
+    if (!trading.cancelOrder) return;
+    setCancelling(true);
+    try {
+      await trading.cancelOrder(selectedMarketId, orderId);
+      setOrderSession((prev) =>
+        prev && prev.market === selectedMarketId
+          ? {
+              ...prev,
+              baseSteps: appendStep(
+                prev.baseSteps,
+                "cancelled",
+                Date.now(),
+                "Cancelled by request.",
+              ),
+            }
+          : prev,
+      );
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   const market = data.markets.find((item) => item.id === selectedMarketId);
   const mark = data.marksByMarket[selectedMarketId] ?? null;
   const tape = data.tapeByMarket[selectedMarketId] ?? [];
   const candles = data.candlesByMarket[selectedMarketId]?.[interval] ?? [];
   const candlesLoading = data.candlesLoading[candlesLoadingKey(selectedMarketId, interval)] ?? true;
-  const marketSettings = (id: string) => data.markets.find((item) => item.id === id);
 
   const position = trading.state.positions[selectedMarketId] ?? null;
   const positionsArray = Object.values(trading.state.positions);
   const balancesArray = Object.values(trading.state.balances);
-  const ownFillsForMarket = deriveOwnFills(tape, trading.ownTags);
+  const ownFillsForMarket: OwnFillRecord[] =
+    trading.client.mode === "rollup"
+      ? deriveRollupOwnFills(tape, trading.rollupSecrets)
+      : deriveOwnFills(tape, trading.ownTags);
+
+  // Rollup mode: a resting order's own fill does not update this trader's
+  // view until `sync_view` runs (see TradingClient.syncMarket). Detected
+  // here, where both the tape-derived own-fills and the tracked resting
+  // order are in scope.
+  useEffect(() => {
+    if (ownFillsForMarket.length > lastOwnFillCountRef.current) {
+      lastOwnFillCountRef.current = ownFillsForMarket.length;
+      void trading.syncMarket(selectedMarketId);
+    } else {
+      lastOwnFillCountRef.current = ownFillsForMarket.length;
+    }
+  }, [ownFillsForMarket.length, selectedMarketId, trading]);
 
   const relevantSession = orderSession?.market === selectedMarketId ? orderSession : null;
   const trackedOpenOrder = relevantSession?.trackedOrderId
@@ -169,8 +216,6 @@ export function Terminal() {
     ? `${market.id} · tick ${market.tickSize} · lot ${market.lotSize} · max leverage ${market.maxLeverage}x · ${env.networkLabel} · last data ${mark ? formatClockTime(new Date(mark.time)) : "unavailable"} · account ${accountRefreshedAt ? `refreshed at ${formatClockTime(new Date(accountRefreshedAt))}` : "not yet synced"}`
     : env.networkLabel;
 
-  const rollupNotConnected = trading.client.mode === "rollup";
-
   const orderEntry = market && (
     <OrderEntry
       key={market.id}
@@ -180,6 +225,7 @@ export function Terminal() {
       hasWallet={!!wallet.account}
       walletReady={wallet.ready}
       balances={trading.state.balances}
+      collateral={trading.state.collateral}
       position={position}
       onCreateWallet={() => wallet.create()}
       creatingWallet={false}
@@ -190,6 +236,8 @@ export function Terminal() {
       }}
       placeOrder={trading.placeOrder}
       onOrderPlaced={handleOrderPlaced}
+      onTransferToSpot={trading.transferBetweenBalances}
+      supportsGoodFor={trading.client.mode === "rollup"}
     />
   );
 
@@ -201,6 +249,11 @@ export function Terminal() {
       ownFills={trackedFills}
       clientDurationMs={clientDurationMs}
       onCancelAll={() => void handleCancelAll()}
+      onCancelOrder={
+        trading.cancelOrder && trackedOpenOrder
+          ? () => void handleCancelOrder(trackedOpenOrder.orderId)
+          : null
+      }
       cancelling={cancelling}
       now={now}
     />
@@ -212,24 +265,21 @@ export function Terminal() {
       openOrders={trading.state.openOrders}
       ownFills={ownFillsForMarket}
       balances={balancesArray}
+      collateral={trading.state.collateral ?? null}
       marketSettings={marketSettings}
       hasWallet={!!wallet.account}
+      onTransfer={trading.transferBetweenBalances}
     />
-  );
-
-  const rollupBanner = rollupNotConnected && (
-    <p className="border-warning/40 bg-warning/5 text-warning rounded-panel border px-3 py-2 text-[12px]">
-      The rollup trading client is not connected yet. Trading is unavailable in this build.
-    </p>
   );
 
   const content = isDesktop ? (
     <>
-      {rollupBanner}
       <div className="shrink-0">
         <MarketContextBar market={market} mark={mark} now={now} />
       </div>
-      <div className="grid min-h-0 flex-[3] grid-cols-[176px_1fr_212px_296px] grid-rows-[minmax(0,1fr)] gap-2">
+      <div
+        className={`grid min-h-0 ${isShortViewport ? "flex-[7]" : "flex-[3]"} grid-cols-[176px_1fr_212px_296px] grid-rows-[minmax(0,1fr)] gap-2`}
+      >
         <div className="flex min-h-0 flex-col">
           <MarketSwitcher
             markets={data.markets}
@@ -269,17 +319,18 @@ export function Terminal() {
           </div>
           {witnessRail}
           <div className="shrink-0">
-            <PublicView market={selectedMarketId} />
+            <PublicView market={selectedMarketId} checkPrivacy={trading.checkPrivacy} />
           </div>
         </div>
 
         <div className="flex min-h-0 flex-col">{orderEntry}</div>
       </div>
-      <div className="flex min-h-[160px] flex-1 flex-col">{accountDock}</div>
+      <div className={`flex ${isShortViewport ? "min-h-[90px]" : "min-h-[160px]"} flex-1 flex-col`}>
+        {accountDock}
+      </div>
     </>
   ) : (
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-      {rollupBanner}
       {/* A 52 px sticky bar: symbol, mark and change, always visible, never repeated below. */}
       <div className="bg-surface border-line-subtle rounded-panel sticky top-0 z-10 flex h-13 shrink-0 items-center justify-between px-3 text-[13px]">
         <span className="text-ink-strong font-medium">{market?.id ?? ""}</span>
@@ -356,7 +407,7 @@ export function Terminal() {
             ownTags={trading.ownTags}
           />
           <VenuePulse stats={data.stats} now={now} />
-          <PublicView market={selectedMarketId} />
+          <PublicView market={selectedMarketId} checkPrivacy={trading.checkPrivacy} />
         </div>
       )}
     </div>

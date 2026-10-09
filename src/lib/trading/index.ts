@@ -1,11 +1,19 @@
+import { PublicKey } from "@solana/web3.js";
 import { env } from "../env";
 import { DevTradingClient } from "./devClient";
-import { NotConnectedRollupTradingClient } from "./rollupClient";
-import type { TradingClient } from "./types";
+import { RollupTradingClient } from "./rollupClient";
+import type { MarketSettingsLookup, TradingClient } from "./types";
 
-export function createTradingClient(): TradingClient {
+export function createTradingClient(marketSettingsLookup: MarketSettingsLookup): TradingClient {
   if (env.tradingMode === "rollup") {
-    return new NotConnectedRollupTradingClient();
+    return new RollupTradingClient({
+      simUrl: env.simUrl,
+      rollupRpcUrl: env.rollupRpcUrl!,
+      rollupWsUrl: env.rollupWsUrl!,
+      rollupPrivateUrl: env.rollupPrivateUrl!,
+      programId: env.orderbookProgramId ? new PublicKey(env.orderbookProgramId) : undefined,
+      marketSettingsLookup,
+    });
   }
   return new DevTradingClient({ baseUrl: env.simUrl });
 }
@@ -16,4 +24,4 @@ export * from "./risk";
 export * from "./validation";
 export * from "./tags";
 export { DevTradingClient } from "./devClient";
-export { NotConnectedRollupTradingClient } from "./rollupClient";
+export { RollupTradingClient } from "./rollupClient";

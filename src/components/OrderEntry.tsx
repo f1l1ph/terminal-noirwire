@@ -16,9 +16,11 @@ import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import { maxOrderSize } from "@/lib/trading/sizing";
 import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import { describeFieldError, validateOrder } from "@/lib/trading/validation";
+import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
 import type { Balance, FundOutcome, NewOrderInput, Position, Side } from "@/lib/trading/types";
 import type { OrderDescriptor } from "@/components/WitnessRail";
 import { OrderSummary } from "@/components/OrderSummary";
+import { TransferControl, type TransferFn } from "@/components/TransferControl";
 import {
   btnDanger,
   btnGhost,
@@ -31,6 +33,11 @@ import {
 const SKIP_CONFIRM_KEY = "noirwire-terminal-skip-order-confirm";
 const SESSION_CONFIRMED_KEY = "noirwire-terminal-session-order-confirmed";
 const PERCENT_SHORTCUTS = [25, 50, 75, 100];
+const GOOD_FOR_OPTIONS = [
+  { value: "untilCancelled", label: "Until cancelled" },
+  { value: "1m", label: "1 minute" },
+  { value: "1h", label: "1 hour" },
+] as const;
 
 function readFlag(storage: Storage | null, key: string): boolean {
   if (!storage) return false;
@@ -44,12 +51,15 @@ export function OrderEntry({
   hasWallet,
   walletReady,
   balances,
+  collateral,
   position,
   onCreateWallet,
   creatingWallet,
   onFund,
   placeOrder,
   onOrderPlaced,
+  onTransferToSpot,
+  supportsGoodFor,
 }: {
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
@@ -57,12 +67,18 @@ export function OrderEntry({
   hasWallet: boolean;
   walletReady: boolean;
   balances: Record<string, Balance>;
+  /** The separate perpetuals collateral account. `undefined` in dev mode. */
+  collateral?: Balance;
   position: Position | null;
   onCreateWallet: () => void;
   creatingWallet: boolean;
   onFund: () => Promise<FundOutcome>;
   placeOrder: (input: NewOrderInput) => Promise<PlacedOrderOutcome>;
   onOrderPlaced: (outcome: PlacedOrderOutcome, descriptor: OrderDescriptor) => void;
+  /** Present only in rollup mode, where collateral and spot are separate balances. */
+  onTransferToSpot: TransferFn | null;
+  /** Rollup limit orders can carry their own expiry (RULES.md section 4); dev-mode orders cannot. */
+  supportsGoodFor: boolean;
 }) {
   const isPerp = market?.kind === "perp";
   const [side, setSide] = useState<Side>("buy");
@@ -99,9 +115,16 @@ export function OrderEntry({
 
   const quoteBalance = market ? balances[market.quote] : undefined;
   const baseBalance = market ? balances[market.base] : undefined;
-  const availableQuote = quoteBalance?.available ?? "0";
+  // A perp order draws on the separate collateral account (RULES.md section
+  // 6), not the spot nUSD balance; dev mode has no such split, so there
+  // `collateral` is undefined and the spot balance is the only figure.
+  const availableQuote =
+    isPerp && collateral ? collateral.available : (quoteBalance?.available ?? "0");
   const markStale = isStale(mark?.time, now, STALE_MARK_MS);
   const markAge = ageMs(mark?.time, now);
+  const [goodFor, setGoodFor] = useState<NewOrderInput["goodFor"]>("untilCancelled");
+  const [showTransfer, setShowTransfer] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const reduceOnlyMax = useMemo(() => {
     if (!isPerp || !reduceOnly || !position) return undefined;
@@ -135,6 +158,7 @@ export function OrderEntry({
         price: priceText,
         size: quantityText,
         reduceOnly: isPerp && reduceOnly ? true : undefined,
+        goodFor: supportsGoodFor && orderType === "limit" ? goodFor : undefined,
       }
     : null;
 
@@ -209,6 +233,24 @@ export function OrderEntry({
 
   const noFunds = hasWallet && Number(availableQuote) <= 0;
 
+  // Spot buy, this browser's nUSD spot balance is empty, but there is
+  // collateral to move: the primary action becomes "Move funds to spot"
+  // rather than a pointless "Get 5,000 test nUSD" (one grant only, already
+  // spent) or a submit that would just fail for insufficient balance. See
+  // `needsSpotTransfer` in trading/spotTransfer.ts for the decision itself.
+  const needsTransfer = needsSpotTransfer({
+    isPerp,
+    side,
+    hasWallet,
+    canTransfer: !!onTransferToSpot,
+    spotAvailable: Number(quoteBalance?.available ?? "0"),
+    collateralAvailable: collateral ? Number(collateral.available) : null,
+  });
+  const suggestedTransferAmount =
+    requiredMarginEstimate && market
+      ? fromFixedPoint(requiredMarginEstimate.notional + requiredMarginEstimate.fee, 6)
+      : undefined;
+
   const canSubmit =
     hasWallet &&
     !noFunds &&
@@ -242,6 +284,11 @@ export function OrderEntry({
         setPriceOverride(null);
         setPriceTouched(false);
       }
+      // The panel must always start at its top (the side/type buttons were
+      // found scrolled out of view after a fill in the second-pass review):
+      // a fill grows the summary above the button, which can leave the
+      // scroll position mid-panel on the next render.
+      containerRef.current?.scrollTo({ top: 0 });
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Could not reach the venue");
     } finally {
@@ -260,6 +307,10 @@ export function OrderEntry({
       onCreateWallet();
       return;
     }
+    if (needsTransfer) {
+      setShowTransfer(true);
+      return;
+    }
     if (noFunds) {
       setFunding(true);
       setFundMessage(null);
@@ -269,7 +320,8 @@ export function OrderEntry({
             setFundMessage("This wallet already received its one-time grant.");
           } else if (outcome.kind === "rateLimited") {
             setFundMessage(
-              "Too many funding requests from this network right now. Try again shortly.",
+              outcome.message ??
+                "Too many funding requests from this network right now. Try again shortly.",
             );
           } else if (outcome.kind === "error") {
             setFundMessage(outcome.message);
@@ -324,6 +376,10 @@ export function OrderEntry({
     primaryLabel = "Create test wallet";
     primaryClass = btnPrimary;
     primaryDisabled = creatingWallet;
+  } else if (needsTransfer) {
+    primaryLabel = "Move funds to spot";
+    primaryClass = btnPrimary;
+    primaryDisabled = false;
   } else if (noFunds) {
     primaryLabel = "Get 5,000 test nUSD";
     primaryClass = btnPrimary;
@@ -344,10 +400,12 @@ export function OrderEntry({
   };
 
   return (
-    <div className="bg-surface border-line-subtle rounded-panel flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-      <p className="text-ink-strong text-[13px] font-medium">Trade {market.id} · TEST NETWORK</p>
-      <p className="text-faint text-[11px]">
-        {market.kind === "perp" ? "Perpetual, cross margin" : "Spot"}
+    <div
+      ref={containerRef}
+      className="bg-surface border-line-subtle rounded-panel flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2"
+    >
+      <p className="text-ink-strong text-[13px] font-medium">
+        Trade {market.id} · {market.kind === "perp" ? "Perpetual, cross margin" : "Spot"}
       </p>
 
       <div className="flex gap-2" role="group" aria-label="Side">
@@ -424,7 +482,7 @@ export function OrderEntry({
             Min {market.lotSize} {market.base} · step {market.lotSize}
           </p>
         )}
-        <div className="mt-2 flex gap-1" role="group" aria-label="Quantity shortcuts">
+        <div className="mt-1.5 flex gap-1" role="group" aria-label="Quantity shortcuts">
           {PERCENT_SHORTCUTS.map((pct) => (
             <button
               key={pct}
@@ -480,6 +538,26 @@ export function OrderEntry({
         )}
       </div>
 
+      {supportsGoodFor && orderType === "limit" && (
+        <div>
+          <label className="text-faint text-[12px]" htmlFor="order-good-for">
+            Good for
+          </label>
+          <select
+            id="order-good-for"
+            className={`${input} mt-1`}
+            value={goodFor}
+            onChange={(event) => setGoodFor(event.target.value as NewOrderInput["goodFor"])}
+          >
+            {GOOD_FOR_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {isPerp && (
         <div>
           <label className="text-faint flex justify-between text-[12px]" htmlFor="order-leverage">
@@ -496,21 +574,21 @@ export function OrderEntry({
             step={1}
             value={leverage}
             onChange={(event) => setLeverage(Number(event.target.value))}
-            className={`${rangeBrand} mt-2`}
+            className={`${rangeBrand} mt-1`}
           />
           <p className="text-faint mt-1 text-[11px]">
-            Cross margin. Sizes this estimate; the venue requires the market&apos;s fixed margin
-            ratio regardless.
+            Cross margin, display only: the venue sets margin by its own fixed ratio.
           </p>
-          <label className="text-dim mt-2 flex items-center gap-2 text-[12px]">
-            <input
-              type="checkbox"
-              checked={reduceOnly}
-              disabled={!position || Number(position.size) === 0}
-              onChange={(event) => setReduceOnly(event.target.checked)}
-            />
-            Reduce only{!position || Number(position.size) === 0 ? " (no position to reduce)" : ""}
-          </label>
+          {position && Number(position.size) !== 0 && (
+            <label className="text-dim mt-1.5 flex items-center gap-2 text-[12px]">
+              <input
+                type="checkbox"
+                checked={reduceOnly}
+                onChange={(event) => setReduceOnly(event.target.checked)}
+              />
+              Reduce only
+            </label>
+          )}
         </div>
       )}
 
@@ -551,6 +629,17 @@ export function OrderEntry({
       </button>
 
       {fundMessage && <p className="text-warning text-[12px]">{fundMessage}</p>}
+
+      {showTransfer && onTransferToSpot && collateral && (
+        <TransferControl
+          onTransfer={onTransferToSpot}
+          collateral={collateral}
+          spot={quoteBalance ?? null}
+          prefillAmount={suggestedTransferAmount}
+          initiallyOpen
+          onDone={() => setShowTransfer(false)}
+        />
+      )}
 
       {submitError && (
         <p role="alert" className="text-danger text-[13px]">

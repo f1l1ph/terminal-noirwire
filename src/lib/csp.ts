@@ -19,7 +19,35 @@ export function contentSecurityPolicy(nonce?: string): string {
   if (!nonce) return NO_DOCUMENT_POLICY;
   const simUrl = process.env.NEXT_PUBLIC_SIM_URL ?? "";
   const simWsUrl = process.env.NEXT_PUBLIC_SIM_WS_URL ?? "";
-  const connectSources = ["'self'", simUrl, simWsUrl].filter(Boolean).join(" ");
+  const rollupUrl = process.env.NEXT_PUBLIC_ROLLUP_RPC_URL ?? "";
+  const rollupWsUrl = process.env.NEXT_PUBLIC_ROLLUP_WS_URL ?? "";
+  const rollupPrivateUrl = process.env.NEXT_PUBLIC_ROLLUP_PRIVATE_URL ?? "";
+  // The SDK's privateConnection() derives the private endpoint's websocket
+  // from rollupPrivateUrl itself (same host, ws(s) scheme, port + 1) rather
+  // than taking a separate configured URL, so its origin is computed here too
+  // (mirrors `websocketUrl` in @noirwire/orderbook/dist/auth.js).
+  const rollupPrivateWsUrl = (() => {
+    if (!rollupPrivateUrl) return "";
+    try {
+      const url = new URL(rollupPrivateUrl);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      if (url.port) url.port = String(Number(url.port) + 1);
+      return url.origin;
+    } catch {
+      return "";
+    }
+  })();
+  const connectSources = [
+    "'self'",
+    simUrl,
+    simWsUrl,
+    rollupUrl,
+    rollupWsUrl,
+    rollupPrivateUrl,
+    rollupPrivateWsUrl,
+  ]
+    .filter(Boolean)
+    .join(" ");
   const isDev = process.env.NODE_ENV === "development";
   return [
     "default-src 'self'",

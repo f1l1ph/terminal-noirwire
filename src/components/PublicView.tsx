@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { formatClockTime } from "@/lib/format";
 import { env } from "@/lib/env";
+import type { PrivacyCheck } from "@/lib/trading/types";
 import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
 
 interface PublicSnapshot {
@@ -29,14 +30,29 @@ const TAPE_FIELDS = [
  * send. Lists every field the response actually carries, including the
  * per-order `tag` sim-noirwire echoes on a fill (see
  * src/lib/trading/tags.ts for what that does and does not reveal), rather
- * than a general "mark, fills, settings" claim.
+ * than a general "mark, fills, settings" claim. In rollup mode, a second,
+ * independent check (`checkPrivacy`, present only there) reads this
+ * trader's own on-chain view and the market's book account unsigned,
+ * straight from the rollup, and shows both coming back empty - the actual
+ * mechanism behind "nobody but the program can read the book," not just a
+ * claim about it.
  */
-export function PublicView({ market }: { market: string }) {
+export function PublicView({
+  market,
+  checkPrivacy,
+}: {
+  market: string;
+  checkPrivacy?: ((market: string) => Promise<PrivacyCheck | null>) | null;
+}) {
   const [snapshot, setSnapshot] = useState<PublicSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const requestUrl = `${env.simUrl}/v1/tape?market=${encodeURIComponent(market)}&limit=5`;
+
+  const [privacy, setPrivacy] = useState<PrivacyCheck | null>(null);
+  const [privacyError, setPrivacyError] = useState<string | null>(null);
+  const [privacyLoading, setPrivacyLoading] = useState(false);
 
   async function check() {
     setLoading(true);
@@ -54,6 +70,22 @@ export function PublicView({ market }: { market: string }) {
       setSnapshot(null);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function checkOnChain() {
+    if (!checkPrivacy) return;
+    setPrivacyLoading(true);
+    setPrivacyError(null);
+    try {
+      const result = await checkPrivacy(market);
+      if (!result) throw new Error("not available");
+      setPrivacy(result);
+    } catch {
+      setPrivacyError("On-chain check unavailable");
+      setPrivacy(null);
+    } finally {
+      setPrivacyLoading(false);
     }
   }
 
@@ -103,6 +135,40 @@ export function PublicView({ market }: { market: string }) {
           >
             Close
           </button>
+        </div>
+      )}
+      {checkPrivacy && (
+        <div className="border-line-subtle mt-1 border-t pt-1.5">
+          <div className="flex items-center justify-between">
+            <p className={sectionLabel}>On-chain accounts</p>
+            <button
+              type="button"
+              className={`${btnGhost} h-7 px-2 text-[11px]`}
+              onClick={() => void checkOnChain()}
+            >
+              {privacyLoading ? "Checking…" : privacy ? "Check again" : "Check"}
+            </button>
+          </div>
+          {privacyError && <p className="text-warning text-[11px]">{privacyError}</p>}
+          {privacy ? (
+            <div className="tnum mt-1 flex flex-col gap-0.5 text-[11px]">
+              <p className={privacy.viewEmpty ? "text-safe" : "text-danger"}>
+                Your view account, read unsigned: {privacy.viewEmpty ? "empty" : "NOT empty"}
+              </p>
+              <p className={privacy.bookEmpty ? "text-safe" : "text-danger"}>
+                This market&apos;s book, read unsigned: {privacy.bookEmpty ? "empty" : "NOT empty"}
+              </p>
+              <p className="text-faint">
+                Same unsigned connection as the tape above, reading two addresses this account
+                should never expose: your own trading account and the book&apos;s resting orders.
+              </p>
+            </div>
+          ) : (
+            <p className="text-faint mt-1 text-[11px]">
+              Reads your own on-chain account and this market&apos;s book, unsigned, straight from
+              the rollup - both should come back empty.
+            </p>
+          )}
         </div>
       )}
     </div>

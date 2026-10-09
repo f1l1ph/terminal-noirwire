@@ -5,6 +5,14 @@ export type { OrderStatus, OrderType, Side };
 
 export interface WalletIdentity {
   address: string;
+  /**
+   * The owner key's secret, hex-encoded. Only `RollupTradingClient` reads
+   * this (DESIGN.md section 4: the browser wallet's keypair IS the owner
+   * key, so signing a trading instruction needs it); `DevTradingClient`
+   * never looks at it. Optional so every other caller can keep building a
+   * `WalletIdentity` from the address alone.
+   */
+  secretKeyHex?: string;
 }
 
 /**
@@ -20,6 +28,12 @@ export interface NewOrderInput {
   price: string;
   size: string;
   reduceOnly?: boolean;
+  /**
+   * A resting limit order's own expiry (RULES.md section 4): once matching
+   * reaches it, the remainder is cancelled. Rollup mode only; a dev-mode
+   * client ignores it (sim-noirwire's limit orders have no expiry field).
+   */
+  goodFor?: "untilCancelled" | "1m" | "1h";
 }
 
 export interface PlaceOrderResult {
@@ -29,6 +43,14 @@ export interface PlaceOrderResult {
   filledSize: string;
   remainingSize: string;
   reason: string | null;
+  /**
+   * Rollup mode only: when the order was sent, and when its result was read
+   * from the view, both `performance.now()` so they compare directly against
+   * the caller's own click timestamp for a precise speed figure. Absent in
+   * dev mode and on an order that never reached the venue.
+   */
+  sentAtMs?: number;
+  resultAtMs?: number;
 }
 
 export interface CancelResult {
@@ -68,15 +90,38 @@ export interface TraderState {
   trader: string;
   /** Free balance plus unrealised perp PnL and pending funding; can differ from `balances`. */
   equity: string;
+  /** Spot wallet balances: dev mode's only balance. */
   balances: Record<string, Balance>;
+  /**
+   * The separate perpetuals collateral account (RULES.md section 6: "two
+   * separate balances of the same token"). Present only in rollup mode;
+   * absent (not zeroed) in dev mode, which has one balance, not two.
+   */
+  collateral?: Balance;
   positions: Record<string, Position>;
   openOrders: OpenOrder[];
+}
+
+export type TransferResult = { kind: "ok" } | { kind: "error"; message: string };
+
+export interface PrivacyCheck {
+  viewAddress: string;
+  viewEmpty: boolean;
+  bookAddress: string;
+  bookEmpty: boolean;
 }
 
 export type FundOutcome =
   | { kind: "granted"; amount: string; reference: string }
   | { kind: "alreadyFunded" }
-  | { kind: "rateLimited" }
+  /**
+   * Transient, try again: the per-IP rate limit, or (rollup mode) the
+   * venue's daily limit on new accounts. `message`, when present, is the
+   * server's own plain-language reason (e.g. "daily limit reached: no more
+   * new accounts can be opened today, try again tomorrow") and is shown
+   * instead of the generic copy.
+   */
+  | { kind: "rateLimited"; message?: string }
   | { kind: "error"; message: string };
 
 export type TradingMode = "dev" | "rollup";
@@ -96,6 +141,39 @@ export interface TradingClient {
   placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult>;
   /** Cancels every resting order this trader has in `market`. There is no narrower scope. */
   cancelAllInMarket(wallet: WalletIdentity, market: string): Promise<CancelResult>;
+  /**
+   * Cancels one resting order by `orderId`. Optional: sim-noirwire's dev
+   * routes have no per-order cancel, only cancel-all; the real program does
+   * (`cancel_order`), so only `RollupTradingClient` implements this. The UI
+   * shows a per-order cancel control only when this is present.
+   */
+  cancelOrder?(wallet: WalletIdentity, market: string, orderId: string): Promise<CancelResult>;
+  /**
+   * Moves funds between the perpetuals collateral account and the spot
+   * balance of the same asset. Optional: dev mode has one balance, not two,
+   * so it has nothing to move between.
+   */
+  transferBetweenBalances?(
+    wallet: WalletIdentity,
+    toSpot: boolean,
+    amount: string,
+  ): Promise<TransferResult>;
+  /**
+   * Tells the venue to refresh this trader's own view for `market` (the
+   * program's `sync_view`). Optional: dev mode's state is always current
+   * (every read goes straight to the engine), but a rollup resting order
+   * that is filled by someone else's taker order does not touch this
+   * trader's view until this is called (DESIGN.md section 3). Call it when
+   * an own fill is seen on a resting order (RULES.md section 10's receipts).
+   */
+  syncMarket?(wallet: WalletIdentity, market: string): Promise<void>;
+  /**
+   * The concrete evidence behind the privacy claim (DESIGN.md section 1):
+   * reads this trader's own view account and `market`'s book account from
+   * the rollup's PUBLIC endpoint, unsigned, and reports whether each came
+   * back empty. Optional: dev mode has no on-chain accounts to check.
+   */
+  checkPrivacy?(wallet: WalletIdentity, market: string): Promise<PrivacyCheck>;
   /** Fetches the trader's current state once. */
   fetchState(wallet: WalletIdentity): Promise<TraderState>;
   /** Polls fetchState on an interval and pushes updates until unsubscribed. */
