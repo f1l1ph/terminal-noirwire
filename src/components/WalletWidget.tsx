@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatShortAddress } from "@/lib/format";
 import type { WalletHookResult } from "@/lib/wallet/useWallet";
 import { btnGhost, input, panel } from "@/components/ui/styles";
@@ -10,6 +10,27 @@ export function WalletWidget({ wallet }: { wallet: WalletHookResult }) {
   const [importValue, setImportValue] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => {
+      setOpen(false);
+      setRevealed(null);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
 
   // No wallet yet: the order panel is the one place that creates one (never
   // a second "Create test wallet" button here too).
@@ -17,7 +38,7 @@ export function WalletWidget({ wallet }: { wallet: WalletHookResult }) {
   if (!wallet.account) return null;
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <button
         type="button"
         className="border-line text-ink rounded-tile min-h-11 border px-3 text-[13px]"
@@ -28,7 +49,7 @@ export function WalletWidget({ wallet }: { wallet: WalletHookResult }) {
       </button>
       {open && (
         <div className={`${panel} absolute right-0 z-10 mt-2 w-80 p-4`}>
-          <p className="text-ink text-[13px]">{wallet.account.publicKey}</p>
+          <p className="text-ink text-[13px] break-all">{wallet.account.publicKey}</p>
           <p className="text-faint mt-1 text-[12px]">Stored on this device.</p>
           <div className="mt-3 flex gap-2">
             <button
