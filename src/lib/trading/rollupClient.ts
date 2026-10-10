@@ -80,6 +80,8 @@ async function readAccountUnsigned(
  * read by hand on devnet). A session is rebuilt once a day so a tab left
  * open never gets near that, and a call that throws rebuilds it at once.
  */
+const GRANT_SYNC_ATTEMPTS = 8;
+const GRANT_SYNC_GAP_MS = 1_500;
 const SESSION_REFRESH_MS = 24 * 60 * 60 * 1000;
 const GOOD_FOR_SECONDS: Record<"1m" | "1h", bigint> = { "1m": 60n, "1h": 3_600n };
 /**
@@ -330,22 +332,33 @@ export class RollupTradingClient implements TradingClient {
       // reader may not yet see the view; a fresh session re-establishes it
       // cleanly rather than guessing whether a retry is needed.
       const funded = await this.refreshSession(wallet);
-      // The deposit instruction credits the ledger's seat directly; it does
-      // not touch the TraderView (only an order-key-signed instruction
-      // does, as a side effect of its own seat copy). Without this, the
-      // dashboard would show 0 available until the trader's first order.
-      const anyMarket = funded.deployment.markets[0];
-      if (anyMarket) {
-        try {
-          await funded.client.syncView(anyMarket.marketId);
-          funded.saveKeyCheckpoint();
-        } catch {
-          // Best effort: the first trade's own instruction will refresh the
-          // view regardless, and the belt-and-braces poll will catch up too.
-        }
-      }
+      await this.showGrantedBalance(funded);
     }
     return outcome;
+  }
+
+  /**
+   * A deposit credits the ledger's seat, not the trader's view: only an
+   * instruction signed by an order key copies the seat across. The copy can
+   * run before the deposit has landed, so it is repeated until the view
+   * shows the collateral.
+   */
+  private async showGrantedBalance(session: RollupSession): Promise<void> {
+    const anyMarket = session.deployment.markets[0];
+    if (!anyMarket) return;
+    for (let attempt = 0; attempt < GRANT_SYNC_ATTEMPTS; attempt += 1) {
+      try {
+        await session.client.syncView(anyMarket.marketId);
+        session.saveKeyCheckpoint();
+        const view = await session.client.view();
+        this.emitState(session, view);
+        const collateral = this.mapViewFrom(session, view).collateral;
+        if (collateral && Number(collateral.total) > 0) return;
+      } catch {
+        // Not readable yet: the next attempt asks again.
+      }
+      await new Promise((resolve) => setTimeout(resolve, GRANT_SYNC_GAP_MS));
+    }
   }
 
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
