@@ -219,6 +219,13 @@ export interface TradingClient {
   fetchState(wallet: WalletIdentity): Promise<TraderState>;
   /** Polls fetchState on an interval and pushes updates until unsubscribed. */
   subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void;
+  /**
+   * Ends this wallet's live result subscription and background refreshes,
+   * if one was ever opened. Optional: dev mode has no background
+   * connection of its own to end. Call when the wallet is cleared/changed
+   * and on page unload (`@noirwire/orderbook` 0.5.0's `TraderClient.close`).
+   */
+  closeWallet?(wallet: WalletIdentity): void;
 }
 
 export interface MarketSettingsLookup {

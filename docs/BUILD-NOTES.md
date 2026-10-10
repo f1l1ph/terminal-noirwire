@@ -497,6 +497,87 @@ before the page's own script runs, using the exact key
 `src/lib/wallet/index.ts` reads (`noirwire-terminal-wallet-secret`) - a
 test-only mechanism, not a product code change.
 
+## Eighth pass: client 0.5.0, push results, and the third design review
+
+**Client 0.5.0** (`src/lib/rollup/sdk.ts`, `src/lib/rollup/session.ts`):
+`TraderClient` now keeps a blockhash, the rollup's clock offset, and (by
+default) a live result subscription warm in the background from
+construction; `ready()` waits for all three, `close()` ends them,
+`renewReader(reader)` points reads and the subscription at a freshly
+signed-in connection. `buildRealSession` awaits `ready()` once, right after
+sign-in, so the first order benefits from an already-warm subscription
+rather than paying to establish one. The one-shot view read used only to
+recover order keys on sign-in constructs with `{ push: false }` - it is
+thrown away immediately and gets nothing from a subscription. Session
+refresh (`RollupTradingClient.refreshSession`, every ~4 minutes) now closes
+the outgoing client before replacing it, and a new `closeWallet()` on the
+trading client ends a wallet's subscription on wallet change/unmount and on
+`beforeunload` (`useTrading.ts`). `renewReader` itself is not wired in:
+session refresh still rebuilds the whole client (keys included) rather than
+re-pointing an existing one, which was judged lower risk under this pass's
+time box than restructuring that reconciliation path - flagged here rather
+than silently left out.
+
+**One blocking request removed per order**: `useTrading.placeOrder`
+previously `await`ed a `fetchState` call before returning the result, so
+the witness rail's own "Filled"/"Resting" paint waited on a second request
+that had nothing to do with the order itself. It is now fire-and-forget;
+the push subscription (`client.subscribe`) already carries the same
+balance/position update on its own. Measured from the browser against
+devnet, 20 market orders, system otherwise idle: click-to-result median
+**898 ms**, p95/worst **3.31 s** (small-n: p95 and worst land on the same
+sample at n=20), average **4.5** requests per order (`page.on("request")`
+count between click and the rail's own text changing) - noisier than a bare
+SDK script's numbers (this pass's own decision note: median 341 ms/p95
+407 ms) because it includes the full page's own background chart/stats
+polling landing inside some order windows, not a cost the order itself
+adds.
+
+**Third design review** (`docs/UX-REVIEW-3.md`) - all eight section-2
+must-fix items implemented: global "Live" now reads "Connected · market
+data stale" when the selected mark exceeds the 10 s limit
+(`ConnectionStatus.tsx`), with other markets' list quotes muted to
+"Last X · Ys ago" (`MarketSwitcher.tsx`) and the chart's own mark line
+re-colored and re-titled when stale (`MarketChart.tsx`); the funding button
+and its "already received" notice are gone for a wallet that already asked
+for its grant (a `noirwire-terminal-grant-used:<address>` localStorage
+flag set from `useTrading.fund()`), replaced with "Grant used · X
+available" in the account details line; `VenuePulse` now leads with this
+order's own click-to-result (or "order timing appears after your first
+order" before one exists), with the venue's p50/p99/n demoted behind a
+"Venue timing details" disclosure; a filled spot buy auto-switches the dock
+to Balances; the limit price field defaults to a tick-aligned price 3%
+(test) / 0.5% (product default) below/above the mark on the passive side
+instead of an empty field; the privacy-evidence panel is now a
+viewport-centered, fixed modal at least 320 px wide (an earlier
+anchored-overlay attempt ran off the bottom of a 900 px viewport in a real
+capture, clipping the one sentence the review most wanted visible - fixed
+before final capture); and the witness rail now pins the order's
+description and current status in a non-scrolling block, with only the
+step-by-step history and fills scrolling underneath, so a receipt can no
+longer scroll out of frame. Section 3's dock-tab item (stay on Open orders
+while resting, return to the trader's own last manual choice afterward -
+not a frozen pre-resting snapshot, which fought a trader who switched tabs
+by hand mid-wait) is also done; the "24h change unavailable" item was
+already satisfied (the client already renders `UNAVAILABLE` for a null
+`change24hPercent`; a literal zero the service sends is passed through
+honestly, not synthesized); the TradingView-attribution item was left
+alone this pass (`lightweight-charts`' license ties it to the attribution
+logo, and verifying a compliant alternative was judged not worth the risk
+under this pass's time box).
+
+**Screenshots** re-shot against live devnet in the review's section-4
+order: `devnet-01-arrival` through `devnet-10-after-reload`, renamed where
+their content changed (`05-fills-and-position`,
+`06-resting-open-orders-row`, `07-cancelled-by-id`,
+`09-privacy-evidence-enlarged`). The cancel in `07` is now driven from the
+account dock's own Open-orders row (`Cancel #<id>`), not the witness
+rail's button, matching the review's own script. One capture window hit a
+real service interruption (`/v1/health` briefly reported `connected:
+false`, consistent with the coordinator's note that another engineer was
+restarting this same service to the 0.5.0 client during this pass) and was
+re-run clean once `/v1/health` recovered - not a defect in this repo.
+
 ## Known non-blocking issue
 
 A `lightweight-charts` internal error ("Value is null") was observed

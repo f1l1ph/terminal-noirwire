@@ -16,7 +16,7 @@ import {
   useMarketDataState,
   useSharedMarketDataStore,
 } from "@/lib/market-data/hooks";
-import { candlesLoadingKey } from "@/lib/market-data/selectors";
+import { candlesLoadingKey, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { useWallet } from "@/lib/wallet/useWallet";
 import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import type { CancelResult, Position } from "@/lib/trading/types";
@@ -181,6 +181,17 @@ export function Terminal() {
     const submittedAt = Date.now() - Math.round(outcome.clientDurationMs);
     const baseSteps: RailStep[] = [{ type: "submitted", at: submittedAt }];
     setClientDurationMs(outcome.clientDurationMs);
+    // A filled spot buy is the purchase the trader just watched happen; the
+    // dock should already be on Balances so the new holding is on screen
+    // without a click, the same courtesy the collateral-to-spot transfer
+    // already gets (third design review, must-fix 4).
+    const filledStatuses = new Set(["filled", "partiallyFilled"]);
+    if (
+      marketSettings(descriptor.market)?.kind === "spot" &&
+      filledStatuses.has(outcome.result.status)
+    ) {
+      setDockTab("balances");
+    }
     if (outcome.result.pending) {
       const { pending } = outcome.result;
       setOrderSessions((prev) => ({
@@ -312,6 +323,10 @@ export function Terminal() {
 
   const market = data.markets.find((item) => item.id === selectedMarketId);
   const mark = data.marksByMarket[selectedMarketId] ?? null;
+  // The global connection dot must never say "Live" over a stale selected
+  // mark (third design review, must-fix 1): the socket itself can be fully
+  // open while sim-noirwire's own price source has gone quiet.
+  const markStale = isStale(mark?.time, now, STALE_MARK_MS);
   const tape = data.tapeByMarket[selectedMarketId] ?? [];
   const candles = data.candlesByMarket[selectedMarketId]?.[interval] ?? [];
   const candlesLoading = data.candlesLoading[candlesLoadingKey(selectedMarketId, interval)] ?? true;
@@ -350,6 +365,30 @@ export function Terminal() {
   const trackedFills = relevantSession?.trackedTag
     ? ownFillsForMarket.filter((fill) => fill.tag === relevantSession.trackedTag)
     : [];
+
+  // Review 3, section 3 item 2: while this session's own order rests, the
+  // dock shows Open orders without a click, and returns to the trader's own
+  // last choice once the order is gone (filled or cancelled). `lastManualTabRef`
+  // tracks only tabs the trader picked by hand (via `handleDockTabChange`),
+  // never this effect's own auto-switch, so a trader who clicks to Open
+  // orders themselves WHILE it rests is still there after it clears - the
+  // restore never fights a choice made during the wait, only reverts the
+  // one this effect made on the trader's behalf.
+  const lastManualTabRef = useRef<Tab>(dockTab);
+  const wasRestingRef = useRef(false);
+  const handleDockTabChange = useCallback((tab: Tab) => {
+    lastManualTabRef.current = tab;
+    setDockTab(tab);
+  }, []);
+  useEffect(() => {
+    const resting = !!trackedOpenOrder;
+    if (resting && !wasRestingRef.current) {
+      setDockTab("openOrders");
+    } else if (!resting && wasRestingRef.current) {
+      setDockTab(lastManualTabRef.current);
+    }
+    wasRestingRef.current = resting;
+  }, [trackedOpenOrder]);
 
   // Turns a resting/filled transition into a stable, local-clock step the
   // moment it is first observed - not recomputed every render from a
@@ -455,6 +494,7 @@ export function Terminal() {
       onCreateWallet={() => wallet.create()}
       creatingWallet={false}
       onFund={() => trading.fund()}
+      grantAlreadyUsed={trading.grantUsed}
       placeOrder={trading.placeOrder}
       onOrderPlaced={handleOrderPlaced}
       onTransferToSpot={
@@ -506,7 +546,7 @@ export function Terminal() {
   const accountDock = (
     <AccountDock
       tab={dockTab}
-      onTabChange={setDockTab}
+      onTabChange={handleDockTabChange}
       positions={positionsArray}
       openOrders={trading.state.openOrders}
       openOrderFirstSeenAtMs={openOrderFirstSeenAtMs}
@@ -555,6 +595,7 @@ export function Terminal() {
               connectionState={data.connectionState}
               loading={candlesLoading}
               fetchFailed={candlesFetchFailed}
+              markStale={markStale}
               onRetry={() => setRetryToken((token) => token + 1)}
             />
           </div>
@@ -570,7 +611,12 @@ export function Terminal() {
 
         <div className="flex min-h-0 flex-col gap-2">
           <div className="shrink-0">
-            <VenuePulse stats={data.stats} now={now} network={network} />
+            <VenuePulse
+              stats={data.stats}
+              now={now}
+              network={network}
+              clientDurationMs={clientDurationMs}
+            />
           </div>
           {witnessRail}
           <div className="shrink-0">
@@ -608,12 +654,15 @@ export function Terminal() {
       stats={data.stats}
       network={network}
       checkPrivacy={trading.checkPrivacy}
+      markStale={markStale}
+      clientDurationMs={clientDurationMs}
     />
   );
 
   return (
     <TerminalShell
       connectionState={data.connectionState}
+      marketDataStale={markStale}
       wallet={wallet}
       statusBarText={statusBarText}
     >
@@ -671,6 +720,8 @@ function PhoneLayout({
   now,
   network,
   checkPrivacy,
+  markStale,
+  clientDurationMs,
 }: {
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
@@ -694,6 +745,8 @@ function PhoneLayout({
   stats: StatsResponse | null;
   network: string;
   checkPrivacy: ReturnType<typeof useTrading>["checkPrivacy"];
+  markStale: boolean;
+  clientDurationMs: number | null;
 }) {
   const priceDecimals = market ? priceDecimalsOf(market) : 2;
   return (
@@ -768,6 +821,7 @@ function PhoneLayout({
               connectionState={connectionState}
               loading={candlesLoading}
               fetchFailed={candlesFetchFailed}
+              markStale={markStale}
               onRetry={onRetry}
             />
           </div>
@@ -777,7 +831,12 @@ function PhoneLayout({
             sizeDecimals={market ? sizeDecimalsOf(market) : 4}
             ownSequences={ownSequences}
           />
-          <VenuePulse stats={stats} now={now} network={network} />
+          <VenuePulse
+            stats={stats}
+            now={now}
+            network={network}
+            clientDurationMs={clientDurationMs}
+          />
           <PublicView market={selectedMarketId} checkPrivacy={checkPrivacy} />
         </div>
       )}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { formatClockTime, formatShortAddress, networkDisplayLabel } from "@/lib/format";
+import { formatClockTime, formatShortAddress } from "@/lib/format";
 import { env } from "@/lib/env";
 import type { AccountReadOutcome, PrivacyCheck } from "@/lib/trading/types";
 import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
@@ -25,7 +25,7 @@ const TAPE_FIELDS = [
 ];
 
 const WHAT_THIS_SHOWS =
-  "These two account reads returned no data without sign-in at the checked time. Public trade prints remain visible. This check does not establish anonymity or rule out timing correlation.";
+  "These two unsigned reads returned no account data at this time. Public fills and timing remain visible. This check does not establish anonymity or rule out timing correlation.";
 
 /** Pass is green, a real fail is red, a failed read is neutral (never green) - the second design review's "a failed or errored unsigned read must never show as empty." */
 function readRowTone(outcome: AccountReadOutcome): string {
@@ -78,6 +78,12 @@ export function PublicView({
   const [privacyError, setPrivacyError] = useState<string | null>(null);
   const [privacyLoading, setPrivacyLoading] = useState(false);
   const [showWhatThisShows, setShowWhatThisShows] = useState(false);
+  // Third design review, must-fix 7: the inline summary stays two small
+  // lines, but the proof itself (both results, the endpoint, the checked
+  // time, the addresses, the one sentence) is also available at readable
+  // size in a focused panel at least 320 px wide - not squeezed into this
+  // narrow column.
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
 
   async function check() {
     setLoading(true);
@@ -180,19 +186,26 @@ export function PublicView({
               <AccountReadRow label="Trader view" outcome={privacy.view.outcome} />
               <AccountReadRow label={`${market} book`} outcome={privacy.book.outcome} />
               <p className="tnum text-faint mt-1 text-[11px]">
-                {networkDisplayLabel(privacy.network)} rollup RPC · checked{" "}
-                {formatClockTime(new Date(privacy.checkedAtMs))} · view{" "}
-                {formatShortAddress(privacy.view.address)} · book{" "}
-                {formatShortAddress(privacy.book.address)}
+                Unsigned {privacy.network} rollup RPC · checked{" "}
+                {formatClockTime(new Date(privacy.checkedAtMs))}
               </p>
-              <button
-                type="button"
-                className="text-ink mt-0.5 self-start text-[11px] underline"
-                onClick={() => setShowWhatThisShows((value) => !value)}
-                aria-expanded={showWhatThisShows}
-              >
-                What this shows
-              </button>
+              <div className="mt-0.5 flex items-center gap-3">
+                <button
+                  type="button"
+                  className="text-ink self-start text-[11px] underline"
+                  onClick={() => setEvidenceOpen(true)}
+                >
+                  Enlarge evidence
+                </button>
+                <button
+                  type="button"
+                  className="text-ink self-start text-[11px] underline"
+                  onClick={() => setShowWhatThisShows((value) => !value)}
+                  aria-expanded={showWhatThisShows}
+                >
+                  What this shows
+                </button>
+              </div>
               {showWhatThisShows && (
                 <p className="text-faint text-[11px] leading-relaxed">{WHAT_THIS_SHOWS}</p>
               )}
@@ -203,6 +216,46 @@ export function PublicView({
               the rollup.
             </p>
           )}
+        </div>
+      )}
+      {privacy && evidenceOpen && (
+        // Fixed to the viewport, not anchored to this panel's own position:
+        // PublicView sits low on the page, and an anchored overlay large
+        // enough to hold every required line ran past the bottom of the
+        // viewport in a real capture, clipping exactly the one sentence the
+        // review most wants visible. A centered, viewport-fixed panel is
+        // never clipped by where the trigger button happens to sit.
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 p-4">
+          <div
+            role="dialog"
+            aria-label="Privacy evidence"
+            className="bg-surface border-line-strong rounded-panel flex w-[360px] max-w-[92vw] flex-col gap-2 border p-4 shadow-lg"
+          >
+            <div className="flex items-center justify-between">
+              <p className={sectionLabel}>Privacy evidence</p>
+              <button
+                type="button"
+                className="text-faint text-[11px] underline"
+                onClick={() => setEvidenceOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <AccountReadRow label="Trader view" outcome={privacy.view.outcome} />
+            <AccountReadRow label={`${market} book`} outcome={privacy.book.outcome} />
+            <p className="tnum text-dim text-[13px] leading-snug">
+              Unsigned {privacy.network} rollup RPC
+            </p>
+            <p className="tnum text-dim text-[13px] leading-snug">
+              Checked {formatClockTime(new Date(privacy.checkedAtMs))}
+            </p>
+            <p className="tnum text-faint text-[12px] leading-snug">
+              View {formatShortAddress(privacy.view.address)} · book{" "}
+              {formatShortAddress(privacy.book.address)}
+            </p>
+            <p className="text-faint text-[11px] break-all">{privacy.endpoint}</p>
+            <p className="text-ink text-[13px] leading-relaxed">{WHAT_THIS_SHOWS}</p>
+          </div>
         </div>
       )}
     </div>

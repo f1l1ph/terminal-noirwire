@@ -8,7 +8,10 @@ export async function createWallet(page: Page): Promise<void> {
 
 export async function fundWallet(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
-  await expect(page.getByText("Available: 5,000.00 nUSD")).toBeVisible();
+  // Third design review, must-fix 2: once this wallet's one-time grant is
+  // used, the account details say so instead of a plain "Available:" line -
+  // true the moment this grant lands, same session or not.
+  await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible();
 }
 
 export async function createAndFundWallet(page: Page): Promise<void> {

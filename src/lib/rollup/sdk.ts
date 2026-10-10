@@ -4,7 +4,7 @@
  * defined here, so a client package upgrade is an edit to this one file.
  * Mirrors the same discipline sim-noirwire's own `src/rollup/program.ts`
  * follows for the same package (see that repo's docs/DESIGN.md, "The rollup
- * venue"). Currently on 0.3.1.
+ * venue"). Currently on 0.5.0.
  */
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
@@ -115,8 +115,34 @@ export class TraderClient {
     owner: PublicKey,
     keys: OrderKeyManager,
     programId: PublicKey,
+    options?: { push?: boolean },
   ) {
-    this.inner = new SdkTraderClient(connection, reader, owner, keys, programId);
+    this.inner = new SdkTraderClient(connection, reader, owner, keys, programId, options);
+  }
+
+  /**
+   * Resolves once the client needs nothing but a send for its next call: a
+   * blockhash, the rollup's clock, and (when `push` is on, the default) a
+   * live result subscription are all in hand. Call once after sign-in, not
+   * per order - a call already warm costs the order itself one request.
+   */
+  ready(): Promise<void> {
+    return this.inner.ready();
+  }
+
+  /** Ends the background subscription and refreshes. A later call starts them again. */
+  close(): void {
+    this.inner.close();
+  }
+
+  /** Points reads and the subscription at a freshly signed-in connection, without rebuilding order keys. */
+  renewReader(reader: Connection): void {
+    this.inner.renewReader(reader);
+  }
+
+  /** Whether results are arriving by live subscription right now, rather than by reading the view. */
+  get pushing(): boolean {
+    return this.inner.pushing;
   }
 
   view(): Promise<View> {

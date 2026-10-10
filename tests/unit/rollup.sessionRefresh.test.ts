@@ -132,6 +132,7 @@ function fakeSession(client: TraderClientLike, createdAtMs: number): RollupSessi
     tokenIndexBySymbol: new Map([["nUSD", 0]]),
     createdAtMs,
     saveKeyCheckpoint: () => {},
+    close: () => {},
   };
 }
 

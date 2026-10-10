@@ -223,9 +223,22 @@ export class RollupTradingClient implements TradingClient {
   }
 
   private async refreshSession(wallet: WalletIdentity): Promise<RollupSession> {
+    // The session being replaced may still hold a live subscription; close
+    // it before it is forgotten so it does not linger as an orphaned
+    // websocket alongside the new one.
+    const previous = this.sessions.get(wallet.address);
     const promise = this.buildSession(ownerSecretOf(wallet), this.sessionDeps());
     this.sessions.set(wallet.address, promise);
+    if (previous) void previous.then((session) => session.close()).catch(() => {});
     return promise;
+  }
+
+  /** Ends this wallet's session (its live subscription and background refreshes), if one is open. */
+  closeWallet(wallet: WalletIdentity): void {
+    const existing = this.sessions.get(wallet.address);
+    if (!existing) return;
+    this.sessions.delete(wallet.address);
+    void existing.then((session) => session.close()).catch(() => {});
   }
 
   /**

@@ -54,6 +54,7 @@ export function MarketChart({
   connectionState,
   loading,
   fetchFailed,
+  markStale = false,
   onRetry,
 }: {
   market: MarketInfo | undefined;
@@ -68,6 +69,8 @@ export function MarketChart({
   loading: boolean;
   /** True only when the candle fetch itself failed (network/HTTP error) - never merely because the market has fewer than two candles yet. Only this drives "Price history unavailable" (second design review, item 1). */
   fetchFailed: boolean;
+  /** Past the program's 10-second freshness limit: the mark line's own title and color say so, rather than a dashed line that could as easily mean "just drawn" (third design review, must-fix 1). */
+  markStale?: boolean;
   onRetry: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -321,16 +324,18 @@ export function MarketChart({
     if (!Number.isFinite(value)) return;
     const priceLine = candleSeriesRef.current.createPriceLine({
       price: value,
-      color: "#e8e6e1",
+      color: markStale ? "#b08a3a" : "#e8e6e1",
       lineWidth: 1,
       lineStyle: 2,
       axisLabelVisible: true,
-      title: `mark ${formatClockTime(new Date(mark.time))}`,
+      title: markStale
+        ? `stale mark ${formatClockTime(new Date(mark.time))}`
+        : `mark ${formatClockTime(new Date(mark.time))}`,
     });
     return () => {
       candleSeriesRef.current?.removePriceLine(priceLine);
     };
-  }, [mark]);
+  }, [mark, markStale]);
 
   // Candle bucket size, estimated from the loaded series itself rather than
   // parsed from the interval string: several own fills landing in the same

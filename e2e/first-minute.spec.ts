@@ -17,7 +17,7 @@ test.describe("First minute: wallet, funds, a filled market long", () => {
     await shot(page, "02-wallet-created");
 
     await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
-    await expect(page.getByText("Available: 5,000.00 nUSD")).toBeVisible();
+    await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible();
     await shot(page, "03-funded");
 
     await page.getByLabel("Quantity (SOL)").fill("1");

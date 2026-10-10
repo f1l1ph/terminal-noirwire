@@ -15,11 +15,13 @@ import type { WalletHookResult } from "@/lib/wallet/useWallet";
  */
 export function TerminalShell({
   connectionState,
+  marketDataStale,
   wallet,
   statusBarText,
   children,
 }: {
   connectionState: ConnectionState;
+  marketDataStale?: boolean;
   wallet: WalletHookResult;
   statusBarText: string;
   children: ReactNode;
@@ -33,7 +35,7 @@ export function TerminalShell({
           <NetworkBadge />
         </div>
         <div className="flex items-center gap-3">
-          <ConnectionStatus state={connectionState} />
+          <ConnectionStatus state={connectionState} marketDataStale={marketDataStale} />
           <WalletWidget wallet={wallet} />
         </div>
       </header>

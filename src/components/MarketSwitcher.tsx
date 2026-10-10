@@ -1,6 +1,6 @@
 import { formatDecimal, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
 import type { MarketInfo } from "@/lib/market-data/types";
-import { ageMs } from "@/lib/market-data/selectors";
+import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
 import { panel } from "@/components/ui/styles";
 
@@ -23,6 +23,7 @@ export function MarketSwitcher({
       {markets.map((market) => {
         const selected = market.id === selectedId;
         const age = ageMs(market.markPriceUpdatedAtMs, now);
+        const stale = isStale(market.markPriceUpdatedAtMs, now, STALE_MARK_MS);
         return (
           <button
             key={market.id}
@@ -34,11 +35,21 @@ export function MarketSwitcher({
             }`}
           >
             <span className="text-[13px] font-medium">{market.id}</span>
-            <span className="tnum text-faint flex items-center gap-2 text-[12px]">
+            <span
+              className={`tnum flex items-center gap-2 text-[12px] ${stale ? "text-faint/70 italic" : "text-faint"}`}
+            >
               {market.markPrice
-                ? formatDecimal(market.markPrice, priceDecimalsOf(market))
+                ? stale
+                  ? `Last ${formatDecimal(market.markPrice, priceDecimalsOf(market))}`
+                  : formatDecimal(market.markPrice, priceDecimalsOf(market))
                 : UNAVAILABLE}
-              <span>{age === null ? "" : formatRelativeAge(age)}</span>
+              <span>
+                {age === null
+                  ? ""
+                  : stale
+                    ? `${formatRelativeAge(age)} ago`
+                    : formatRelativeAge(age)}
+              </span>
             </span>
           </button>
         );

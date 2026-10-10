@@ -35,6 +35,35 @@ function walletOf(account: WalletAccount): WalletIdentity {
 }
 
 /**
+ * Whether this wallet has ever asked for its one-time grant, so a reload
+ * never re-offers "Get 5,000 test nUSD" to an account that already used it
+ * and has since spent it down to zero (third design review, must-fix 2).
+ * Local to this browser: a wallet funded elsewhere first still sees the
+ * button once, learns `alreadyFunded`, and is remembered here from then on.
+ */
+function grantUsedKey(address: string): string {
+  return `noirwire-terminal-grant-used:${address}`;
+}
+
+function readGrantUsed(address: string | null): boolean {
+  if (!address || typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(grantUsedKey(address)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeGrantUsed(address: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(grantUsedKey(address), "1");
+  } catch {
+    // Best effort; worst case the button is offered again next reload.
+  }
+}
+
+/**
  * One trading session: the selected trading client (dev or rollup), the
  * trader's live state, and this session's own-fill recognition state. Dev
  * mode recognises its own fills by a venue-assigned tag (`ownTags`); rollup
@@ -60,8 +89,16 @@ export function useTrading(
   }, []);
   const [ownTags, setOwnTags] = useState<ReadonlySet<string>>(new Set());
   const [rollupSecrets, setRollupSecrets] = useState<Uint8Array[]>([]);
+  const [grantUsed, setGrantUsed] = useState(false);
   const ownTagsRef = useRef<Set<string>>(new Set());
   const rollupSecretsKeyRef = useRef<string | null>(null);
+  const grantUsedKeyRef = useRef<string | null>(null);
+
+  const walletKey = wallet ? wallet.publicKey : null;
+  if (walletKey !== grantUsedKeyRef.current) {
+    grantUsedKeyRef.current = walletKey;
+    setGrantUsed(readGrantUsed(walletKey));
+  }
 
   const addOwnTag = useCallback((tag: string) => {
     if (!tag || ownTagsRef.current.has(tag)) return;
@@ -89,18 +126,42 @@ export function useTrading(
 
   useEffect(() => {
     if (!wallet) return;
-    return client.subscribe(walletOf(wallet), (next) => {
+    const identity = walletOf(wallet);
+    const unsubscribe = client.subscribe(identity, (next) => {
       setStateSynced(next);
       for (const order of next.openOrders) addOwnTag(order.tag);
     });
+    return () => {
+      unsubscribe();
+      // Wallet changed (cleared, switched) or this component is going away:
+      // end the wallet's own live subscription and background refreshes,
+      // never left running for a wallet no longer in view.
+      client.closeWallet?.(identity);
+    };
   }, [client, wallet, addOwnTag, setStateSynced]);
+
+  // The page itself unloading (close, refresh, navigate away) does not
+  // always run the effect cleanup above in time; this ends the same
+  // subscription from the one event guaranteed to fire first.
+  useEffect(() => {
+    if (!wallet || typeof window === "undefined") return;
+    const identity = walletOf(wallet);
+    const onUnload = () => client.closeWallet?.(identity);
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [client, wallet]);
 
   const effectiveState = wallet ? state : EMPTY_STATE;
   const effectiveLastSyncedAtMs = wallet ? lastSyncedAtMs : null;
 
   const fund = useCallback(async (): Promise<FundOutcome> => {
     if (!wallet) return { kind: "error", message: "No wallet to fund" };
-    return client.fund(walletOf(wallet));
+    const outcome = await client.fund(walletOf(wallet));
+    if (outcome.kind === "granted" || outcome.kind === "alreadyFunded") {
+      writeGrantUsed(wallet.publicKey);
+      setGrantUsed(true);
+    }
+    return outcome;
   }, [client, wallet]);
 
   const placeOrder = useCallback(
@@ -118,14 +179,14 @@ export function useTrading(
           : performance.now() - clickedAt;
       addOwnTag(result.tag);
       setRollupSecrets(readRollupSecrets());
-      // A fill changes positions and balances immediately; without this the
-      // dock can show the pre-fill state until the next poll tick, up to a
-      // second later (seen in a screenshot taken right after "Filled").
-      try {
-        setStateSynced(await client.fetchState(walletOf(wallet)));
-      } catch {
+      // A fill changes positions and balances; the push subscription
+      // (client.subscribe, above) already carries that update on its own
+      // and is not awaited here - the witness rail must show this result
+      // the moment it arrives, never delayed by a balance refresh behind
+      // it (third design review, "per-order requests from the browser").
+      void client.fetchState(walletOf(wallet)).then(setStateSynced, () => {
         // The regular subscription will catch up; this was a best-effort nudge.
-      }
+      });
       return { result, clientDurationMs };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- readRollupSecrets closes over wallet/client, already deps
@@ -187,6 +248,7 @@ export function useTrading(
     lastSyncedAtMs: effectiveLastSyncedAtMs,
     ownTags,
     rollupSecrets,
+    grantUsed,
     fund,
     placeOrder,
     cancelAllInMarket,

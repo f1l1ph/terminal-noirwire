@@ -35,7 +35,9 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
     // on-chain transaction (sim-noirwire's /v1/fund/prepare + /v1/fund/submit),
     // signed locally with the owner key derived from this browser wallet.
     await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
-    await expect(page.getByText("Available: 5,000.00 nUSD")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible({
+      timeout: 30_000,
+    });
     await shot(page, "02-funded");
 
     // Market long on NSOL-PERP, filled against the house maker.
@@ -85,7 +87,9 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
     await page.getByRole("button", { name: "Move funds to spot" }).click();
     await page.getByLabel("Transfer amount (nUSD)").fill("500");
     await page.getByRole("button", { name: "Move", exact: true }).click();
-    await expect(page.getByText("Available: 500.00 nUSD")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Grant used · 500.00 nUSD available")).toBeVisible({
+      timeout: 20_000,
+    });
 
     await page.getByLabel("Quantity (SOL)").fill("1");
     await page.getByRole("button", { name: "Place test buy", exact: true }).first().click();
@@ -106,7 +110,7 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
 
     // Reload: account, positions and own-fill marks all come back.
     await page.reload();
-    await expect(page.getByText(/Available:/).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Grant used ·/).first()).toBeVisible({ timeout: 15_000 });
     await page.getByRole("tab", { name: "Positions" }).click();
     await expect(page.getByRole("tabpanel").getByText("NSOL-PERP")).toBeVisible({
       timeout: 10_000,
@@ -126,7 +130,9 @@ test.describe("Phone views against the real rollup", () => {
     await page.getByRole("button", { name: "Create test wallet" }).click();
     await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
     await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
-    await expect(page.getByText("Available: 5,000.00 nUSD")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible({
+      timeout: 30_000,
+    });
     await shot(page, "phone-funded");
 
     await page.getByLabel("Quantity (SOL)").fill("1");

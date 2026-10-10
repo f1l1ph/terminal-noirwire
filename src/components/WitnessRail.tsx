@@ -131,6 +131,12 @@ export function WitnessRail({
   // network's own number is not mistaken for anything else, so it gets no
   // prefix word at all (third design review, item 4).
   const networkWord = isLocalNetwork(network) ? "local " : "";
+  // Review 3, must-fix 5: a reused wallet that already has funds or a
+  // position before this session's first order must be named as such, not
+  // narrated as the result of the next order.
+  const existingAccountLabel = isLocalNetwork(network)
+    ? "Existing test account"
+    : `Existing ${network} test account`;
 
   if (!order || steps.length === 0) {
     return (
@@ -140,8 +146,8 @@ export function WitnessRail({
         {hasAccountHistory ? (
           <>
             <p className="text-dim mt-1 text-[13px]">
-              This session only. No order placed in {market} yet this browser session - earlier
-              activity is not restored after a reload.
+              {existingAccountLabel} - this session only. No order placed in {market} yet this
+              browser session; earlier activity is not restored after a reload.
             </p>
             <button
               type="button"
@@ -164,12 +170,46 @@ export function WitnessRail({
 
   return (
     <div className={`${panel} flex min-h-0 flex-1 flex-col p-3`} aria-live="polite">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* Fixed, never scrolled out of view (third design review, must-fix
+          8): the order's own description and its CURRENT result are always
+          on screen, whatever the detail history below is scrolled to. */}
+      <div className="shrink-0">
         <p className={sectionLabel}>Witness rail</p>
         <RecentActivity markets={recentMarkets} onSelect={onSelectMarket} />
         <p className="text-ink mt-1 text-[13px] font-medium">{describeOrder(order)}</p>
 
-        <ol className="mt-2 flex flex-col gap-1.5">
+        {lastStep && (
+          <div className="mt-1.5">
+            <p
+              className={`text-[13px] font-semibold ${lastStep.type === "rejected" ? "text-danger" : "text-ink"}`}
+            >
+              {STEP_LABELS[lastStep.type]}
+              <span className="tnum text-faint ml-2 text-[11px] font-normal">
+                {formatClockTime(new Date(lastStep.at))}
+              </span>
+            </p>
+            {lastStep.detail &&
+              (lastStep.type === "rejected" ||
+                lastStep.type === "cancelled" ||
+                lastStep.type === "unknown") && (
+                <p
+                  className={`mt-0.5 text-[12px] ${lastStep.type === "rejected" ? "text-danger" : "text-faint"}`}
+                >
+                  {lastStep.detail}
+                </p>
+              )}
+            {clientDurationMs !== null && (
+              <p className="tnum text-faint mt-1 text-[12px]">
+                This order · {networkWord}click to result {formatDuration(clientDurationMs)}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
+        <p className={sectionLabel}>History</p>
+        <ol className="mt-1 flex flex-col gap-1.5">
           {steps.map((step, index) => (
             <li
               key={`${step.type}-${index}`}
@@ -182,19 +222,6 @@ export function WitnessRail({
             </li>
           ))}
         </ol>
-
-        {lastStep?.type === "rejected" && lastStep.detail && (
-          <p className="text-danger mt-1 text-[12px]">{lastStep.detail}</p>
-        )}
-        {(lastStep?.type === "cancelled" || lastStep?.type === "unknown") && lastStep.detail && (
-          <p className="text-faint mt-1 text-[12px]">{lastStep.detail}</p>
-        )}
-
-        {clientDurationMs !== null && (
-          <p className="tnum text-faint mt-2 text-[12px]">
-            This order · {networkWord}click to result {formatDuration(clientDurationMs)}
-          </p>
-        )}
 
         {openOrder && (
           <div className="border-line-subtle mt-2 border-t pt-2 text-[12px]">

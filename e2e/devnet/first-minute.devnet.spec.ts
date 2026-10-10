@@ -81,7 +81,9 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
     if (await fundButton.isVisible().catch(() => false)) {
       await fundButton.click();
     }
-    await expect(page.getByText(/Available: [1-9][0-9,]*\.\d\d nUSD/)).toBeVisible({
+    await expect(
+      page.getByText(/(Available: [1-9][0-9,]*\.\d\d nUSD|Grant used · [1-9][0-9,]*\.\d\d nUSD)/),
+    ).toBeVisible({
       timeout: 60_000,
     });
     await shot(page, "03-funded");
@@ -104,17 +106,18 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
     await expect(page.getByRole("tabpanel").getByText("NSOL-PERP")).toBeVisible({
       timeout: 15_000,
     });
-    await shot(page, "05-position");
+    await shot(page, "05-fills-and-position");
 
-    // A resting limit order, priced well away from the mark but inside the
-    // program's outer band, then cancelled. The market-order "max buy
-    // price" field is already the mark plus 1% (OrderEntry's own
-    // auto-bound), the most reliable read of "the current mark" on screen.
+    // A resting limit order near the live mark, on the passive (buy) side -
+    // close enough to look like a real instruction, not a test fixture, but
+    // outside the spread so it rests rather than crossing at once (third
+    // design review, must-fix 6). The market order's own "max buy price"
+    // (mark plus 1%) is the most reliable read of "the current mark" on
+    // screen; 3% below the mark, tick-aligned, leaves headroom against the
+    // thin test venue's own bots while still reading as plausible.
     const maxBuyPrice = await page.getByLabel("Max buy price (nUSD)").inputValue();
-    // Rounded to NSOL-PERP's 0.10 tick (the venue refuses an off-tick
-    // price): 60% of the mark stays inside the program's 50% outer band
-    // while landing on a real tick.
-    const restingPrice = (Math.round((Number(maxBuyPrice) * 0.6) / 0.1) * 0.1).toFixed(2);
+    const mark = Number(maxBuyPrice) / 1.01;
+    const restingPrice = (Math.round((mark * 0.97) / 0.1) * 0.1).toFixed(2);
 
     await page.getByRole("button", { name: "limit", exact: true }).click();
     await page.getByLabel("Quantity (SOL)").fill("0.1");
@@ -125,11 +128,31 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
       await limitDialog.getByRole("button", { name: "Place test long", exact: true }).click();
     }
     await expect(page.getByText("Resting", { exact: true })).toBeVisible({ timeout: 60_000 });
-    await shot(page, "06-resting");
+    // The dock auto-shows Open orders while this session's own order rests
+    // (section 3, item 2); the full row - id, price, remaining size, its
+    // own cancel - is what this screenshot is for.
+    await expect(page.getByRole("tab", { name: "Open orders" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(page.getByRole("tabpanel").getByText(/Cancel #/)).toBeVisible();
+    await shot(page, "06-resting-open-orders-row");
 
-    await page.getByRole("button", { name: /Cancel order/ }).click();
+    // Cancelled from the dock's own row, by id, matching the review's ask.
+    await page
+      .getByRole("tabpanel")
+      .getByRole("button", { name: /Cancel #/ })
+      .click();
     await expect(page.getByText("Cancelled", { exact: true })).toBeVisible({ timeout: 60_000 });
-    await shot(page, "07-cancelled");
+    // The dock auto-returns to whatever tab was open before the order
+    // started resting (section 3, item 2) - click back to Open orders so
+    // this shot holds both the rail's cancelled receipt and the now-empty
+    // dock row together, per the review's own recording script.
+    await page.getByRole("tab", { name: "Open orders" }).click();
+    await expect(page.getByRole("tabpanel").getByText("No open orders.")).toBeVisible({
+      timeout: 15_000,
+    });
+    await shot(page, "07-cancelled-by-id");
 
     // Move funds to spot, then a spot buy on NSOL-NUSD.
     await page.getByRole("button", { name: "NSOL-NUSD" }).click();
@@ -139,7 +162,9 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
       await moveButton.click();
       await page.getByLabel("Transfer amount (nUSD)").fill("500");
       await page.getByRole("button", { name: "Move", exact: true }).click();
-      await expect(page.getByText(/Available: [1-9]/)).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText(/(Available: [1-9]|Grant used · [1-9].* available)/)).toBeVisible(
+        { timeout: 60_000 },
+      );
     }
     await page.getByLabel("Quantity (SOL)").fill("1");
     await page.getByRole("button", { name: "Place test buy", exact: true }).first().click();
@@ -152,11 +177,19 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
     await page.getByRole("button", { name: "Check unsigned accounts" }).click();
     await expect(page.getByText("Trader view · no data returned")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(/book · no data returned/)).toBeVisible();
-    await shot(page, "09-privacy-check");
+    // Enlarged, readable-at-video-size evidence panel (third design review,
+    // must-fix 7), not the narrow inline summary.
+    await page.getByRole("button", { name: "Enlarge evidence" }).click();
+    const evidenceDialog = page.getByRole("dialog", { name: "Privacy evidence" });
+    await expect(evidenceDialog).toBeVisible();
+    await expect(evidenceDialog.getByText(/Unsigned devnet rollup RPC/)).toBeVisible();
+    await shot(page, "09-privacy-evidence-enlarged");
 
     // Reload: account, positions and own-fill marks all come back.
     await page.reload();
-    await expect(page.getByText(/Available:/).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/(Available:|Grant used ·)/).first()).toBeVisible({
+      timeout: 30_000,
+    });
     await page.getByRole("tab", { name: "Positions" }).click();
     await expect(page.getByRole("tabpanel").getByText("NSOL-PERP")).toBeVisible({
       timeout: 15_000,
@@ -183,7 +216,9 @@ test.describe("Phone views against real Solana devnet", () => {
     if (await fundButton.isVisible().catch(() => false)) {
       await fundButton.click();
     }
-    await expect(page.getByText(/Available: [1-9][0-9,]*\.\d\d nUSD/)).toBeVisible({
+    await expect(
+      page.getByText(/(Available: [1-9][0-9,]*\.\d\d nUSD|Grant used · [1-9][0-9,]*\.\d\d nUSD)/),
+    ).toBeVisible({
       timeout: 60_000,
     });
     await shot(page, "phone-funded");

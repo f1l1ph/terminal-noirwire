@@ -71,6 +71,7 @@ export function OrderEntry({
   onCreateWallet,
   creatingWallet,
   onFund,
+  grantAlreadyUsed,
   placeOrder,
   onOrderPlaced,
   onTransferToSpot,
@@ -91,6 +92,14 @@ export function OrderEntry({
   onCreateWallet: () => void;
   creatingWallet: boolean;
   onFund: () => Promise<FundOutcome>;
+  /**
+   * This wallet has already asked for its one-time grant, on this browser
+   * or (learned from an `alreadyFunded` answer) elsewhere. Never offer the
+   * grant action or an "already received" notice again once this is true
+   * (third design review, must-fix 2); show "Grant used" in the account
+   * details instead, whatever the current balance is.
+   */
+  grantAlreadyUsed: boolean;
   placeOrder: (input: NewOrderInput) => Promise<PlacedOrderOutcome>;
   onOrderPlaced: (outcome: PlacedOrderOutcome, descriptor: OrderDescriptor) => void;
   /** Present only in rollup mode, where collateral and spot are separate balances. */
@@ -172,11 +181,22 @@ export function OrderEntry({
   const sizeDecimals = market ? sizeDecimalsOf(market) : 4;
 
   const defaultBoundPrice = useMemo(() => {
-    if (orderType !== "market" || !mark || !market) return "";
+    if (!mark || !market) return "";
     const base = Number(mark.price);
     if (!Number.isFinite(base)) return "";
-    const slippage = side === "buy" ? 1.01 : 0.99;
-    return (base * slippage).toFixed(priceDecimals);
+    if (orderType === "market") {
+      const slippage = side === "buy" ? 1.01 : 0.99;
+      return (base * slippage).toFixed(priceDecimals);
+    }
+    // Limit: default to a plausible resting price on the passive side of
+    // the mark (a buy below it, a sell above it), tick-aligned, so the
+    // field never opens on an off-tick test fixture or a price that would
+    // simply cross the spread and fill at once (third design review,
+    // must-fix 6).
+    const passive = side === "buy" ? base * 0.995 : base * 1.005;
+    const tick = Number(market.tickSize);
+    const aligned = tick > 0 ? Math.round(passive / tick) * tick : passive;
+    return aligned.toFixed(priceDecimals);
   }, [orderType, mark, side, market, priceDecimals]);
   const priceText = priceOverride ?? defaultBoundPrice;
 
@@ -390,13 +410,16 @@ export function OrderEntry({
       setShowTransfer(true);
       return;
     }
-    if (noFunds) {
+    if (noFunds && !grantAlreadyUsed) {
       setFunding(true);
       setFundMessage(null);
       onFund()
         .then((outcome) => {
           if (outcome.kind === "alreadyFunded") {
-            setFundMessage("This wallet already received its one-time grant.");
+            // Learned only now that this wallet was granted elsewhere:
+            // `grantAlreadyUsed` flips on the next render and the account
+            // details take over saying so - no separate notice here.
+            setFundMessage(null);
           } else if (outcome.kind === "rateLimited") {
             setFundMessage(
               outcome.message ??
@@ -468,6 +491,13 @@ export function OrderEntry({
     primaryDisabled = false;
   } else if (noFunds && confirmingFund && collateral !== undefined) {
     primaryLabel = "Confirming on chain…";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
+  } else if (noFunds && grantAlreadyUsed) {
+    // The grant is spent and there is nowhere left to ask for more: the
+    // account-details line below says "Grant used", and the primary action
+    // is the ordinary empty-form state, never a repeat grant offer.
+    primaryLabel = "Enter quantity";
     primaryClass = btnGhost;
     primaryDisabled = true;
   } else if (noFunds) {
@@ -546,7 +576,9 @@ export function OrderEntry({
             {/* "Confirming on chain" only makes sense where funding lands - the separate perpetuals collateral account, rollup mode only (`collateral` is undefined in dev mode, which has no chain to confirm against). */}
             {confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
               ? "Confirming on chain…"
-              : `Available: ${formatMoney(availableQuote)}`}
+              : grantAlreadyUsed
+                ? `Grant used · ${formatMoney(availableQuote)} available`
+                : `Available: ${formatMoney(availableQuote)}`}
             {market.kind === "spot" && side === "sell" && (
               <>
                 {" "}
@@ -741,7 +773,11 @@ export function OrderEntry({
         {funding ? "Requesting…" : submitting ? "Submitting…" : primaryLabel}
       </button>
 
-      {fundMessage && <p className="text-warning text-[12px]">{fundMessage}</p>}
+      {/* Only a genuine problem (rate limit, error) ever shows here now, and
+          only while it is still true: `noFunds` turning false (funds
+          landed) retires it instead of leaving it under the button
+          alongside a working order form (third design review, must-fix 2). */}
+      {fundMessage && noFunds && <p className="text-warning text-[12px]">{fundMessage}</p>}
 
       {showTransfer && onTransferToSpot && collateral && (
         <TransferControl

@@ -20,7 +20,9 @@ test.describe("First minute against a real sim-noirwire instance", () => {
     await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
 
     await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
-    await expect(page.getByText("Available: 5,000.00 nUSD")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible({
+      timeout: 20_000,
+    });
 
     await page.getByLabel("Quantity (SOL)").fill("1");
     await page.getByRole("button", { name: "Place test long", exact: true }).first().click();

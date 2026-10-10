@@ -25,6 +25,9 @@ import {
 export interface TraderClientLike {
   view(): Promise<View>;
   subscribeView(onChange: (view: View) => void): () => Promise<void>;
+  /** Optional: only the real SDK client (0.5.0+) has these; a unit-test fake may omit them. */
+  ready?(): Promise<void>;
+  close?(): void;
   placeOrder(
     marketId: number,
     order: {
@@ -65,6 +68,8 @@ export interface RollupSession {
   createdAtMs: number;
   /** Saves this session's current order-key checkpoint, for the next session to restore from. See checkpointStore.ts. */
   saveKeyCheckpoint(): void;
+  /** Ends the client's background subscription and refreshes (0.5.0+); a no-op for a test fake that omits `close`. */
+  close(): void;
 }
 
 export interface RollupSessionDeps {
@@ -144,20 +149,23 @@ export async function buildRealSession(
 
   let keys: OrderKeyManager = freshOrderKeys(seed);
   try {
-    const existingView = await new TraderClient(
-      reader,
-      reader,
-      owner.publicKey,
-      keys,
-      programId,
-    ).view();
+    // A one-shot read, thrown away right after: no benefit from a live
+    // result subscription here, so it asks for none.
+    const existingView = await new TraderClient(reader, reader, owner.publicKey, keys, programId, {
+      push: false,
+    }).view();
     keys = orderKeysFromCheckpoint(seed, existingView, checkpoint);
   } catch {
     // No view yet (account not opened): the fresh keys are exactly what
     // `open_trader` will be asked to install.
   }
 
+  // `push` defaults to on; this is the client every order actually goes
+  // through, so `ready()` is awaited once here, right after sign-in - the
+  // subscription is already live by the time the trader places a first
+  // order, rather than that order itself paying for warming it up.
   const client = new TraderClient(reader, reader, owner.publicKey, keys, programId);
+  await client.ready();
   const tokenIndexBySymbol = await resolveTokenIndices(anonymous, deployment);
 
   return {
@@ -169,5 +177,6 @@ export async function buildRealSession(
     createdAtMs: (deps.now ?? Date.now)(),
     saveKeyCheckpoint: () =>
       saveCheckpoint(storage, owner.publicKey.toBase58(), checkpointOf(keys)),
+    close: () => client.close(),
   };
 }
