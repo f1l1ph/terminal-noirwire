@@ -127,7 +127,10 @@ export function WitnessRail({
   cancelMessage?: string | null;
   now: number;
 }) {
-  const networkWord = isLocalNetwork(network) ? "local" : network.toLowerCase();
+  // Only a genuinely local (loopback) number needs the qualifier - a real
+  // network's own number is not mistaken for anything else, so it gets no
+  // prefix word at all (third design review, item 4).
+  const networkWord = isLocalNetwork(network) ? "local " : "";
 
   if (!order || steps.length === 0) {
     return (
@@ -189,7 +192,7 @@ export function WitnessRail({
 
         {clientDurationMs !== null && (
           <p className="tnum text-faint mt-2 text-[12px]">
-            This order · {networkWord} click to result {formatDuration(clientDurationMs)}
+            This order · {networkWord}click to result {formatDuration(clientDurationMs)}
           </p>
         )}
 

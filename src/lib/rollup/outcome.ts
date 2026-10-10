@@ -205,9 +205,16 @@ function describeStatus(
         reason: "The remainder was cancelled: it failed the venue's margin check at this price.",
       };
     case RESULT_STATUS_CODE.refused:
+      // Code 38 (StalePrice, programs/noirwire-orderbook/src/errors.rs) is
+      // the one a trader hits often enough on a real network to need its
+      // own sentence: devnet's price feed updates every few seconds, and
+      // the program refuses an order against a price older than 10s.
       return {
         status: "rejected",
-        reason: `Refused by the venue (code ${result.code}). No fill occurred.`,
+        reason:
+          result.code === 38
+            ? "The venue's mark price is too old to accept new orders right now. Wait for a fresh price and try again."
+            : `Refused by the venue (code ${result.code}). No fill occurred.`,
       };
     default:
       return { status: "rejected", reason: `Unrecognised outcome (status ${result.status}).` };

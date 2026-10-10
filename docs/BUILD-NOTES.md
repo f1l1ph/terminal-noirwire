@@ -428,6 +428,75 @@ map, so the real on-chain refusal above was decoded by hand from
 (noted in the third pass, still true) - worth keeping in mind if a future
 pass wants "open orders across every market" without a per-market refetch.
 
+## Seventh pass: live on Solana devnet
+
+Switched to `@noirwire/orderbook` 0.4.0 - a clean drop-in for everything this
+terminal calls (`make check`/`make test` green with no source changes beyond
+the vendored file and `package.json`); 0.4.0's only other differences (token
+registration, `custodyVisibility` on a deployment token) are either not
+called here or absent from this service's actual `/v1/deployment` response,
+and the zod schema already ignores fields it does not declare, so nothing
+needed adding speculatively.
+
+**CORS found the hard way.** The devnet-pointed sim-noirwire's own
+`ALLOWED_ORIGINS` did not include a freshly-chosen port (3103); every REST
+fetch (`/v1/deployment`, `/v1/candles`) failed with no
+`Access-Control-Allow-Origin` header, while the **websocket stream kept
+delivering live data regardless** - which looked like a partial success
+(the tape showed one row, the pulse showed real numbers) rather than the
+CORS failure it was, until `curl -H "Origin: ..."` against a few candidate
+ports confirmed 3100 was already allowed and 3103 was not. `make e2e-devnet`
+defaults to 3100 for exactly this reason - see the README's "Running against
+devnet" for the check to run before ever changing it.
+
+**Devnet-specific UX, verified by hand against the real deployment:**
+
+- **"Confirming on chain…"** replaces "Available: 0.00 nUSD" between a
+  funding grant landing and this device's own first read of the resulting
+  balance actually showing it (`OrderEntry.tsx`'s `confirmingFund`, cleared
+  the moment a real balance appears or after 15s) - a brand-new account's
+  own first read can lag its own grant transaction by several seconds on a
+  real network. Scoped to rollup mode only (`collateral !== undefined`):
+  dev mode has no such lag, and the wording would be false there.
+- **A stale-price refusal is a plain sentence**, not a generic "refused by
+  the venue" one: `RESULT_STATUS_CODE.refused` with program error code 38
+  (`StalePrice`, `errors.rs`) now reads "The venue's mark price is too old
+  to accept new orders right now." `STALE_MARK_MS` (10s) already matched
+  the program's own threshold from an earlier pass; this pass only adds the
+  human sentence for when the client's own check and the venue's disagree
+  at the boundary.
+- **No "local" qualifier on a real network's own number.** The per-order
+  "This order · click to result Nms" line now omits the network word
+  entirely outside `isLocalNetwork` (devnet reads "This order · click to
+  result 1.27 s", never "devnet click to result"), since a real number
+  needs no disclaimer the way a loopback one does.
+- **"Sending" is instant**: `OrderEntry`'s `submitting` state was already
+  set synchronously before the `await`, confirmed by hand this pass (the
+  button read "Submitting…" within tens of milliseconds of the confirm
+  dialog's own click, verified with a timestamped screenshot check) - no
+  code change was needed here, only verification against real latency.
+- No "unknown" outcome was observed across roughly 25 real orders this
+  pass; the pending/unknown UI from the fifth and sixth passes was not
+  re-exercised live, only by its existing unit tests.
+
+**Measured, this device's connection, Europe to the public devnet
+endpoint** (`https://devnet-tee.magicblock.app`), 20 market orders: median
+**1.35 s**, p95 **2.85-2.9 s**, worst **2.88 s**, best **1.00 s** (the
+terminal's own "click to result" figures, not a wall-clock proxy). Noisier
+and almost an order of magnitude slower than the local stack's 30-50 ms
+(fourth pass) - expected: a real network round trip plus confirmation, not
+loopback.
+
+**Wallet persistence** (`e2e/support/devnetWallet.ts`,
+`e2e/.devnet-wallet.json`, git-ignored): one wallet created once this pass,
+reused for the entire 20-order measurement, the formal `make e2e-devnet`
+run (both desktop and phone), and every manual check - exactly one new
+wallet for the whole pass, well under the three-wallet budget. The
+persisted-secret pattern seeds `localStorage` via `page.addInitScript`
+before the page's own script runs, using the exact key
+`src/lib/wallet/index.ts` reads (`noirwire-terminal-wallet-secret`) - a
+test-only mechanism, not a product code change.
+
 ## Known non-blocking issue
 
 A `lightweight-charts` internal error ("Value is null") was observed

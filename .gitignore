@@ -17,4 +17,8 @@ coverage/
 playwright-report/
 test-results/
 e2e/screenshots/*.png
+# One devnet wallet, persisted and reused across make e2e-devnet runs -
+# seats are scarce (100 new accounts/day, one funding grant per address).
+# Secret stays local; never committed.
+e2e/.devnet-wallet.json
 .vercel

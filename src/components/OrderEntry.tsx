@@ -126,6 +126,14 @@ export function OrderEntry({
   const [submitting, setSubmitting] = useState(false);
   const [funding, setFunding] = useState(false);
   const [fundMessage, setFundMessage] = useState<string | null>(null);
+  // On a real network, a brand-new account's first read can lag several
+  // seconds behind its own grant transaction landing (the account has to
+  // actually propagate before a read sees it) - set the moment a grant is
+  // confirmed, cleared once a real balance shows up or after a bounded
+  // wait, so "0.00 nUSD" is never shown for an account that is in fact
+  // funded and simply not visible yet.
+  const [confirmingFund, setConfirmingFund] = useState(false);
+  const confirmingFundTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showDetails, setShowDetails] = useState(!compact);
@@ -179,6 +187,17 @@ export function OrderEntry({
   // `collateral` is undefined and the spot balance is the only figure.
   const availableQuote =
     isPerp && collateral ? collateral.available : (quoteBalance?.available ?? "0");
+
+  useEffect(() => {
+    if (confirmingFund && Number(availableQuote) > 0) {
+      // Syncing to an external signal (the venue's own balance finally
+      // showing up) is the documented case for an effect.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setConfirmingFund(false);
+      if (confirmingFundTimeoutRef.current) clearTimeout(confirmingFundTimeoutRef.current);
+    }
+  }, [confirmingFund, availableQuote]);
+
   const markStale = isStale(mark?.time, now, STALE_MARK_MS);
   const markAge = ageMs(mark?.time, now);
   const [goodFor, setGoodFor] = useState<NewOrderInput["goodFor"]>("untilCancelled");
@@ -387,6 +406,9 @@ export function OrderEntry({
             setFundMessage(outcome.message);
           } else {
             setFundMessage(null);
+            setConfirmingFund(true);
+            if (confirmingFundTimeoutRef.current) clearTimeout(confirmingFundTimeoutRef.current);
+            confirmingFundTimeoutRef.current = setTimeout(() => setConfirmingFund(false), 15_000);
           }
         })
         .finally(() => setFunding(false));
@@ -444,6 +466,10 @@ export function OrderEntry({
     primaryLabel = "Move funds to spot";
     primaryClass = btnPrimary;
     primaryDisabled = false;
+  } else if (noFunds && confirmingFund && collateral !== undefined) {
+    primaryLabel = "Confirming on chain…";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (noFunds) {
     primaryLabel = "Get 5,000 test nUSD";
     primaryClass = btnPrimary;
@@ -517,7 +543,10 @@ export function OrderEntry({
             Quantity ({market.base})
           </label>
           <span className="text-faint text-[11px]">
-            Available: {formatMoney(availableQuote)}
+            {/* "Confirming on chain" only makes sense where funding lands - the separate perpetuals collateral account, rollup mode only (`collateral` is undefined in dev mode, which has no chain to confirm against). */}
+            {confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
+              ? "Confirming on chain…"
+              : `Available: ${formatMoney(availableQuote)}`}
             {market.kind === "spot" && side === "sell" && (
               <>
                 {" "}

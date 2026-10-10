@@ -21,8 +21,10 @@ export default defineConfig({
   // e2e/live/*.live.spec.ts needs a real sim-noirwire instance; it runs
   // only through `make e2e-live` (playwright.live.config.ts). e2e/rollup/
   // needs a real local rollup too, only through `make e2e-rollup`
-  // (playwright.rollup.config.ts). Neither runs here.
-  testIgnore: ["live/**", "rollup/**"],
+  // (playwright.rollup.config.ts). e2e/devnet/ needs the real order book
+  // live on Solana devnet, only through `make e2e-devnet`
+  // (playwright.devnet.config.ts). None of the three run here.
+  testIgnore: ["live/**", "rollup/**", "devnet/**"],
   // Serial on purpose: the specs share one app server and one fake sim,
   // which each spec resets and steers.
   fullyParallel: false,

@@ -158,6 +158,49 @@ sets a nonced Content-Security-Policy on every page, with `connect-src`
 limited to `'self'` plus the two configured simulation-service origins, so
 the page reaches no other host.
 
+### Deploy to Vercel, for devnet
+
+Rollup mode reads the rollup's own RPC/WS URLs from sim-noirwire's
+`GET /v1/deployment` at runtime, but `connect-src` is a response header set
+at request time, before that fetch happens - so it cannot simply allow
+"whatever the service returns." Two ways to close that gap; **this project
+picks the first, the safer one**:
+
+1. **Set the two override env vars at build time to the exact devnet
+   values** (done here). CSP then allows precisely those origins and
+   nothing else; if the rollup endpoint ever changes, the build is wrong in
+   an obvious, loud way (the browser's own connection is CSP-blocked) rather
+   than silently allowing a stale or overly broad origin.
+2. The alternative - widen `connect-src` with a wildcard broad enough to
+   cover any future rollup endpoint - was rejected: it would also allow
+   origins this deployment has no reason to ever reach.
+
+Environment variables to set on the Vercel project, for devnet:
+
+| Variable                     | Value                                                                                                                                                                |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_SIM_URL`        | The sim-noirwire instance's HTTP origin (operator-provided; not this repo's concern)                                                                                 |
+| `NEXT_PUBLIC_SIM_WS_URL`     | That same instance's `/v1/stream` websocket URL                                                                                                                      |
+| `NEXT_PUBLIC_TRADING_MODE`   | `rollup`                                                                                                                                                             |
+| `NEXT_PUBLIC_NETWORK_LABEL`  | `DEVNET`                                                                                                                                                             |
+| `NEXT_PUBLIC_ROLLUP_RPC_URL` | `https://devnet-tee.magicblock.app` (confirmed by reading a live devnet `/v1/deployment` response by hand; re-verify if MagicBlock ever changes the hosted endpoint) |
+| `NEXT_PUBLIC_ROLLUP_WS_URL`  | `wss://devnet-tee.magicblock.app` (same endpoint, websocket scheme)                                                                                                  |
+
+No Solana RPC origin is needed in `connect-src`: nothing in the trading path
+talks to base-layer Solana directly (the deployment's own `solanaRpcUrl` is
+informational only), so `/v1/deployment`'s `solanaRpcUrl` field is never
+connected to from the browser.
+
+**Custom domain** (`terminal.noirwire.com`): once the domain is attached to
+the Vercel project, the sim-noirwire instance's own `ALLOWED_ORIGINS` must
+include `https://terminal.noirwire.com` (the deployed browser's origin,
+checked server-side on every REST request - confirmed by hand this pass: a
+browser origin missing from that list gets no `Access-Control-Allow-Origin`
+header back at all, which fails every REST fetch, including the one
+`/v1/deployment` itself, silently in the console rather than with an
+obvious error). That is the service's configuration, not this repo's; this
+README only states the requirement so a deploy is not left half-connected.
+
 ## Testing
 
 - **Unit** (`make test` / `npm test`): formatting, order validation against
@@ -193,6 +236,15 @@ the page reaches no other host.
   own-fill marks all come back from the chain. A second, phone-viewport test
   covers the funded and filled states at 390 wide. See "Running against the
   real rollup" below.
+- **End-to-end against real Solana devnet** (`make e2e-devnet`, opt-in,
+  never CI): the same flow again, this time through a sim-noirwire pointed
+  at the order book's live devnet deployment (`DEVNET_SIM_URL`, default
+  `http://localhost:4100`) - MagicBlock's hosted endpoint
+  (`https://devnet-tee.magicblock.app`), not a local validator. Reuses one
+  wallet persisted in `e2e/.devnet-wallet.json` (git-ignored) across every
+  run instead of creating a fresh one each time: devnet seats are scarce
+  (100 new accounts/day, one funding grant per address). See "Running
+  against devnet" below.
 
 ## Running against the real rollup
 
@@ -219,6 +271,45 @@ Content-Security-Policy to match - see playwright.rollup.config.ts).
 Point `.env.local` at `NEXT_PUBLIC_TRADING_MODE=rollup` and the same
 `NEXT_PUBLIC_SIM_URL`/`NEXT_PUBLIC_SIM_WS_URL` to run `npm run dev` against
 it by hand instead; no rollup-specific variable is required there either.
+
+## Running against devnet
+
+Needs a sim-noirwire already running in `VENUE=rollup` mode, pointed at the
+order book's live devnet deployment (another engineer's process, typically
+
+- this repository never starts, stops or reconfigures it). Confirm it is
+  ready before running anything: `curl http://localhost:4100/v1/health` should
+  report `"network":"devnet"`, and `curl http://localhost:4100/v1/deployment`
+  should give `https://devnet-tee.magicblock.app` as both `rollupRpcUrl` and
+  `rollupWsUrl`.
+
+```bash
+make e2e-devnet
+```
+
+**CORS, found the hard way this pass:** the devnet-pointed service's own
+`ALLOWED_ORIGINS` does not necessarily include every port this repo's other
+configs use (`make e2e-rollup`'s 3102, for instance) - a REST request from
+an origin missing from that list gets no `Access-Control-Allow-Origin`
+header back and fails silently (the websocket stream still delivers live
+data regardless, which can look like a partial success). `playwright.devnet.config.ts`
+defaults to port **3100**, confirmed allowed by hand
+(`curl -H "Origin: http://localhost:3100" .../v1/deployment` and reading
+the response header) before writing this config; check the same way before
+changing it. `DEVNET_SIM_URL` overrides the service address if it is not on
+`localhost:4100`; `ROLLUP_RPC_URL`/`ROLLUP_WS_URL` override the devnet
+endpoint the CSP allows, only if it is ever something other than
+MagicBlock's hosted one.
+
+**Wallet reuse:** the suite seeds `localStorage` from
+`e2e/.devnet-wallet.json` before the page loads if that file exists, so a
+reused wallet never shows the "Create test wallet" prompt at all. The first
+run (no persisted wallet) creates one through the real UI, reveals its
+secret via the wallet widget's "Save recovery details", and writes it to
+that file for every later run - and for any manual exploration against the
+same service, which should read and reuse the same file rather than create
+another one. A run against an already-funded wallet detects the real,
+already-nonzero balance and skips the funding step entirely.
 
 ## Security
 
