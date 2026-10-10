@@ -41,6 +41,18 @@ async function primeWallet(page: Page): Promise<{ reused: boolean }> {
   return { reused: false };
 }
 
+const SPOT_SELL_SIZE = "0.20";
+
+/** The spot rows of the open Balances tab: the base token and the spot nUSD (not the collateral row, which is labelled as such). */
+async function spotBalances(page: Page): Promise<{ base: number; quote: number }> {
+  const text = await page.getByRole("tabpanel").innerText();
+  const amountAfter = (label: RegExp) => Number(text.match(label)?.[1].replace(/,/g, "") ?? NaN);
+  return {
+    base: amountAfter(/nSOL\s+([\d,.]+)/),
+    quote: amountAfter(/(?:^|\n)nUSD\s+([\d,.]+) nUSD/),
+  };
+}
+
 async function ensureWalletPersisted(page: Page, alreadyReused: boolean): Promise<void> {
   if (alreadyReused) return;
   // A fresh wallet: reveal and persist its secret so every later run (and
@@ -166,12 +178,27 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
         { timeout: 60_000 },
       );
     }
-    await page.getByLabel("Quantity (SOL)").fill("1");
+    await page.getByLabel("Quantity (nSOL)").fill("1");
     await page.getByRole("button", { name: "Place test buy", exact: true }).first().click();
     await expect(
       page.getByText(/^(Filled|Resting|Partially filled|Checking with the venue)$/),
     ).toBeVisible({ timeout: 90_000 });
     await shot(page, "08-spot-filled");
+
+    // A small spot sell: spends the base token just bought, credits nUSD.
+    await page.getByRole("tab", { name: "Balances" }).click();
+    const before = await spotBalances(page);
+    await page.getByRole("button", { name: "Sell", exact: true }).click();
+    await expect(page.getByText(/^Available: [0-9.]+ nSOL$/)).toBeVisible();
+    await page.getByLabel("Quantity (nSOL)").fill(SPOT_SELL_SIZE);
+    await page.getByRole("button", { name: "Place test sell", exact: true }).first().click();
+    await expect(page.getByText(/^Sell 0\.200 nSOL · Market/)).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText("Filled", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect
+      .poll(async () => (await spotBalances(page)).base, { timeout: 30_000 })
+      .toBeCloseTo(before.base - Number(SPOT_SELL_SIZE), 6);
+    expect((await spotBalances(page)).quote).toBeGreaterThan(before.quote);
+    await shot(page, "08b-spot-sold");
 
     // The unsigned account check: trader view and book both report no data.
     await page.getByRole("button", { name: "Check unsigned accounts" }).click();

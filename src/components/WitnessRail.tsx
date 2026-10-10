@@ -26,6 +26,7 @@ export interface OrderDescriptor {
   type: "market" | "limit";
   price: string;
   size: string;
+  kind: "perp" | "spot";
   baseUnit: string;
   quoteUnit: string;
   priceDecimals: number;
@@ -49,7 +50,14 @@ const STEP_LABELS: Record<RailStepType, string> = {
 };
 
 function describeOrder(order: OrderDescriptor): string {
-  const direction = order.side === "buy" ? "Long" : "Short";
+  const direction =
+    order.kind === "perp"
+      ? order.side === "buy"
+        ? "Long"
+        : "Short"
+      : order.side === "buy"
+        ? "Buy"
+        : "Sell";
   const size = formatDecimal(order.size, order.sizeDecimals);
   const typeLabel =
     order.type === "market"

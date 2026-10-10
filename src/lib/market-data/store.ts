@@ -83,9 +83,11 @@ export class MarketDataStore {
     this.setState({ markets, marksByMarket });
   }
 
+  /** Newest first, whichever way round the service lists them: its rollup venue answers oldest first. */
   setInitialTape(market: string, fills: PublicFill[]): void {
+    const newestFirst = [...fills].sort((a, b) => b.sequence - a.sequence);
     this.setState({
-      tapeByMarket: { ...this.state.tapeByMarket, [market]: fills.slice(0, MAX_TAPE_ROWS) },
+      tapeByMarket: { ...this.state.tapeByMarket, [market]: newestFirst.slice(0, MAX_TAPE_ROWS) },
     });
   }
 

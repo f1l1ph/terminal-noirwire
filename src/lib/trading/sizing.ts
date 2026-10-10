@@ -1,6 +1,65 @@
 import { divFixedPoint, fromFixedPoint, toFixedPoint } from "./decimal";
-import { ASSUMED_TAKER_FEE_BPS } from "./risk";
+import { ASSUMED_TAKER_FEE_BPS, estimateOrderCost } from "./risk";
 import type { Side } from "./types";
+
+export interface FundsShortfall {
+  /** Which balance falls short: the base asset for a spot sell, the quote asset for everything else. */
+  asset: "base" | "quote";
+  needed: string;
+  available: string;
+}
+
+export interface OrderFunds {
+  /** Quote the order takes out of the available balance, fixed-point: nothing for a spot sell, which spends the base asset. */
+  requiredQuote: bigint;
+  shortfall: FundsShortfall | null;
+}
+
+/**
+ * What an order draws on and whether the account covers it. A spot sell
+ * spends the base asset it sells; a spot buy spends quote for the notional
+ * and fee; a perp order, either side, needs quote for its fee and margin.
+ * The venue takes margin at the market's fixed ratio (`maxLeverage`),
+ * whatever leverage the form displays.
+ */
+export function orderFunds(params: {
+  mode: "perp" | "spot";
+  side: Side;
+  quantity: string;
+  price: string;
+  maxLeverage: number;
+  availableQuote: string;
+  availableBase?: string;
+}): OrderFunds {
+  if (params.mode === "spot" && params.side === "sell") {
+    const available = params.availableBase ?? "0";
+    const covered = toFixedPoint(params.quantity) <= toFixedPoint(available);
+    return {
+      requiredQuote: 0n,
+      shortfall: covered ? null : { asset: "base", needed: params.quantity, available },
+    };
+  }
+  const cost = estimateOrderCost({
+    side: params.side,
+    quantity: params.quantity,
+    price: params.price,
+    leverage: params.maxLeverage,
+    maxLeverage: params.maxLeverage,
+  });
+  const requiredQuote =
+    params.mode === "perp" ? cost.fee + cost.initialMargin : cost.notional + cost.fee;
+  const covered = requiredQuote <= toFixedPoint(params.availableQuote);
+  return {
+    requiredQuote,
+    shortfall: covered
+      ? null
+      : {
+          asset: "quote",
+          needed: fromFixedPoint(requiredQuote, 6),
+          available: params.availableQuote,
+        },
+  };
+}
 
 function roundDownToLot(quantityFp: bigint, lotFp: bigint): bigint {
   if (lotFp <= 0n) return quantityFp;

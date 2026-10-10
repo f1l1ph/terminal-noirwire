@@ -5,7 +5,7 @@ import {
   type KeyValueStore,
   type WalletAccount,
 } from "../wallet/index";
-import type { DeploymentOverrides } from "../rollup/deployment";
+import type { DeploymentOverrides, PublicDeployment } from "../rollup/deployment";
 import { openAndFund } from "../rollup/fundingClient";
 import {
   cancelErrorToResult,
@@ -46,6 +46,7 @@ import type {
   PlaceOrderResult,
   Position,
   PrivacyCheck,
+  SpotAssets,
   TraderState,
   TradingClient,
   TransferResult,
@@ -627,6 +628,7 @@ export class RollupTradingClient implements TradingClient {
       collateral,
       positions,
       openOrders,
+      spotAssets: spotAssetsOf(session.deployment),
     };
   }
 }
@@ -634,6 +636,15 @@ export class RollupTradingClient implements TradingClient {
 function expiryFor(goodFor: NewOrderInput["goodFor"], now: () => number): bigint | undefined {
   if (!goodFor || goodFor === "untilCancelled") return undefined;
   return BigInt(Math.floor(now() / 1000)) + GOOD_FOR_SECONDS[goodFor];
+}
+
+function spotAssetsOf(deployment: PublicDeployment): Record<string, SpotAssets> {
+  const assets: Record<string, SpotAssets> = {};
+  for (const market of deployment.markets) {
+    if (!market.baseToken) continue;
+    assets[market.symbol] = { base: market.baseToken.symbol, quote: market.quoteToken.symbol };
+  }
+  return assets;
 }
 
 function absBigint(value: bigint): bigint {

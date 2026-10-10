@@ -169,6 +169,21 @@ export function Terminal() {
       };
     }
     const confirmedSteps = appendStep(baseSteps, "confirmed", Date.now());
+    if (result.status === "cancelled") {
+      return {
+        market: descriptor.market,
+        descriptor,
+        baseSteps: appendStep(
+          confirmedSteps,
+          "cancelled",
+          Date.now(),
+          `Nothing filled. ${result.reason ?? "The order did not match and was cancelled."}`,
+        ),
+        trackedOrderId: null,
+        trackedTag: null,
+        pendingPlace: null,
+      };
+    }
     return {
       market: descriptor.market,
       descriptor,
@@ -523,6 +538,7 @@ export function Terminal() {
       supportsGoodFor={trading.client.mode === "rollup"}
       placeOrderPending={!!relevantSession?.pendingPlace}
       prefillRequest={prefillRequest}
+      spotAssets={trading.state.spotAssets?.[market.id]}
       compact={!isDesktop}
     />
   );

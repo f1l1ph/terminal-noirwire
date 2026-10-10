@@ -91,7 +91,8 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
       timeout: 20_000,
     });
 
-    await page.getByLabel("Quantity (SOL)").fill("1");
+    // The spot market's unit is the base token's own symbol from the deployment description.
+    await page.getByLabel(/^Quantity \(/).fill("1");
     await page.getByRole("button", { name: "Place test buy", exact: true }).first().click();
     await expect(page.getByText("Filled", { exact: true })).toBeVisible({ timeout: 20_000 });
     await shot(page, "07-spot-filled");

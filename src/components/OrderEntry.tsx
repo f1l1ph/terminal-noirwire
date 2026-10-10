@@ -13,11 +13,18 @@ import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import type { MarketInfo } from "@/lib/market-data/types";
 import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
-import { maxOrderSize } from "@/lib/trading/sizing";
+import { maxOrderSize, orderFunds } from "@/lib/trading/sizing";
 import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import { describeFieldError, validateOrder } from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
-import type { Balance, FundOutcome, NewOrderInput, Position, Side } from "@/lib/trading/types";
+import type {
+  Balance,
+  FundOutcome,
+  NewOrderInput,
+  Position,
+  Side,
+  SpotAssets,
+} from "@/lib/trading/types";
 import type { OrderDescriptor } from "@/components/WitnessRail";
 import { OrderSummary } from "@/components/OrderSummary";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
@@ -77,6 +84,7 @@ export function OrderEntry({
   supportsGoodFor,
   placeOrderPending,
   prefillRequest,
+  spotAssets,
   compact,
 }: {
   market: MarketInfo | undefined;
@@ -113,6 +121,8 @@ export function OrderEntry({
   placeOrderPending: boolean;
   /** A dock row's Close/Reduce request for this market; applied once per `requestId`, ignored for any other market (switching markets remounts this component via its own `key`, so a stale request for a market just left behind can never apply here). */
   prefillRequest?: PrefillRequest | null;
+  /** The balance names of this spot market's two tokens, as the venue's own deployment description gives them. Absent for a perp and in dev mode, where the market's own base and quote names are the balance names. */
+  spotAssets?: SpotAssets;
   /**
    * Phone only: leverage and the full cost breakdown collapse behind a
    * disclosure, off by default, so the primary action lands in the first
@@ -198,8 +208,10 @@ export function OrderEntry({
   }, [orderType, mark, side, market, priceDecimals]);
   const priceText = priceOverride ?? defaultBoundPrice;
 
-  const quoteBalance = market ? balances[market.quote] : undefined;
-  const baseBalance = market ? balances[market.base] : undefined;
+  const baseUnit = spotAssets?.base ?? market?.base ?? "";
+  const quoteUnit = spotAssets?.quote ?? market?.quote ?? "";
+  const quoteBalance = balances[quoteUnit];
+  const availableBase = balances[baseUnit]?.available ?? "0";
   // A perp order draws on the separate collateral account (RULES.md section
   // 6), not the spot nUSD balance; dev mode has no such split, so there
   // `collateral` is undefined and the spot balance is the only figure.
@@ -237,14 +249,13 @@ export function OrderEntry({
       price: priceText || mark?.price || "0",
       lotSize: market.lotSize,
       // The venue's margin requirement is always the market's fixed ratio
-      // (maxLeverage), never the leverage slider's value; see the note by
-      // requiredMarginEstimate below.
+      // (maxLeverage), never the leverage slider's value; see `orderFunds`.
       leverage: market.maxLeverage,
       availableQuote,
-      availableBase: baseBalance?.available,
+      availableBase,
       reduceOnlyMax,
     });
-  }, [market, side, priceText, mark, availableQuote, baseBalance, reduceOnlyMax]);
+  }, [market, side, priceText, mark, availableQuote, availableBase, reduceOnlyMax]);
 
   const draft: NewOrderInput | null = market
     ? {
@@ -261,7 +272,7 @@ export function OrderEntry({
   const validation = market && draft ? validateOrder(draft, market) : null;
   const quantityError =
     quantityTouched && validation?.errors.quantity
-      ? describeFieldError(validation.errors.quantity, market!)
+      ? describeFieldError(validation.errors.quantity, { ...market!, base: baseUnit })
       : null;
   const priceError =
     priceTouched && validation?.errors.price
@@ -285,49 +296,33 @@ export function OrderEntry({
 
   const estimateDisplay = market && estimate ? displayOrderCost(estimate, priceDecimals) : null;
 
-  /**
-   * sim-noirwire has no per-order leverage field: a perp's margin
-   * requirement is always the market's fixed ratio (equivalent to its
-   * advertised `maxLeverage`), computed from total account exposure, never
-   * from what the leverage slider is set to. Affordability must check
-   * against that fixed requirement, not the display estimate above, or an
-   * order the venue would accept could show as blocked here (or the other
-   * way around).
-   */
-  const requiredMarginEstimate = useMemo(() => {
+  const funds = useMemo(() => {
     if (!market || !priceText || !quantityText.trim()) return null;
     try {
-      return estimateOrderCost({
+      return orderFunds({
+        mode: market.kind,
         side,
         quantity: quantityText,
         price: priceText,
-        leverage: market.maxLeverage,
         maxLeverage: market.maxLeverage,
+        availableQuote,
+        availableBase,
       });
     } catch {
       return null;
     }
-  }, [market, priceText, quantityText, side]);
+  }, [market, priceText, quantityText, side, availableQuote, availableBase]);
 
-  /** `available - (fee + whatever the order needs reserved)`, in the same integer fixed-point arithmetic as every other order number here. Negative means the order is not affordable yet. */
-  const requiredQuote = !requiredMarginEstimate
-    ? null
-    : isPerp
-      ? requiredMarginEstimate.fee + requiredMarginEstimate.initialMargin
-      : requiredMarginEstimate.notional + requiredMarginEstimate.fee;
-  const remainingAvailable = useMemo(() => {
-    if (requiredQuote === null) return availableQuote;
-    try {
-      return fromFixedPoint(toFixedPoint(availableQuote) - requiredQuote, 6);
-    } catch {
-      return availableQuote;
-    }
-  }, [requiredQuote, availableQuote]);
-
-  const unaffordable = requiredMarginEstimate !== null && Number(remainingAvailable) < 0;
+  const remainingAvailable = funds
+    ? fromFixedPoint(toFixedPoint(availableQuote) - funds.requiredQuote, 6)
+    : availableQuote;
+  const shortfall = funds?.shortfall ?? null;
+  const unaffordable = shortfall !== null;
   const staleBlock = markStale && orderType === "market";
 
-  const noFunds = hasWallet && Number(availableQuote) <= 0;
+  const isSpotSell = !isPerp && side === "sell";
+  const noFunds =
+    hasWallet && Number(availableQuote) <= 0 && !(isSpotSell && Number(availableBase) > 0);
 
   // Spot buy, this browser's nUSD spot balance is empty, but there is
   // collateral to move: the primary action becomes "Move funds to spot"
@@ -342,10 +337,7 @@ export function OrderEntry({
     spotAvailable: Number(quoteBalance?.available ?? "0"),
     collateralAvailable: collateral ? Number(collateral.available) : null,
   });
-  const suggestedTransferAmount =
-    requiredMarginEstimate && market
-      ? fromFixedPoint(requiredMarginEstimate.notional + requiredMarginEstimate.fee, 6)
-      : undefined;
+  const suggestedTransferAmount = funds ? fromFixedPoint(funds.requiredQuote, 6) : undefined;
 
   const canSubmit =
     hasWallet &&
@@ -367,8 +359,9 @@ export function OrderEntry({
       type: orderType,
       price: priceText,
       size: quantityText,
-      baseUnit: market.base,
-      quoteUnit: market.quote,
+      kind: market.kind,
+      baseUnit,
+      quoteUnit,
       priceDecimals,
       sizeDecimals,
     };
@@ -568,21 +561,17 @@ export function OrderEntry({
       <div>
         <div className="flex items-baseline justify-between">
           <label className="text-faint text-[12px]" htmlFor="order-quantity">
-            Quantity ({market.base})
+            Quantity ({baseUnit})
           </label>
           <span className="text-faint text-[11px]">
             {/* "Confirming on chain" only makes sense where funding lands - the separate perpetuals collateral account, rollup mode only (`collateral` is undefined in dev mode, which has no chain to confirm against). */}
-            {confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
-              ? "Confirming on chain…"
-              : grantAlreadyUsed
-                ? `Grant used · ${formatMoney(availableQuote)} available`
-                : `Available: ${formatMoney(availableQuote)}`}
-            {market.kind === "spot" && side === "sell" && (
-              <>
-                {" "}
-                · {formatDecimal(baseBalance?.available ?? "0", sizeDecimals)} {market.base}
-              </>
-            )}
+            {isSpotSell
+              ? `Available: ${formatDecimal(availableBase, sizeDecimals)} ${baseUnit}`
+              : confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
+                ? "Confirming on chain…"
+                : grantAlreadyUsed
+                  ? `Grant used · ${formatMoney(availableQuote)} available`
+                  : `Available: ${formatMoney(availableQuote)}`}
           </span>
         </div>
         <input
@@ -605,7 +594,7 @@ export function OrderEntry({
           </p>
         ) : (
           <p id="order-quantity-hint" className="text-faint mt-0.5 text-[11px]">
-            Min {market.lotSize} {market.base} · step {market.lotSize}
+            Min {market.lotSize} {baseUnit} · step {market.lotSize}
           </p>
         )}
         <div className="mt-0.5 flex gap-1" role="group" aria-label="Quantity shortcuts">
@@ -632,7 +621,7 @@ export function OrderEntry({
               ? "Max buy price"
               : "Min sell price"
             : "Limit price"}{" "}
-          ({market.quote})
+          ({quoteUnit})
         </label>
         <input
           ref={priceInputRef}
@@ -740,10 +729,12 @@ export function OrderEntry({
           fresh mark.
         </p>
       )}
-      {unaffordable && !staleBlock && requiredQuote !== null && (
+      {shortfall && !staleBlock && (
         <p role="alert" className="text-danger text-[12px]">
-          Available {formatMoney(availableQuote)}; this order needs about{" "}
-          {formatMoney(fromFixedPoint(requiredQuote, 6))} including fee. Reduce quantity.
+          {shortfall.asset === "base"
+            ? `Available ${formatDecimal(shortfall.available, sizeDecimals)} ${baseUnit}; this order sells ${formatDecimal(shortfall.needed, sizeDecimals)} ${baseUnit}.`
+            : `Available ${formatMoney(shortfall.available)}; this order needs about ${formatMoney(shortfall.needed)} including fee.`}{" "}
+          Reduce quantity.
         </p>
       )}
 
@@ -800,7 +791,7 @@ export function OrderEntry({
             <p className="text-ink-strong text-[14px] font-medium">
               {market.id} · {orderType === "market" ? "Market" : "Limit"} ·{" "}
               {isPerp ? (side === "buy" ? "Long" : "Short") : side === "buy" ? "Buy" : "Sell"}{" "}
-              {formatDecimal(quantityText, sizeDecimals)} {market.base}
+              {formatDecimal(quantityText, sizeDecimals)} {baseUnit}
               {isPerp ? ` · ${leverage}x cross` : ""}
             </p>
             <p className="text-faint mt-1 text-[12px]">
@@ -809,7 +800,7 @@ export function OrderEntry({
                   ? "Max buy price "
                   : "Min sell price "
                 : "Limit price "}
-              {formatDecimal(priceText, priceDecimals)} {market.quote}
+              {formatDecimal(priceText, priceDecimals)} {quoteUnit}
             </p>
             <OrderSummary
               side={side}

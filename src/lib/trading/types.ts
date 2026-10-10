@@ -123,6 +123,18 @@ export interface TraderState {
   collateral?: Balance;
   positions: Record<string, Position>;
   openOrders: OpenOrder[];
+  /**
+   * Rollup mode: for each spot market id, which `balances` entries hold its
+   * base and quote tokens, named as the venue's deployment description
+   * names them. Absent in dev mode, where `balances` is keyed by the
+   * market's own base and quote names.
+   */
+  spotAssets?: Record<string, SpotAssets>;
+}
+
+export interface SpotAssets {
+  base: string;
+  quote: string;
 }
 
 export type TransferResult =
