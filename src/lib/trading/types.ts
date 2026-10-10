@@ -168,12 +168,10 @@ export type FundOutcome =
 export type TradingMode = "dev" | "rollup";
 
 /**
- * A single contract for whatever places orders. `DevTradingClient` is the
- * only implementation today; a second one that signs transactions and sends
- * them to the rollup directly is added later. Every amount crosses it as a
- * decimal string, never a floating-point number. There is no per-order
- * cancel route in sim-noirwire: cancellation is always scoped to every
- * resting order a trader has in one market.
+ * A single contract for whatever places orders: `DevTradingClient` against
+ * sim-noirwire's dev routes, `RollupTradingClient` signing in this browser
+ * against the real program. Every amount crosses it as a decimal string,
+ * never a floating-point number.
  */
 export interface TradingClient {
   readonly mode: TradingMode;
@@ -217,7 +215,7 @@ export interface TradingClient {
   checkPrivacy?(wallet: WalletIdentity, market: string): Promise<PrivacyCheck>;
   /** Fetches the trader's current state once. */
   fetchState(wallet: WalletIdentity): Promise<TraderState>;
-  /** Polls fetchState on an interval and pushes updates until unsubscribed. */
+  /** Pushes the trader's state until unsubscribed: polled in dev mode, pushed by the rollup's own account subscription in rollup mode. */
   subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void;
   /**
    * Ends this wallet's live result subscription and background refreshes,

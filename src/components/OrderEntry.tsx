@@ -69,7 +69,6 @@ export function OrderEntry({
   collateral,
   position,
   onCreateWallet,
-  creatingWallet,
   onFund,
   grantAlreadyUsed,
   placeOrder,
@@ -90,7 +89,6 @@ export function OrderEntry({
   collateral?: Balance;
   position: Position | null;
   onCreateWallet: () => void;
-  creatingWallet: boolean;
   onFund: () => Promise<FundOutcome>;
   /**
    * This wallet has already asked for its one-time grant, on this browser
@@ -312,19 +310,19 @@ export function OrderEntry({
   }, [market, priceText, quantityText, side]);
 
   /** `available - (fee + whatever the order needs reserved)`, in the same integer fixed-point arithmetic as every other order number here. Negative means the order is not affordable yet. */
+  const requiredQuote = !requiredMarginEstimate
+    ? null
+    : isPerp
+      ? requiredMarginEstimate.fee + requiredMarginEstimate.initialMargin
+      : requiredMarginEstimate.notional + requiredMarginEstimate.fee;
   const remainingAvailable = useMemo(() => {
-    if (!requiredMarginEstimate || !market) return availableQuote;
-    const needed =
-      market.kind === "perp"
-        ? requiredMarginEstimate.fee + requiredMarginEstimate.initialMargin
-        : requiredMarginEstimate.notional + requiredMarginEstimate.fee;
+    if (requiredQuote === null) return availableQuote;
     try {
-      const remaining = toFixedPoint(availableQuote) - needed;
-      return fromFixedPoint(remaining, 6);
+      return fromFixedPoint(toFixedPoint(availableQuote) - requiredQuote, 6);
     } catch {
       return availableQuote;
     }
-  }, [requiredMarginEstimate, market, availableQuote]);
+  }, [requiredQuote, availableQuote]);
 
   const unaffordable = requiredMarginEstimate !== null && Number(remainingAvailable) < 0;
   const staleBlock = markStale && orderType === "market";
@@ -480,7 +478,7 @@ export function OrderEntry({
   } else if (!hasWallet) {
     primaryLabel = "Create test wallet";
     primaryClass = btnPrimary;
-    primaryDisabled = creatingWallet;
+    primaryDisabled = false;
   } else if (placeOrderPending) {
     primaryLabel = "Checking with the venue…";
     primaryClass = btnGhost;
@@ -742,15 +740,10 @@ export function OrderEntry({
           fresh mark.
         </p>
       )}
-      {unaffordable && !staleBlock && requiredMarginEstimate && (
+      {unaffordable && !staleBlock && requiredQuote !== null && (
         <p role="alert" className="text-danger text-[12px]">
           Available {formatMoney(availableQuote)}; this order needs about{" "}
-          {formatMoney(
-            market.kind === "perp"
-              ? String(requiredMarginEstimate.fee + requiredMarginEstimate.initialMargin)
-              : String(requiredMarginEstimate.notional + requiredMarginEstimate.fee),
-          )}{" "}
-          including fee. Reduce quantity.
+          {formatMoney(fromFixedPoint(requiredQuote, 6))} including fee. Reduce quantity.
         </p>
       )}
 

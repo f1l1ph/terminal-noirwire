@@ -39,7 +39,7 @@ export interface TraderClientLike {
       expiry?: bigint;
       secret?: Uint8Array;
     },
-    options?: { expirySeconds?: number; riskMarkets?: number[] },
+    options?: { expirySeconds?: number; riskMarkets?: number[]; pushWaitMs?: number },
   ): Promise<Placed>;
   /** May throw `OutcomeUnknown` (carries `settled`) instead of returning; see `./sdk.ts`. */
   cancelOrder(

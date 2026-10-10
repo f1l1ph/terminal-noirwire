@@ -6,23 +6,19 @@
  * follows for the same package (see that repo's docs/DESIGN.md, "The rollup
  * venue"). Currently on 0.5.0.
  */
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 import {
   Addresses,
   OrderInvalid as SdkOrderInvalid,
   OrderKeyManager,
   ORDER_TYPE,
   OutcomeUnknown as SdkOutcomeUnknown,
-  PROGRAM_ID,
   RESULT_STATUS,
   ROLE,
   SIDE,
   TraderClient as SdkTraderClient,
   TransactionFailed as SdkTransactionFailed,
   decodeExchange,
-  decodeMarket,
-  decodeView,
-  privateConnection,
   randomSecret,
   receipt as sdkReceipt,
   signIn as sdkSignIn,
@@ -46,7 +42,7 @@ export type {
   OrderKeyCheckpoint,
   OrderKeyManager,
 };
-export { randomSecret, PROGRAM_ID };
+export { randomSecret };
 export const OrderInvalid = SdkOrderInvalid;
 export const TransactionFailed = SdkTransactionFailed;
 export const OutcomeUnknown = SdkOutcomeUnknown;
@@ -57,8 +53,33 @@ export function programAddresses(programId: PublicKey): Addresses {
   return new Addresses(programId);
 }
 
+const UNSUPPORTED_MEDIA_TYPE = 415;
+let plainTextBodiesAccepted = true;
+
+/**
+ * The hosted rollup endpoint answers a CORS preflight without
+ * `Access-Control-Max-Age`, so a browser repeats the preflight for any JSON
+ * request made more than five seconds after the last one: a second round
+ * trip in front of nearly every order. A `text/plain` body with no custom
+ * header needs no preflight, and the endpoint parses it as JSON all the
+ * same. An endpoint that insists on `application/json` answers 415 once and
+ * gets the original headers from then on.
+ */
+const preflightFreeFetch: typeof fetch = async (input, init) => {
+  if (plainTextBodiesAccepted) {
+    const response = await fetch(input, { ...init, headers: { "content-type": "text/plain" } });
+    if (response.status !== UNSUPPORTED_MEDIA_TYPE) return response;
+    plainTextBodiesAccepted = false;
+  }
+  return fetch(input, init);
+};
+
 export function connectionTo(rpcUrl: string, wsUrl: string): Connection {
-  return new Connection(rpcUrl, { commitment: "confirmed", wsEndpoint: wsUrl });
+  return new Connection(rpcUrl, {
+    commitment: "confirmed",
+    wsEndpoint: wsUrl,
+    fetch: preflightFreeFetch,
+  });
 }
 
 export async function signInAndConnect(
@@ -66,20 +87,12 @@ export async function signInAndConnect(
   reader: PublicKey,
   signMessage: SignMessage,
 ): Promise<Connection> {
-  return privateConnection(privateUrl, reader, signMessage);
+  const token = await sdkSignIn(privateUrl, reader, signMessage);
+  return connectionTo(`${privateUrl}?token=${token}`, `${websocketUrl(privateUrl)}?token=${token}`);
 }
-
-export { websocketUrl };
 
 export function freshOrderKeys(seed: Uint8Array): OrderKeyManager {
   return OrderKeyManager.fresh(seed);
-}
-
-export function orderKeysFromView(
-  seed: Uint8Array,
-  view: Pick<View, "orderKeys">,
-): OrderKeyManager {
-  return OrderKeyManager.fromView(seed, view);
 }
 
 /**
@@ -135,16 +148,6 @@ export class TraderClient {
     this.inner.close();
   }
 
-  /** Points reads and the subscription at a freshly signed-in connection, without rebuilding order keys. */
-  renewReader(reader: Connection): void {
-    this.inner.renewReader(reader);
-  }
-
-  /** Whether results are arriving by live subscription right now, rather than by reading the view. */
-  get pushing(): boolean {
-    return this.inner.pushing;
-  }
-
   view(): Promise<View> {
     return this.inner.view();
   }
@@ -165,7 +168,7 @@ export class TraderClient {
       expiry?: bigint;
       secret?: Uint8Array;
     },
-    options: { expirySeconds?: number; riskMarkets?: number[] } = {},
+    options: { expirySeconds?: number; riskMarkets?: number[]; pushWaitMs?: number } = {},
   ): Promise<Placed> {
     return this.inner.placeOrder(marketId, order, options);
   }
@@ -211,18 +214,9 @@ export class TraderClient {
 export const SIDE_CODE = { buy: SIDE.bid, sell: SIDE.ask } as const;
 export const ORDER_TYPE_CODE = { market: ORDER_TYPE.market, limit: ORDER_TYPE.limit } as const;
 export const RESULT_STATUS_CODE = RESULT_STATUS;
-export const FILL_ROLE_CODE = ROLE;
 
 export function decodeExchangeAccount(data: Uint8Array) {
   return decodeExchange(data);
-}
-
-export function decodeViewAccount(data: Uint8Array): View {
-  return decodeView(data);
-}
-
-export function decodeMarketAccount(data: Uint8Array) {
-  return decodeMarket(data);
 }
 
 /** The maker/taker receipt for one of this browser's own order secrets at a given fill. */
@@ -233,13 +227,3 @@ export function fillReceipt(
 ): Uint8Array {
   return sdkReceipt(secret, fillSeq, role === "maker" ? ROLE.maker : ROLE.taker);
 }
-
-export async function signIn(
-  privateUrl: string,
-  reader: PublicKey,
-  signMessage: SignMessage,
-): Promise<string> {
-  return sdkSignIn(privateUrl, reader, signMessage);
-}
-
-export { Keypair };

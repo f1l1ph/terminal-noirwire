@@ -179,14 +179,11 @@ export function useTrading(
           : performance.now() - clickedAt;
       addOwnTag(result.tag);
       setRollupSecrets(readRollupSecrets());
-      // A fill changes positions and balances; the push subscription
-      // (client.subscribe, above) already carries that update on its own
-      // and is not awaited here - the witness rail must show this result
-      // the moment it arrives, never delayed by a balance refresh behind
-      // it (third design review, "per-order requests from the browser").
-      void client.fetchState(walletOf(wallet)).then(setStateSynced, () => {
-        // The regular subscription will catch up; this was a best-effort nudge.
-      });
+      // Rollup mode pushes the state an order leaves behind with the result
+      // itself; dev mode only polls, so it is asked once, without waiting.
+      if (client.mode === "dev") {
+        void client.fetchState(walletOf(wallet)).then(setStateSynced, () => {});
+      }
       return { result, clientDurationMs };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- readRollupSecrets closes over wallet/client, already deps

@@ -182,7 +182,7 @@ describe("RollupTradingClient: sign-in refresh", () => {
     await client.fetchState(WALLET);
     expect(built).toBe(1);
 
-    now += 5 * 60 * 1000; // past the 4-minute refresh window
+    now += 25 * 60 * 60 * 1000; // past the one-day refresh window
     await client.fetchState(WALLET);
     expect(built).toBe(2);
   });

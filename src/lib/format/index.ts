@@ -25,14 +25,6 @@ export function formatDecimal(value: string | number, decimals: number): string 
   }).format(num);
 }
 
-export function formatPrice(value: string | number, decimals: number): string {
-  return formatDecimal(value, decimals);
-}
-
-export function formatSize(value: string | number, decimals: number): string {
-  return formatDecimal(value, decimals);
-}
-
 /** Test money. Never a bare dollar sign. */
 export function formatMoney(value: string | number, decimals = 2): string {
   const formatted = formatDecimal(value, decimals);

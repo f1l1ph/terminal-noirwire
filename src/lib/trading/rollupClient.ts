@@ -74,14 +74,12 @@ async function readAccountUnsigned(
   }
 }
 
-const DEFAULT_POLL_INTERVAL_MS = 1_000;
 /**
- * Conservative: the rollup's sign-in token lifetime is not stated by
- * `@noirwire/orderbook` (`signIn`/`privateConnection` return a token with no
- * exposed expiry), so this refreshes well inside any plausible TTL rather
- * than waiting to be rejected. See docs/BUILD-NOTES.md.
+ * The rollup's sign-in token lasts 30 days (the endpoint's own `expiresAt`,
+ * read by hand on devnet). A session is rebuilt once a day so a tab left
+ * open never gets near that, and a call that throws rebuilds it at once.
  */
-const SESSION_REFRESH_MS = 4 * 60 * 1000;
+const SESSION_REFRESH_MS = 24 * 60 * 60 * 1000;
 const GOOD_FOR_SECONDS: Record<"1m" | "1h", bigint> = { "1m": 60n, "1h": 3_600n };
 /**
  * Passed explicitly on every keyed call (place/cancel/transfer/sync) so this
@@ -91,6 +89,13 @@ const GOOD_FOR_SECONDS: Record<"1m" | "1h", bigint> = { "1m": 60n, "1h": 3_600n 
  * drifting out of sync with a future release.
  */
 const DEFAULT_EXPIRY_SECONDS = 5;
+/**
+ * How long a live subscription is trusted to deliver an order's result
+ * before the view is read as well. The package's own 500 ms starts a read
+ * that a slower result then has to wait behind: the client does not look at
+ * a pushed result while a read is in flight, a full round trip on devnet.
+ */
+const RESULT_PUSH_WAIT_MS = 1_500;
 
 export interface RollupTradingClientOptions {
   simUrl: string;
@@ -99,9 +104,6 @@ export interface RollupTradingClientOptions {
   marketSettingsLookup: MarketSettingsLookup;
   storage?: KeyValueStore;
   fetchFn?: typeof fetch;
-  pollIntervalMs?: number;
-  setIntervalFn?: (handler: () => void, ms: number) => unknown;
-  clearIntervalFn?: (handle: unknown) => void;
   now?: () => number;
   /** Testability seam: a fake session (and so a fake of the package's client) for unit tests. Builds a real one by default. */
   buildSession?: (wallet: WalletAccount, deps: RollupSessionDeps) => Promise<RollupSession>;
@@ -117,6 +119,18 @@ interface MarketBinding {
   isPerp: boolean;
   baseTokenSymbol: string | null;
   quoteTokenSymbol: string;
+}
+
+type StateListener = (state: TraderState) => void;
+
+interface OpenSession {
+  session: Promise<RollupSession>;
+  stopWatching: Promise<() => void>;
+}
+
+function closeSession({ session, stopWatching }: OpenSession): void {
+  void stopWatching.then((stop) => stop()).catch(() => {});
+  void session.then((built) => built.close()).catch(() => {});
 }
 
 function ownerSecretOf(wallet: WalletIdentity): WalletAccount {
@@ -185,22 +199,18 @@ export class RollupTradingClient implements TradingClient {
   readonly mode = "rollup" as const;
   private readonly storage: KeyValueStore;
   private readonly fetchFn: typeof fetch;
-  private readonly pollIntervalMs: number;
-  private readonly setIntervalFn: (handler: () => void, ms: number) => unknown;
-  private readonly clearIntervalFn: (handle: unknown) => void;
   private readonly now: () => number;
   private readonly buildSession: (
     wallet: WalletAccount,
     deps: RollupSessionDeps,
   ) => Promise<RollupSession>;
-  private sessions = new Map<string, Promise<RollupSession>>();
+  private sessions = new Map<string, OpenSession>();
+  private listeners = new Map<string, Set<StateListener>>();
+  private newestResultsWritten = new Map<string, number>();
 
   constructor(private readonly options: RollupTradingClientOptions) {
     this.storage = options.storage ?? browserLocalStorage();
     this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
-    this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-    this.setIntervalFn = options.setIntervalFn ?? ((handler, ms) => setInterval(handler, ms));
-    this.clearIntervalFn = options.clearIntervalFn ?? ((handle) => clearInterval(handle as number));
     this.now = options.now ?? (() => Date.now());
     this.buildSession = options.buildSession ?? buildRealSession;
   }
@@ -214,23 +224,43 @@ export class RollupTradingClient implements TradingClient {
     };
   }
 
-  private async ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
-    const existing = this.sessions.get(wallet.address);
-    if (existing) return existing;
-    const promise = this.buildSession(ownerSecretOf(wallet), this.sessionDeps());
-    this.sessions.set(wallet.address, promise);
-    return promise;
+  private ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
+    return (this.sessions.get(wallet.address) ?? this.openSession(wallet)).session;
   }
 
-  private async refreshSession(wallet: WalletIdentity): Promise<RollupSession> {
-    // The session being replaced may still hold a live subscription; close
-    // it before it is forgotten so it does not linger as an orphaned
-    // websocket alongside the new one.
+  private refreshSession(wallet: WalletIdentity): Promise<RollupSession> {
     const previous = this.sessions.get(wallet.address);
-    const promise = this.buildSession(ownerSecretOf(wallet), this.sessionDeps());
-    this.sessions.set(wallet.address, promise);
-    if (previous) void previous.then((session) => session.close()).catch(() => {});
-    return promise;
+    const { session } = this.openSession(wallet);
+    if (previous) closeSession(previous);
+    return session;
+  }
+
+  private openSession(wallet: WalletIdentity): OpenSession {
+    const session = this.buildSession(ownerSecretOf(wallet), this.sessionDeps());
+    const opened = { session, stopWatching: session.then((built) => this.watchView(built)) };
+    opened.stopWatching.catch(() => {});
+    this.sessions.set(wallet.address, opened);
+    return opened;
+  }
+
+  /** Pushes this session's view to the wallet's listeners: once now, then on every change the rollup reports. */
+  private async watchView(session: RollupSession): Promise<() => void> {
+    const stop = session.client.subscribeView((view) => this.emitState(session, view));
+    try {
+      this.emitState(session, await session.client.view());
+    } catch {
+      // No view yet (account not open): the subscription reports it once it exists.
+    }
+    return () => void stop();
+  }
+
+  /** A view older than one already shown is dropped: the order result and the subscription arrive on separate sockets, in either order. */
+  private emitState(session: RollupSession, view: View): void {
+    const address = session.owner.publicKey.toBase58();
+    if (view.resultsWritten < (this.newestResultsWritten.get(address) ?? 0)) return;
+    this.newestResultsWritten.set(address, view.resultsWritten);
+    const state = this.mapViewFrom(session, view);
+    for (const listener of this.listeners.get(address) ?? []) listener(state);
   }
 
   /** Ends this wallet's session (its live subscription and background refreshes), if one is open. */
@@ -238,7 +268,7 @@ export class RollupTradingClient implements TradingClient {
     const existing = this.sessions.get(wallet.address);
     if (!existing) return;
     this.sessions.delete(wallet.address);
-    void existing.then((session) => session.close()).catch(() => {});
+    closeSession(existing);
   }
 
   /**
@@ -343,9 +373,11 @@ export class RollupTradingClient implements TradingClient {
           {
             expirySeconds: DEFAULT_EXPIRY_SECONDS,
             riskMarkets: binding.isPerp ? riskMarketIds(bindings) : undefined,
+            pushWaitMs: RESULT_PUSH_WAIT_MS,
           },
         );
         result = placedToResult(placed, binding.units, binding.sizeDecimals, expiresAtMs);
+        if (placed.outcome !== "unknown") this.emitState(session, placed.view);
       } catch (error) {
         // OrderInvalid (refused before signing), TransactionFailed (landed
         // and refused), or every order-key slot busy: all map to the
@@ -500,40 +532,12 @@ export class RollupTradingClient implements TradingClient {
     return this.withSession(wallet, (session) => Promise.resolve(this.mapView(session)));
   }
 
-  subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void {
-    let cancelled = false;
-    let unsubscribeView: (() => Promise<void>) | null = null;
-
-    const attach = async () => {
-      const session = await this.ensureSession(wallet);
-      if (cancelled) return;
-      const emit = (view: View) => {
-        if (!cancelled) listener(this.mapViewFrom(session, view));
-      };
-      try {
-        emit(await session.client.view());
-      } catch {
-        // No view yet (account not open); the subscription below still
-        // attaches so a later open+fund is picked up by the push channel.
-      }
-      unsubscribeView = session.client.subscribeView(emit);
-    };
-    void attach();
-
-    // A belt-and-braces poll, much slower than dev mode's: subscribeView
-    // above is the primary channel (push, on every account change); this
-    // only guards against a missed notification or a session refresh.
-    const refreshHandle = this.setIntervalFn(() => {
-      void this.fetchState(wallet).then((state) => {
-        if (!cancelled) listener(state);
-      });
-    }, this.pollIntervalMs * 5);
-
-    return () => {
-      cancelled = true;
-      this.clearIntervalFn(refreshHandle);
-      void unsubscribeView?.();
-    };
+  subscribe(wallet: WalletIdentity, listener: StateListener): () => void {
+    const listeners = this.listeners.get(wallet.address) ?? new Set();
+    this.listeners.set(wallet.address, listeners);
+    listeners.add(listener);
+    void this.ensureSession(wallet).catch(() => {});
+    return () => listeners.delete(listener);
   }
 
   private mapView(session: RollupSession): Promise<TraderState> {

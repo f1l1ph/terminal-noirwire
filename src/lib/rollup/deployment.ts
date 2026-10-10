@@ -43,7 +43,6 @@ export const deploymentSchema = z.object({
 });
 
 export type PublicDeployment = z.infer<typeof deploymentSchema>;
-export type PublicMarket = z.infer<typeof marketSchema>;
 
 export interface DeploymentOverrides {
   rollupRpcUrl?: string;
@@ -83,11 +82,4 @@ async function load(
     rollupWsUrl: overrides.rollupWsUrl ?? parsed.rollupWsUrl,
     programId: overrides.programId ?? parsed.programId,
   };
-}
-
-export function marketBySymbol(
-  deployment: PublicDeployment,
-  symbol: string,
-): PublicMarket | undefined {
-  return deployment.markets.find((market) => market.symbol === symbol);
 }

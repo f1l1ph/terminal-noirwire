@@ -1,6 +1,5 @@
 import {
   candlesResponseSchema,
-  healthResponseSchema,
   marketsResponseSchema,
   statsResponseSchema,
   tapeResponseSchema,
@@ -34,10 +33,6 @@ async function getJson(baseUrl: string, path: string): Promise<unknown> {
     throw new MarketDataRequestError(`${url} answered ${response.status}`, url, response.status);
   }
   return response.json();
-}
-
-export async function fetchHealth(baseUrl: string) {
-  return healthResponseSchema.parse(await getJson(baseUrl, "/v1/health"));
 }
 
 export async function fetchMarkets(baseUrl: string): Promise<MarketInfo[]> {

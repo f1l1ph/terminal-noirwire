@@ -190,7 +190,6 @@ export const devOrderRequestSchema = z.object({
   size: decimalAmountSchema,
   reduceOnly: z.boolean().optional(),
 });
-export type DevOrderRequest = z.infer<typeof devOrderRequestSchema>;
 
 export const devOrderResponseSchema = z.object({
   orderId: z.string(),
@@ -200,7 +199,6 @@ export const devOrderResponseSchema = z.object({
   remainingSize: z.string(),
   reason: z.string().nullable(),
 });
-export type DevOrderResponse = z.infer<typeof devOrderResponseSchema>;
 
 export const cancelAllResponseSchema = z.object({ cancelled: z.number().int().nonnegative() });
 
@@ -228,7 +226,6 @@ export const traderStateResponseSchema = z.object({
   positions: z.record(z.string(), perpPositionSchema),
   openOrders: z.array(openOrderSchema),
 });
-export type TraderStateResponse = z.infer<typeof traderStateResponseSchema>;
 
 export const fundResponseSchema = z.object({ amount: z.string(), reference: z.string() });
 

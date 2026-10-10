@@ -578,6 +578,42 @@ false`, consistent with the coordinator's note that another engineer was
 restarting this same service to the 0.5.0 client during this pass) and was
 re-run clean once `/v1/health` recovered - not a defect in this repo.
 
+## Ninth pass: one request per order from the browser
+
+This supersedes the eighth pass's latency paragraph: its 898 ms median came
+from a Node-side poll that rounded every sample up to the poll's own
+interval. `e2e/devnet/latency.devnet.spec.ts` now timestamps the click and
+the rail's commit inside the page and lists every request in between.
+
+What the terminal added to each order, and what replaced it:
+
+- **A CORS preflight in front of the send.** The hosted rollup endpoint
+  sends no `Access-Control-Max-Age`, so Chrome repeats the preflight five
+  seconds after the last request. Rollup requests now go out as `text/plain`
+  with no custom header (`preflightFreeFetch` in `src/lib/rollup/sdk.ts`),
+  which needs none; an endpoint answering 415 gets the JSON headers back.
+- **View reads racing the pushed result.** The package starts reading the
+  view 500 ms after a send and does not look at a pushed result while a read
+  is in flight. `RESULT_PUSH_WAIT_MS` (1.5 s) keeps a live subscription the
+  only source for that long.
+- **A `sync_view` transaction after every own fill**, taker fills included,
+  usually landing inside the next order. Only a maker fill needs it.
+- **A view read after every order and another every five seconds.** The
+  result's own view is pushed to the dock instead, and the account
+  subscription carries everything else; rollup mode no longer polls.
+- **A full session rebuild every four minutes, in front of whichever order
+  came next**, and a second sign-in on every page load when the market list
+  arrived. The sign-in token lasts 30 days (read from the endpoint), so the
+  rebuild is daily, and the trading client is created once per wallet.
+- **"Filled" waiting for the public tape**, seconds after the result. The
+  rail now takes it from the result itself.
+
+What is left is the package's own: the send, one status check when the
+result takes longer than 400 ms, and a market-settings read every 30 s that
+does sit in front of the send. Numbers are in the pass report; the venue's
+own answer to a send was bimodal on the day (about 300 ms or about 720 ms),
+which moves the median between runs far more than the terminal does.
+
 ## Known non-blocking issue
 
 A `lightweight-charts` internal error ("Value is null") was observed

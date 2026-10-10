@@ -80,18 +80,19 @@ export function Terminal() {
   const [dockTab, setDockTab] = useState<Tab>("positions");
 
   const wallet = useWallet();
-  // Stable across renders (depends only on the markets array, which
-  // changes rarely) so that useTrading's useMemo does not rebuild the
-  // whole trading client - and in rollup mode, re-sign-in and re-subscribe
-  // to the rollup - on every tick of `now` (every second). It did exactly
-  // that before this was memoized: a brand new session and websocket
-  // subscription every second, piling up faster than any of them could
-  // close, until Chrome refused new ones ("Insufficient resources").
   const marketSettings = useCallback(
     (id: string) => data.markets.find((item) => item.id === id),
     [data.markets],
   );
-  const trading = useTrading(wallet.account, marketSettings);
+  // The trading client, its sign-in and its websocket live once per wallet:
+  // this lookup reads the store, so it never changes identity, and trading
+  // starts only once the market list it binds against has loaded.
+  const marketSettingsFromStore = useCallback(
+    (id: string) => store.getState().markets.find((item) => item.id === id),
+    [store],
+  );
+  const marketsLoaded = data.markets.length > 0;
+  const trading = useTrading(marketsLoaded ? wallet.account : null, marketSettingsFromStore);
 
   // Dev mode is always an in-memory, same-process engine - "localnet" in
   // spirit regardless of label. Rollup mode reads the real value from
@@ -121,7 +122,7 @@ export function Terminal() {
   const [cancelPending, setCancelPending] = useState<{ expiresAtMs: number } | null>(null);
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [prefillRequest, setPrefillRequest] = useState<PrefillRequest | null>(null);
-  const lastOwnFillCountRef = useRef(0);
+  const syncedMakerFillsRef = useRef(new Set<string>());
   // This device's own first-seen time per open order id - there is no
   // venue-reported placement time on `OpenOrder` to show instead, and
   // inventing one would be exactly the kind of fabricated figure the
@@ -167,10 +168,16 @@ export function Terminal() {
         pendingPlace: null,
       };
     }
+    const confirmedSteps = appendStep(baseSteps, "confirmed", Date.now());
     return {
       market: descriptor.market,
       descriptor,
-      baseSteps: appendStep(baseSteps, "confirmed", Date.now()),
+      // The venue's own result already says the order filled; the rail does
+      // not wait for the public tape to say it again.
+      baseSteps:
+        result.status === "filled"
+          ? appendStep(confirmedSteps, "filled", Date.now())
+          : confirmedSteps,
       trackedOrderId: result.orderId,
       trackedTag: result.tag,
       pendingPlace: null,
@@ -344,18 +351,22 @@ export function Terminal() {
   // receipt: the one identifier that means the same thing in both modes.
   const ownSequences = new Set(ownFillsForMarket.map((fill) => fill.sequence));
 
-  // Rollup mode: a resting order's own fill does not update this trader's
-  // view until `sync_view` runs (see TradingClient.syncMarket). Detected
-  // here, where both the tape-derived own-fills and the tracked resting
-  // order are in scope.
+  // Rollup mode: a fill a resting order receives from someone else's taker
+  // order does not reach this trader's view until `sync_view` runs (see
+  // TradingClient.syncMarket). A fill this trader took needs none: the
+  // order's own instruction already wrote it.
+  const { syncMarket } = trading;
+  const makerFillSequences = ownFillsForMarket
+    .filter((fill) => fill.role === "maker")
+    .map((fill) => fill.sequence)
+    .join(",");
   useEffect(() => {
-    if (ownFillsForMarket.length > lastOwnFillCountRef.current) {
-      lastOwnFillCountRef.current = ownFillsForMarket.length;
-      void trading.syncMarket(selectedMarketId);
-    } else {
-      lastOwnFillCountRef.current = ownFillsForMarket.length;
-    }
-  }, [ownFillsForMarket.length, selectedMarketId, trading]);
+    const synced = syncedMakerFillsRef.current;
+    const unsynced = makerFillSequences.split(",").filter((seq) => seq && !synced.has(seq));
+    if (unsynced.length === 0) return;
+    for (const sequence of unsynced) synced.add(sequence);
+    void syncMarket(selectedMarketId);
+  }, [makerFillSequences, selectedMarketId, syncMarket]);
 
   const relevantSession = orderSessions[selectedMarketId] ?? null;
   const trackedOpenOrder = relevantSession?.trackedOrderId
@@ -492,7 +503,6 @@ export function Terminal() {
       collateral={trading.state.collateral}
       position={position}
       onCreateWallet={() => wallet.create()}
-      creatingWallet={false}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
       placeOrder={trading.placeOrder}
