@@ -60,7 +60,7 @@ async function ensureWalletPersisted(page: Page, alreadyReused: boolean): Promis
   // of spending another of devnet's limited new-account seats.
   await page.getByRole("button", { name: /^[A-Za-z0-9]+…[A-Za-z0-9]+$/ }).click();
   await page.getByRole("button", { name: "Save recovery details" }).click();
-  const secretText = await page.locator("p.break-all").innerText();
+  const secretText = await page.locator("p.break-all").last().innerText();
   savePersistedWallet(secretText.trim());
   await page.keyboard.press("Escape").catch(() => {});
   // Close the dropdown by clicking elsewhere.
@@ -178,7 +178,7 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
         { timeout: 60_000 },
       );
     }
-    await page.getByLabel("Quantity (nSOL)").fill("1");
+    await page.getByLabel("Quantity (nSOL)").fill(SPOT_SELL_SIZE);
     await page.getByRole("button", { name: "Place test buy", exact: true }).first().click();
     await expect(
       page.getByText(/^(Filled|Resting|Partially filled|Checking with the venue)$/),
