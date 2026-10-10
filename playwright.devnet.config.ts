@@ -27,7 +27,8 @@ const ORDERBOOK_PROGRAM_ID = process.env.ORDERBOOK_PROGRAM_ID; // falls back to 
 // `access-control-allow-origin` response header), neither of which this
 // repo controls. Pick a different port only after confirming the same way.
 const PORT = Number(process.env.PLAYWRIGHT_DEVNET_PORT ?? 3100);
-const BASE_URL = `http://localhost:${PORT}`;
+const DEPLOYED_URL = process.env.DEVNET_TERMINAL_URL;
+const BASE_URL = DEPLOYED_URL ?? `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e/devnet",
@@ -49,21 +50,25 @@ export default defineConfig({
     navigationTimeout: 60_000,
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
-  webServer: {
-    command: `npx next build && npx next start --port ${PORT}`,
-    env: {
-      NEXT_PUBLIC_SIM_URL: SIM_DEVNET_URL,
-      NEXT_PUBLIC_SIM_WS_URL: `${SIM_DEVNET_URL.replace(/^http/, "ws")}/v1/stream`,
-      NEXT_PUBLIC_TRADING_MODE: "rollup",
-      NEXT_PUBLIC_NETWORK_LABEL: "DEVNET",
-      NEXT_PUBLIC_ROLLUP_RPC_URL: ROLLUP_RPC_URL,
-      NEXT_PUBLIC_ROLLUP_WS_URL: ROLLUP_WS_URL,
-      ...(ORDERBOOK_PROGRAM_ID ? { NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID: ORDERBOOK_PROGRAM_ID } : {}),
-    },
-    url: BASE_URL,
-    reuseExistingServer: false,
-    timeout: 300_000,
-    stdout: "pipe",
-    stderr: "pipe",
-  },
+  webServer: DEPLOYED_URL
+    ? undefined
+    : {
+        command: `npx next build && npx next start --port ${PORT}`,
+        env: {
+          NEXT_PUBLIC_SIM_URL: SIM_DEVNET_URL,
+          NEXT_PUBLIC_SIM_WS_URL: `${SIM_DEVNET_URL.replace(/^http/, "ws")}/v1/stream`,
+          NEXT_PUBLIC_TRADING_MODE: "rollup",
+          NEXT_PUBLIC_NETWORK_LABEL: "DEVNET",
+          NEXT_PUBLIC_ROLLUP_RPC_URL: ROLLUP_RPC_URL,
+          NEXT_PUBLIC_ROLLUP_WS_URL: ROLLUP_WS_URL,
+          ...(ORDERBOOK_PROGRAM_ID
+            ? { NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID: ORDERBOOK_PROGRAM_ID }
+            : {}),
+        },
+        url: BASE_URL,
+        reuseExistingServer: false,
+        timeout: 300_000,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
 });

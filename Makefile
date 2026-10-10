@@ -46,7 +46,7 @@ e2e-live: ## Opt-in: the first-minute flow against a REAL sim-noirwire you alrea
 e2e-rollup: ## Opt-in: the first-minute flow signed in the browser against a REAL local rollup plus sim-noirwire in rollup mode. Needs ports 8899/7799/6699 and the service already running (see README). Not part of CI.
 	npx playwright test --config=playwright.rollup.config.ts
 
-e2e-devnet: ## Opt-in: the first-minute flow signed in the browser against the real Solana devnet, through a sim-noirwire already running in rollup mode pointed at devnet (DEVNET_SIM_URL, default http://localhost:4100). Reuses the wallet persisted in e2e/.devnet-wallet.json across runs. Not part of CI.
+e2e-devnet: ## Opt-in: the first-minute flow signed in the browser against the real Solana devnet, through a sim-noirwire already running in rollup mode pointed at devnet (DEVNET_SIM_URL, default http://localhost:4100). Reuses the wallet persisted in e2e/.devnet-wallet.json across runs. Set DEVNET_TERMINAL_URL to run it against a deployed terminal instead of a local build. Not part of CI.
 	npx playwright test --config=playwright.devnet.config.ts
 
 sdk-update: ## Copy a fresh @noirwire/orderbook release tarball from a sibling checkout: make sdk-update SDK_SRC=/path/to/noirwire-orderbook-X.Y.Z.tgz
