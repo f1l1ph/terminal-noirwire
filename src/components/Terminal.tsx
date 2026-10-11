@@ -26,10 +26,9 @@ import { fetchDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
+import { usePanelLayout } from "@/components/hooks/usePanelLayout";
 import { TerminalShell } from "@/components/TerminalShell";
-import { MarketSwitcher } from "@/components/MarketSwitcher";
-import { MarketContextBar } from "@/components/MarketContextBar";
-import { MarketHeader } from "@/components/MarketHeader";
+import { DesktopWorkspace } from "@/components/DesktopWorkspace";
 import { MarketChart } from "@/components/MarketChart";
 import { VenuePulse } from "@/components/VenuePulse";
 import { PublicTape } from "@/components/PublicTape";
@@ -70,12 +69,7 @@ export function Terminal() {
   const data = useMarketDataState(store);
   const now = useNow();
   const isDesktop = useMediaQuery("(min-width: 900px)");
-  // A shorter desktop viewport (1280x800 is the shortest this terminal is
-  // checked against) gives the workspace row relatively more of the shared
-  // height, so a perp market order still fits in the order entry column
-  // without its own scroll; the account dock already scrolls its table
-  // body internally, so it gives up height first.
-  const isShortViewport = useMediaQuery("(max-height: 850px)");
+  const layout = usePanelLayout();
   const [phoneView, setPhoneView] = useState<"trade" | "market">("trade");
   const [dockTab, setDockTab] = useState<Tab>("positions");
 
@@ -588,74 +582,37 @@ export function Terminal() {
       onReducePosition={requestReduce}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
       cancellingOrderId={cancelling ? (trackedOpenOrder?.orderId ?? null) : null}
+      bordered={!isDesktop}
     />
   );
 
   const content = isDesktop ? (
-    <>
-      <div className="shrink-0">
-        <MarketContextBar market={market} mark={mark} now={now} />
-      </div>
-      <div
-        className={`grid min-h-0 ${isShortViewport ? "flex-[7]" : "flex-[3]"} grid-cols-[176px_1fr_212px_296px] grid-rows-[minmax(0,1fr)] gap-2`}
-      >
-        <div className="flex min-h-0 flex-col">
-          <MarketSwitcher
-            markets={data.markets}
-            selectedId={selectedMarketId}
-            onSelect={setSelectedMarketId}
-            now={now}
-          />
-        </div>
-
-        <div className="flex min-h-0 min-w-0 flex-col gap-1">
-          <MarketHeader marketId={market?.id} interval={interval} onIntervalChange={setInterval} />
-          <div className="flex min-h-0 flex-[3] flex-col">
-            <MarketChart
-              market={market}
-              interval={interval}
-              candles={candles}
-              mark={mark}
-              publicFills={tape}
-              ownSequences={ownSequences}
-              connectionState={data.connectionState}
-              loading={candlesLoading}
-              fetchFailed={candlesFetchFailed}
-              markStale={markStale}
-              onRetry={() => setRetryToken((token) => token + 1)}
-            />
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col">
-            <PublicTape
-              fills={tape}
-              priceDecimals={market ? priceDecimalsOf(market) : 2}
-              sizeDecimals={market ? sizeDecimalsOf(market) : 4}
-              ownSequences={ownSequences}
-            />
-          </div>
-        </div>
-
-        <div className="flex min-h-0 flex-col gap-2">
-          <div className="shrink-0">
-            <VenuePulse
-              stats={data.stats}
-              now={now}
-              network={network}
-              clientDurationMs={clientDurationMs}
-            />
-          </div>
-          {witnessRail}
-          <div className="shrink-0">
-            <PublicView market={selectedMarketId} checkPrivacy={trading.checkPrivacy} />
-          </div>
-        </div>
-
-        <div className="flex min-h-0 flex-col">{orderEntry}</div>
-      </div>
-      <div className={`flex ${isShortViewport ? "min-h-[90px]" : "min-h-[160px]"} flex-1 flex-col`}>
-        {accountDock}
-      </div>
-    </>
+    <DesktopWorkspace
+      layout={layout}
+      market={market}
+      mark={mark}
+      now={now}
+      interval={interval}
+      onIntervalChange={setInterval}
+      candles={candles}
+      tape={tape}
+      ownSequences={ownSequences}
+      connectionState={data.connectionState}
+      candlesLoading={candlesLoading}
+      candlesFetchFailed={candlesFetchFailed}
+      markStale={markStale}
+      onRetry={() => setRetryToken((token) => token + 1)}
+      markets={data.markets}
+      selectedMarketId={selectedMarketId}
+      onSelectMarket={setSelectedMarketId}
+      stats={data.stats}
+      network={network}
+      clientDurationMs={clientDurationMs}
+      witnessRail={witnessRail}
+      checkPrivacy={trading.checkPrivacy}
+      orderEntry={orderEntry}
+      accountDock={accountDock}
+    />
   ) : (
     <PhoneLayout
       market={market}
@@ -691,6 +648,7 @@ export function Terminal() {
       marketDataStale={markStale}
       wallet={wallet}
       statusBarText={statusBarText}
+      onResetLayout={isDesktop && !layout.isDefault ? layout.reset : undefined}
     >
       {content}
     </TerminalShell>

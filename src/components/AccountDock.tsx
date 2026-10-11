@@ -12,7 +12,7 @@ import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
-import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
+import { btnGhost, sectionLabel } from "@/components/ui/styles";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 
 export type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
@@ -43,6 +43,7 @@ export function AccountDock({
   onReducePosition,
   onCancelOrder,
   cancellingOrderId,
+  bordered = true,
 }: {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
@@ -65,9 +66,13 @@ export function AccountDock({
   onReducePosition: (position: Position) => void;
   onCancelOrder: ((market: string, orderId: string) => void) | null;
   cancellingOrderId: string | null;
+  /** False inside the desktop Account panel frame, which already supplies the border. True (default) on phone, where this renders standalone. */
+  bordered?: boolean;
 }) {
   return (
-    <div className={`${panel} flex min-h-0 flex-1 flex-col`}>
+    <div
+      className={`flex min-h-0 flex-1 flex-col ${bordered ? "bg-surface border-line-subtle rounded-panel border" : ""}`}
+    >
       <div
         className="border-line-subtle flex shrink-0 gap-1 border-b p-2"
         role="tablist"
@@ -90,7 +95,9 @@ export function AccountDock({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3" role="tabpanel">
         {!hasWallet && (
-          <p className="text-dim text-[13px]">Create a test wallet to see your account.</p>
+          <div className="flex h-full min-h-[96px] flex-col items-center justify-center gap-1 text-center">
+            <p className="text-dim text-[13px]">Create a test wallet to see your account.</p>
+          </div>
         )}
         {hasWallet && tab === "positions" && (
           <PositionsTable

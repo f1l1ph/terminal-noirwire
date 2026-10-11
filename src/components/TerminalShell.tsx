@@ -18,12 +18,15 @@ export function TerminalShell({
   marketDataStale,
   wallet,
   statusBarText,
+  onResetLayout,
   children,
 }: {
   connectionState: ConnectionState;
   marketDataStale?: boolean;
   wallet: WalletHookResult;
   statusBarText: string;
+  /** Present only once the desktop workspace layout differs from its default - the control itself appears only then. */
+  onResetLayout?: () => void;
   children: ReactNode;
 }) {
   return (
@@ -35,6 +38,15 @@ export function TerminalShell({
           <NetworkBadge />
         </div>
         <div className="flex items-center gap-3">
+          {onResetLayout && (
+            <button
+              type="button"
+              className="text-dim hover:text-ink text-[12px] underline decoration-dotted underline-offset-2"
+              onClick={onResetLayout}
+            >
+              Reset layout
+            </button>
+          )}
           <ConnectionStatus state={connectionState} marketDataStale={marketDataStale} />
           <WalletWidget wallet={wallet} />
         </div>

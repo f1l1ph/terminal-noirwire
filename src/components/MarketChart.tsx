@@ -424,7 +424,7 @@ export function MarketChart({
   }, [frozen, loading, fetchFailed, lastUpdateLabel]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="text-faint flex items-center gap-3 px-1 pb-1 text-[11px]" aria-live="off">
         {!overlay && !hasEnoughData ? (
           <span className="tnum">History building · n={buildingSampleCount}</span>
@@ -449,7 +449,7 @@ export function MarketChart({
           public
         </span>
       </div>
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-0 min-w-0 flex-1">
         <div ref={containerRef} className="h-full w-full" data-testid="market-chart" />
         {overlay && (
           <div

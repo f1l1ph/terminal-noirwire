@@ -452,7 +452,9 @@ export function OrderEntry({
 
   if (!market) {
     return (
-      <div className="bg-surface border-line-subtle rounded-panel text-faint border p-4 text-[13px]">
+      <div
+        className={`text-faint p-4 text-[13px] ${compact ? "bg-surface border-line-subtle rounded-panel border" : ""}`}
+      >
         Loading market settings.
       </div>
     );
@@ -513,8 +515,10 @@ export function OrderEntry({
   return (
     <div
       ref={containerRef}
-      className={`bg-surface border-line-subtle rounded-panel flex flex-col gap-0.5 p-1.5 ${
-        compact ? "" : "min-h-0 flex-1 overflow-y-auto"
+      className={`flex flex-col gap-0.5 p-1.5 ${
+        compact
+          ? "bg-surface border-line-subtle rounded-panel border"
+          : "min-h-0 flex-1 overflow-y-auto"
       }`}
     >
       <p className="text-ink-strong text-[13px] font-medium">

@@ -121,12 +121,12 @@ export function PublicView({
   }
 
   return (
-    <div className={`${panel} relative flex flex-col gap-1 p-3`}>
-      <div className="flex items-center justify-between">
+    <div className={`${panel} relative flex flex-col gap-1.5 p-3`}>
+      <div className="flex flex-col items-start gap-1.5">
         <p className={sectionLabel}>Public view</p>
         <button
           type="button"
-          className={`${btnGhost} h-7 px-2 text-[11px]`}
+          className={`${btnGhost} h-7 w-full justify-start px-2 text-[11px] whitespace-nowrap`}
           onClick={() => void check()}
         >
           {loading ? "Checking…" : snapshot ? "Check again" : "Check public tape"}
@@ -170,11 +170,11 @@ export function PublicView({
       )}
       {checkPrivacy && (
         <div className="border-line-subtle mt-1 border-t pt-1.5">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col items-start gap-1.5">
             <p className={sectionLabel}>Unsigned account check</p>
             <button
               type="button"
-              className={`${btnGhost} h-7 px-2 text-[11px]`}
+              className={`${btnGhost} h-7 w-full justify-start px-2 text-[11px] whitespace-nowrap`}
               onClick={() => void checkOnChain()}
             >
               {privacyLoading ? "Checking…" : privacy ? "Check again" : "Check unsigned accounts"}
