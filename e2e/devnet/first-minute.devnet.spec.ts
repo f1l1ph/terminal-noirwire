@@ -45,7 +45,11 @@ const SPOT_SELL_SIZE = "0.20";
 
 /** The spot rows of the open Balances tab: the base token and the spot nUSD (not the collateral row, which is labelled as such). */
 async function spotBalances(page: Page): Promise<{ base: number; quote: number }> {
-  const text = await page.getByRole("tabpanel").innerText();
+  const balancesTab = page
+    .getByRole("tabpanel")
+    .filter({ hasText: "perpetuals collateral" })
+    .last();
+  const text = await balancesTab.innerText();
   const amountAfter = (label: RegExp) => Number(text.match(label)?.[1].replace(/,/g, "") ?? NaN);
   return {
     base: amountAfter(/nSOL\s+([\d,.]+)/),

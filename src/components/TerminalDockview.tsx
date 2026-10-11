@@ -315,18 +315,18 @@ function buildDefaultLayout(api: DockviewApi, windowWidthPx: number, windowHeigh
     initialHeight: sizes.tapeHeight,
   });
   api.addPanel({
-    id: VENUE_TIMING_PANEL_ID,
-    component: VENUE_TIMING_PANEL_ID,
-    title: PANEL_TITLES[VENUE_TIMING_PANEL_ID],
-    renderer: "always",
-    position: { referencePanel: WITNESS_PANEL_ID, direction: "below" },
-  });
-  api.addPanel({
     id: PUBLIC_VIEW_PANEL_ID,
     component: PUBLIC_VIEW_PANEL_ID,
     title: PANEL_TITLES[PUBLIC_VIEW_PANEL_ID],
     renderer: "always",
-    position: { referencePanel: VENUE_TIMING_PANEL_ID, direction: "within" },
+    position: { referencePanel: WITNESS_PANEL_ID, direction: "below" },
+  });
+  api.addPanel({
+    id: VENUE_TIMING_PANEL_ID,
+    component: VENUE_TIMING_PANEL_ID,
+    title: PANEL_TITLES[VENUE_TIMING_PANEL_ID],
+    renderer: "always",
+    position: { referencePanel: PUBLIC_VIEW_PANEL_ID, direction: "within" },
     inactive: true,
   });
   api.addPanel({

@@ -10,9 +10,6 @@ test.describe("Public view carries no private rows", () => {
     await page.goto("/");
     await expect(page.getByText("Create a test wallet to see your account.")).toBeVisible();
 
-    // Public view shares a dockview tab group with Venue timing, which is
-    // the active tab by default - switch to it first.
-    await page.getByRole("tab", { name: "Public view" }).click();
     await page.getByRole("button", { name: "Check public tape" }).click();
     // check() opens the detail panel itself; no second click needed.
     const toggle = page.getByRole("button", { name: /Checked at/ });
