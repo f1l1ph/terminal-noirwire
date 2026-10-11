@@ -21,6 +21,7 @@
     "@noble/hashes": "1.8.0",
     "@noirwire/orderbook": "file:vendor/noirwire-orderbook-0.5.0.tgz",
     "@solana/web3.js": "1.99.0",
+    "dockview-react": "8.5.1",
     "lightweight-charts": "4.2.3",
     "next": "16.3.8",
     "react": "19.3.0",

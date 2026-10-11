@@ -146,3 +146,99 @@ button:disabled {
 .chart-overlay {
   background: color-mix(in oklab, var(--color-surface) 88%, transparent);
 }
+
+/*
+ * The desktop workspace's docking layout (dockview-react), themed entirely
+ * through its own CSS variables so it reads as part of the terminal rather
+ * than a bundled widget: same surfaces, borders, radius and text colours as
+ * everywhere else, no default dockview blue, Figtree instead of a
+ * mismatched system font.
+ */
+.dv-theme-noirwire {
+  color-scheme: dark;
+  --dv-group-view-background-color: var(--color-surface);
+  --dv-tabs-and-actions-container-background-color: var(--color-surface-raised);
+  --dv-tabs-and-actions-container-height: 35px;
+  --dv-tabs-and-actions-container-font-size: 13px;
+  --dv-tab-font-size: inherit;
+  --dv-tab-margin: 0;
+  --dv-tab-border-radius: 0px;
+  --dv-tab-close-icon-size: 10px;
+  --dv-tab-divider-color: var(--color-line-subtle);
+
+  --dv-activegroup-visiblepanel-tab-background-color: var(--color-elevated);
+  --dv-activegroup-visiblepanel-tab-color: var(--color-ink-strong);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--color-surface-raised);
+  --dv-activegroup-hiddenpanel-tab-color: var(--color-dim);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-surface-raised);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--color-dim);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--color-surface);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--color-faint);
+
+  --dv-separator-border: var(--color-line-subtle);
+  --dv-icon-hover-background-color: var(--color-elevated);
+  --dv-scrollbar-background-color: var(--color-line-strong);
+  --dv-tabs-container-scrollbar-color: var(--color-line-strong);
+
+  /* The sash itself stays an 8px hit area, painted by our own ::after line below - leave the library's own hover/active fill off. */
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: transparent;
+
+  /* The drop overlay: the terminal's one committed "something is happening" colour, at low opacity. */
+  --dv-drag-over-background-color: color-mix(in oklab, var(--color-ink-strong) 16%, transparent);
+  --dv-drag-over-border-color: var(--color-ink-strong);
+  --dv-drag-over-border: 1px solid var(--color-ink-strong);
+  --dv-edge-dock-indicator-color: color-mix(in oklab, var(--color-ink-strong) 55%, transparent);
+}
+
+.dv-theme-noirwire .dv-default-tab-content {
+  font-weight: 500;
+}
+
+/*
+ * Widen the sash's hit area to 8px via a transparent, pointer-accepting
+ * `::before` that bleeds 2px past the library's own 4px box on each side -
+ * the same technique dockview's base stylesheet already uses for coarse
+ * pointers, just always on here - then paint a 2px accent line, centred in
+ * that box, only on hover and while dragging.
+ */
+.dv-theme-noirwire .dv-sash-container .dv-sash::before {
+  content: "";
+  position: absolute;
+  background: transparent;
+  pointer-events: auto;
+}
+.dv-theme-noirwire .dv-split-view-container.dv-horizontal > .dv-sash-container > .dv-sash::before {
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  right: -2px;
+}
+.dv-theme-noirwire .dv-split-view-container.dv-vertical > .dv-sash-container > .dv-sash::before {
+  left: 0;
+  right: 0;
+  top: -2px;
+  bottom: -2px;
+}
+.dv-theme-noirwire .dv-sash-container .dv-sash::after {
+  content: "";
+  position: absolute;
+  background-color: transparent;
+  transition: background-color 120ms var(--ease-out);
+}
+.dv-theme-noirwire .dv-split-view-container.dv-horizontal > .dv-sash-container > .dv-sash::after {
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  width: 2px;
+}
+.dv-theme-noirwire .dv-split-view-container.dv-vertical > .dv-sash-container > .dv-sash::after {
+  left: 0;
+  right: 0;
+  top: 1px;
+  height: 2px;
+}
+.dv-theme-noirwire .dv-sash-container .dv-sash:hover::after,
+.dv-theme-noirwire .dv-sash-container .dv-sash:active::after {
+  background-color: var(--color-ink-strong);
+}

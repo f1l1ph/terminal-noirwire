@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./support/test";
+import { center, dragMouse, sashBetween } from "./support/dockview";
 
 /**
  * lightweight-charts draws its plot in several canvases side by side inside
@@ -61,53 +62,65 @@ async function expectChartFillsContainer(page: Page): Promise<ChartFit> {
   return fit;
 }
 
-async function dragSeparator(page: Page, name: string, dx: number, dy: number): Promise<void> {
-  const separator = page.getByRole("separator", { name });
-  const box = await separator.boundingBox();
-  if (!box) throw new Error(`expected the "${name}" separator to be visible`);
-  const startX = box.x + box.width / 2;
-  const startY = box.y + box.height / 2;
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX + dx, startY + dy, { steps: 10 });
-  await page.mouse.up();
-}
-
 test.describe("The chart canvas always fills its panel", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("after collapsing Evidence, dragging a column splitter, and dragging the chart/tape splitter - growing and shrinking", async ({
+  test("after a column sash drag, a row sash drag, shrinking both back, and maximize/restore", async ({
     page,
   }) => {
     await page.goto("/");
-    await page.getByText("NSOL-PERP").first().waitFor();
+    // The desktop workspace loads dockview through a client-only dynamic
+    // import; waiting for market context text alone can race its chunk.
+    await page.getByTestId("market-chart").waitFor();
 
     const atDefault = await expectChartFillsContainer(page);
 
-    // 1) Collapse Evidence: its width goes to the centre column, widening the chart.
-    await page.getByRole("button", { name: "Collapse Evidence panel" }).click();
-    const afterCollapse = await expectChartFillsContainer(page);
-    expect(afterCollapse.containerWidth).toBeGreaterThan(atDefault.containerWidth + 100);
+    const marketsPanel = page.getByRole("tabpanel", { name: "Markets" });
+    const chartPanel = page.getByRole("tabpanel", { name: "Chart" });
+    const tapePanel = page.getByRole("tabpanel", { name: "Public tape" });
 
-    // 2) Drag the Markets|Chart column splitter left: Markets shrinks, the chart widens further.
-    await dragSeparator(page, "Resize Markets and Chart panels", -60, 0);
+    // 1) Drag the Markets|Chart column sash left: Markets shrinks, the chart widens.
+    const columnSash = await sashBetween(page, marketsPanel, chartPanel, "vertical");
+    await dragMouse(page, center(columnSash), {
+      x: columnSash.x + columnSash.width / 2 - 60,
+      y: columnSash.y + columnSash.height / 2,
+    });
     const afterColumnWiden = await expectChartFillsContainer(page);
-    expect(afterColumnWiden.containerWidth).toBeGreaterThan(afterCollapse.containerWidth + 20);
+    expect(afterColumnWiden.containerWidth).toBeGreaterThan(atDefault.containerWidth + 20);
 
-    // 3) Drag the Chart|Public tape splitter down: the chart grows taller.
-    await dragSeparator(page, "Resize Chart and Public tape panels", 0, 60);
+    // 2) Drag the Chart|Public tape row sash down: the chart grows taller.
+    const rowSash = await sashBetween(page, chartPanel, tapePanel, "horizontal");
+    await dragMouse(page, center(rowSash), {
+      x: rowSash.x + rowSash.width / 2,
+      y: rowSash.y + rowSash.height / 2 + 60,
+    });
     const afterRowGrow = await expectChartFillsContainer(page);
     expect(afterRowGrow.containerHeight).toBeGreaterThan(afterColumnWiden.containerHeight + 20);
 
-    // 4) Now shrink both back: the canvas must shrink to match, never overflow its (now smaller) container.
-    await dragSeparator(page, "Resize Markets and Chart panels", 150, 0);
-    await dragSeparator(page, "Resize Chart and Public tape panels", 0, -150);
+    // 3) Now shrink both back: the canvas must shrink to match, never overflow its (now smaller) container.
+    const columnSashAgain = await sashBetween(page, marketsPanel, chartPanel, "vertical");
+    await dragMouse(page, center(columnSashAgain), {
+      x: columnSashAgain.x + columnSashAgain.width / 2 + 150,
+      y: columnSashAgain.y + columnSashAgain.height / 2,
+    });
+    const rowSashAgain = await sashBetween(page, chartPanel, tapePanel, "horizontal");
+    await dragMouse(page, center(rowSashAgain), {
+      x: rowSashAgain.x + rowSashAgain.width / 2,
+      y: rowSashAgain.y + rowSashAgain.height / 2 - 150,
+    });
     const afterShrink = await expectChartFillsContainer(page);
     expect(afterShrink.containerWidth).toBeLessThan(afterColumnWiden.containerWidth);
     expect(afterShrink.containerHeight).toBeLessThan(afterRowGrow.containerHeight);
-    expect(afterShrink.filledWidth).toBeLessThanOrEqual(afterShrink.containerWidth + TOLERANCE_PX);
-    expect(afterShrink.filledHeight).toBeLessThanOrEqual(
-      afterShrink.containerHeight + TOLERANCE_PX,
-    );
+
+    // 4) Maximize the Chart group: it fills nearly the whole workspace.
+    const chartTab = page.getByRole("tab", { name: "Chart" });
+    await chartTab.dblclick();
+    const maximized = await expectChartFillsContainer(page);
+    expect(maximized.containerWidth).toBeGreaterThan(afterShrink.containerWidth + 100);
+
+    // 5) Restore: back to a Chart-column-sized container, still filled exactly.
+    await chartTab.dblclick();
+    const restored = await expectChartFillsContainer(page);
+    expect(restored.containerWidth).toBeLessThan(maximized.containerWidth - 100);
   });
 });

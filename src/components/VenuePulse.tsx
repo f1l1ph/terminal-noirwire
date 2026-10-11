@@ -19,6 +19,7 @@ export function VenuePulse({
   now,
   network,
   clientDurationMs,
+  bordered = true,
 }: {
   stats: StatsResponse | null;
   now: number;
@@ -26,6 +27,8 @@ export function VenuePulse({
   network: string;
   /** This browser's own last order click-to-result, `useTrading`'s measurement; null before the first order this session. */
   clientDurationMs: number | null;
+  /** False inside the desktop "Venue timing" dockview panel, which already supplies the surface and border. True (default) on phone, where this renders standalone. */
+  bordered?: boolean;
 }) {
   const [showMethod, setShowMethod] = useState(false);
   const display = latencyDisplay(stats, now);
@@ -55,7 +58,7 @@ export function VenuePulse({
   }
 
   return (
-    <div className={`${panel} flex flex-col gap-0.5 px-3 py-2`}>
+    <div className={`${bordered ? panel : ""} flex flex-col gap-0.5 px-3 py-2`}>
       <p className="tnum text-ink text-[12px] leading-tight">{headline}</p>
       <p className="text-faint text-[11px] leading-tight">{headlineDetail}</p>
       <button

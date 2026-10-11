@@ -109,6 +109,7 @@ export function WitnessRail({
   cancelPending,
   cancelMessage,
   now,
+  bordered = true,
 }: {
   /** The currently selected market - used only for the empty-state copy, never for the order description (that comes from `order`). */
   market: string;
@@ -134,6 +135,8 @@ export function WitnessRail({
   /** A plain reason the last cancel attempt could not be sent at all (e.g. every order-key slot busy), shown once and cleared on the next attempt. */
   cancelMessage?: string | null;
   now: number;
+  /** False inside the desktop "Witness rail" dockview panel, which already supplies the surface and border. True (default) on phone, where this renders standalone. */
+  bordered?: boolean;
 }) {
   // Only a genuinely local (loopback) number needs the qualifier - a real
   // network's own number is not mistaken for anything else, so it gets no
@@ -148,7 +151,7 @@ export function WitnessRail({
 
   if (!order || steps.length === 0) {
     return (
-      <div className={`${panel} flex min-h-0 flex-1 flex-col p-3`}>
+      <div className={`${bordered ? panel : ""} flex min-h-0 flex-1 flex-col p-3`}>
         <p className={sectionLabel}>Witness rail</p>
         <RecentActivity markets={recentMarkets} onSelect={onSelectMarket} />
         {hasAccountHistory ? (
@@ -177,7 +180,7 @@ export function WitnessRail({
   const lastStep = steps.at(-1);
 
   return (
-    <div className={`${panel} flex min-h-0 flex-1 flex-col p-3`} aria-live="polite">
+    <div className={`${bordered ? panel : ""} flex min-h-0 flex-1 flex-col p-3`} aria-live="polite">
       {/* Fixed, never scrolled out of view (third design review, must-fix
           8): the order's own description and its CURRENT result are always
           on screen, whatever the detail history below is scrolled to. */}

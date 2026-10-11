@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   formatDecimal,
   formatMoney,
@@ -784,62 +785,72 @@ export function OrderEntry({
         </p>
       )}
 
-      {showConfirm && draft && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Confirm order"
-          className="bg-base/80 fixed inset-0 z-20 flex items-center justify-center p-4"
-        >
-          <div className="bg-surface border-line-strong rounded-panel w-full max-w-sm border p-5">
-            <p className="text-ink-strong text-[14px] font-medium">
-              {market.id} · {orderType === "market" ? "Market" : "Limit"} ·{" "}
-              {isPerp ? (side === "buy" ? "Long" : "Short") : side === "buy" ? "Buy" : "Sell"}{" "}
-              {formatDecimal(quantityText, sizeDecimals)} {baseUnit}
-              {isPerp ? ` · ${leverage}x cross` : ""}
-            </p>
-            <p className="text-faint mt-1 text-[12px]">
-              {orderType === "market"
-                ? side === "buy"
-                  ? "Max buy price "
-                  : "Min sell price "
-                : "Limit price "}
-              {formatDecimal(priceText, priceDecimals)} {quoteUnit}
-            </p>
-            <OrderSummary
-              side={side}
-              isPerp={isPerp}
-              display={estimateDisplay}
-              priceDecimals={priceDecimals}
-              remainingAvailable={remainingAvailable}
-            />
-            <label className="text-dim mt-3 flex items-center gap-2 text-[12px]">
-              <input
-                type="checkbox"
-                checked={skipFuture}
-                onChange={(event) => setSkipFuture(event.target.checked)}
+      {showConfirm &&
+        draft &&
+        // A portal to `document.body`, not an in-place `fixed inset-0`: nested
+        // inside a dockview panel, this div's ancestor chain includes an
+        // element with its own CSS transform (dockview's overlay renderer),
+        // which makes ANY descendant's `position: fixed` relative to that
+        // transformed box instead of the viewport - exactly the CSS
+        // containing-block rule that would otherwise strand this dialog
+        // over the Order ticket's own small panel rather than the screen.
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm order"
+            className="bg-base/80 fixed inset-0 z-20 flex items-center justify-center p-4"
+          >
+            <div className="bg-surface border-line-strong rounded-panel w-full max-w-sm border p-5">
+              <p className="text-ink-strong text-[14px] font-medium">
+                {market.id} · {orderType === "market" ? "Market" : "Limit"} ·{" "}
+                {isPerp ? (side === "buy" ? "Long" : "Short") : side === "buy" ? "Buy" : "Sell"}{" "}
+                {formatDecimal(quantityText, sizeDecimals)} {baseUnit}
+                {isPerp ? ` · ${leverage}x cross` : ""}
+              </p>
+              <p className="text-faint mt-1 text-[12px]">
+                {orderType === "market"
+                  ? side === "buy"
+                    ? "Max buy price "
+                    : "Min sell price "
+                  : "Limit price "}
+                {formatDecimal(priceText, priceDecimals)} {quoteUnit}
+              </p>
+              <OrderSummary
+                side={side}
+                isPerp={isPerp}
+                display={estimateDisplay}
+                priceDecimals={priceDecimals}
+                remainingAvailable={remainingAvailable}
               />
-              Do not ask again
-            </label>
-            <div className="mt-4 flex gap-3">
-              <button
-                type="button"
-                className={`${btnGhost} h-11 flex-1`}
-                onClick={() => setShowConfirm(false)}
-              >
-                Back
-              </button>
-              <button
-                type="button"
-                className={`${side === "buy" ? btnSafe : btnDanger} h-11 flex-1`}
-                onClick={handleConfirm}
-              >
-                {submitLabel}
-              </button>
+              <label className="text-dim mt-3 flex items-center gap-2 text-[12px]">
+                <input
+                  type="checkbox"
+                  checked={skipFuture}
+                  onChange={(event) => setSkipFuture(event.target.checked)}
+                />
+                Do not ask again
+              </label>
+              <div className="mt-4 flex gap-3">
+                <button
+                  type="button"
+                  className={`${btnGhost} h-11 flex-1`}
+                  onClick={() => setShowConfirm(false)}
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  className={`${side === "buy" ? btnSafe : btnDanger} h-11 flex-1`}
+                  onClick={handleConfirm}
+                >
+                  {submitLabel}
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

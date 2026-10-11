@@ -26,7 +26,6 @@ import { fetchDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
-import { usePanelLayout } from "@/components/hooks/usePanelLayout";
 import { TerminalShell } from "@/components/TerminalShell";
 import { DesktopWorkspace } from "@/components/DesktopWorkspace";
 import { MarketChart } from "@/components/MarketChart";
@@ -69,7 +68,7 @@ export function Terminal() {
   const data = useMarketDataState(store);
   const now = useNow();
   const isDesktop = useMediaQuery("(min-width: 900px)");
-  const layout = usePanelLayout();
+  const [layoutResetSignal, setLayoutResetSignal] = useState(0);
   const [phoneView, setPhoneView] = useState<"trade" | "market">("trade");
   const [dockTab, setDockTab] = useState<Tab>("positions");
 
@@ -588,7 +587,7 @@ export function Terminal() {
 
   const content = isDesktop ? (
     <DesktopWorkspace
-      layout={layout}
+      layoutResetSignal={layoutResetSignal}
       market={market}
       mark={mark}
       now={now}
@@ -648,7 +647,7 @@ export function Terminal() {
       marketDataStale={markStale}
       wallet={wallet}
       statusBarText={statusBarText}
-      onResetLayout={isDesktop && !layout.isDefault ? layout.reset : undefined}
+      onResetLayout={isDesktop ? () => setLayoutResetSignal((signal) => signal + 1) : undefined}
     >
       {content}
     </TerminalShell>
