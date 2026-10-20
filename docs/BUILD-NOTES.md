@@ -146,9 +146,15 @@ upgrade is an edit to that one file (mirrors sim-noirwire's own
 
 **Keys.** The browser wallet's keypair (already in hand, no wallet-adapter
 flow) is the owner key. The 32-byte order-key seed is
-`sha256(nacl.sign.detached(domain-message, owner.secretKey))` -
-deterministic, so the same owner secret always rebuilds the same order
-keys, exactly as `keys.ts` states. Order-key recovery after a reload
+`sha256("noirwire-terminal/order-key-seed/v2" || owner's 32-byte Ed25519 seed)` -
+a hash of the secret, never a signature (the owner key signs the rollup's
+sign-in challenge, so a seed that was a signature over a fixed message
+could be obtained by whoever chose that challenge), and deterministic, so
+the same owner secret always rebuilds the same order keys. Earlier builds
+used `sha256(nacl.sign.detached(domain-message, owner.secretKey))`; when
+`buildRealSession` finds a view whose keys derive from that legacy seed, it
+replaces them with fresh keys from the new seed (`set_order_keys`, via
+`installOrderKeys`) before trading. Order-key recovery after a reload
 prefers a saved `OrderKeyManager.checkpoint()` (`checkpointStore.ts`,
 localStorage, keyed by owner address) over the full `fromView` search, and
 is saved again after every confirmed keyed call.

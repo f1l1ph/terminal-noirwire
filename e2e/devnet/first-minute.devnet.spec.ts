@@ -5,6 +5,7 @@ import {
   savePersistedWallet,
   WALLET_STORAGE_KEY,
 } from "../support/devnetWallet";
+import { keepWalletEncrypted, openWalletMenu, unlockWallet } from "../support/walletPassphrase";
 
 /**
  * Opt-in only (`make e2e-devnet`, never part of `make e2e`/`make e2e-live`/
@@ -62,7 +63,7 @@ async function ensureWalletPersisted(page: Page, alreadyReused: boolean): Promis
   // A fresh wallet: reveal and persist its secret so every later run (and
   // every other manual check this pass) reuses this exact address instead
   // of spending another of devnet's limited new-account seats.
-  await page.getByRole("button", { name: /^[A-Za-z0-9]+…[A-Za-z0-9]+$/ }).click();
+  await openWalletMenu(page);
   await page.getByRole("button", { name: "Save recovery details" }).click();
   const secretText = await page.locator("p.break-all").last().innerText();
   savePersistedWallet(secretText.trim());
@@ -216,8 +217,12 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
     await expect(evidenceDialog.getByText(/Unsigned devnet rollup RPC/)).toBeVisible();
     await shot(page, "09-privacy-evidence-enlarged");
 
-    // Reload: account, positions and own-fill marks all come back.
+    // Reload: account, positions and own-fill marks all come back. A wallet
+    // created this run lives in memory until encrypted, so it is encrypted
+    // first and unlocked after; a reused one is primed again on every load.
+    if (!reused) await keepWalletEncrypted(page);
     await page.reload();
+    if (!reused) await unlockWallet(page);
     await expect(page.getByText(/(Available:|Grant used ·)/).first()).toBeVisible({
       timeout: 30_000,
     });

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { Keypair } from "@solana/web3.js";
-import { clearWallet, createWallet, importWallet, bytesToHex } from "@/lib/wallet/index";
+import {
+  clearWallet,
+  createWallet,
+  importWallet,
+  bytesToHex,
+  storedWalletAddress,
+} from "@/lib/wallet/index";
 import { trackSecret } from "@/lib/rollup/secretStore";
 import { saveCheckpoint } from "@/lib/rollup/checkpointStore";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
@@ -28,12 +34,16 @@ describe("audit: browser wallet storage", () => {
     const first = createWallet(store);
     const other = Keypair.generate();
     try {
-      importWallet(store, bytesToHex(other.secretKey));
+      // A new wallet is held in memory until encrypted; the wallet hook
+      // passes its address, as here.
+      importWallet(store, bytesToHex(other.secretKey), { heldAddress: first.publicKey });
     } catch {
       // refusing is the acceptable outcome
     }
-    const stillRecoverable = [...store.map.values()].some((v) => v.includes(first.secretKeyHex));
-    expect(stillRecoverable).toBe(true);
+    // The secret itself is never stored in plain text (the test above), so
+    // "not overwritten" is read as: this device still names the first
+    // wallet as the one it keeps.
+    expect(storedWalletAddress(store)).toBe(first.publicKey);
   });
 
   it("removing the wallet also removes its order secrets and key checkpoint", () => {

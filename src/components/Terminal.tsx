@@ -507,6 +507,7 @@ export function Terminal() {
       now={now}
       hasWallet={!!wallet.account}
       walletReady={wallet.ready}
+      walletLocked={!!wallet.lockedAddress}
       balances={trading.state.balances}
       collateral={trading.state.collateral}
       position={position}

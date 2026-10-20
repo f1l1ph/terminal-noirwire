@@ -3,7 +3,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { deriveOrderKey } from "@noirwire/orderbook";
 import { bytesToHex } from "@/lib/wallet/index";
 import { deriveOrderSeed } from "@/lib/rollup/keys";
-import { orderKeysFromCheckpoint } from "@/lib/rollup/sdk";
+import { orderKeysFromCheckpoint, PACKAGE_PROGRAM_ID } from "@/lib/rollup/sdk";
 
 /**
  * A saved checkpoint that is further behind than `OrderKeyManager.restore`'s
@@ -72,7 +72,8 @@ describe("audit: stale order-key checkpoint", () => {
 
     const deployment = {
       network: "devnet",
-      programId: Keypair.generate().publicKey.toBase58(),
+      // The session refuses any program but the one this build trusts.
+      programId: PACKAGE_PROGRAM_ID.toBase58(),
       solanaRpcUrl: "https://solana.example",
       rollupRpcUrl: "https://rollup.example",
       rollupWsUrl: "wss://rollup.example",

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import nacl from "tweetnacl";
-import bs58 from "bs58";
 import { sha256 } from "@noble/hashes/sha256";
 import { deriveOrderSeed } from "@/lib/rollup/keys";
 import { freshOrderKeys, signInAndConnect } from "@/lib/rollup/sdk";
@@ -31,18 +30,18 @@ describe("audit: rollup sign-in as a signing oracle for the order-key seed", () 
     const owner = Keypair.generate();
     let signatureSentToEndpoint: Uint8Array | null = null;
 
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/auth/challenge")) return json({ challenge: ORDER_SEED_DOMAIN });
-      if (url.includes("/auth/login")) {
-        const body = JSON.parse(String(init?.body)) as { signature: string };
-        signatureSentToEndpoint = bs58.decode(body.signature);
-        return json({ token: "token" });
-      }
+      if (url.includes("/auth/login")) return json({ token: "token" });
       throw new Error(`unexpected request ${url}`);
     });
 
-    const signMessage = async (message: Uint8Array) => nacl.sign.detached(message, owner.secretKey);
+    // The SDK posts exactly this signature (bs58-encoded) to /auth/login.
+    const signMessage = async (message: Uint8Array) => {
+      signatureSentToEndpoint = nacl.sign.detached(message, owner.secretKey);
+      return signatureSentToEndpoint;
+    };
     await signInAndConnect("https://rollup.example", owner.publicKey, signMessage);
 
     expect(signatureSentToEndpoint).not.toBeNull();

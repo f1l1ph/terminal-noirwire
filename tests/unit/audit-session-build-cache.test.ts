@@ -3,6 +3,18 @@ import { Keypair } from "@solana/web3.js";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession } from "@/lib/rollup/session";
 import type { WalletIdentity } from "@/lib/trading/types";
+import type { View } from "@/lib/rollup/sdk";
+
+const VIEW = {
+  orderKeys: [],
+  resultsWritten: 0,
+  results: [],
+  snapshot: {
+    seat: { collateral: 0n, spot: [], perp: [], openOrders: [] },
+    marketId: 0,
+    orders: [],
+  },
+} as unknown as View;
 
 /**
  * A session build that fails once (for example because the deployment
@@ -29,9 +41,9 @@ describe("audit: session build failure", () => {
           owner: Keypair.generate(),
           orderKeyPublicKeys: [],
           client: {
-            view: async () => {
-              throw new Error("no view");
-            },
+            // A readable view: what is under test is the session build, so
+            // the call made with a session that did build must succeed.
+            view: async () => VIEW,
             subscribeView: () => async () => {},
           },
           deployment: { markets: [] },

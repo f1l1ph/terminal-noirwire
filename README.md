@@ -92,7 +92,11 @@ See the Makefile (`make help`) for every command.
 `NEXT_PUBLIC_SIM_URL` and `NEXT_PUBLIC_SIM_WS_URL` are always required. In
 rollup mode, everything else about the rollup - its RPC/WS URL, the program
 id, the exchange account, every market's tokens and decimals - is read at
-runtime from sim-noirwire's `GET /v1/deployment`, not from an env variable:
+runtime from sim-noirwire's `GET /v1/deployment`, not from an env variable
+(the program id and each market's base decimals are pinned in the build, and
+the markets are checked against the market accounts the rollup RPC serves,
+which is only an independent check when `NEXT_PUBLIC_ROLLUP_RPC_URL` is set;
+otherwise that RPC URL also comes from `/v1/deployment`):
 the three `NEXT_PUBLIC_ROLLUP_*`/`NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID` variables
 below are **optional overrides** for a non-default deployment, never
 required. See `.env.example` for the full comments.
@@ -103,9 +107,9 @@ required. See `.env.example` for the full comments.
 | `NEXT_PUBLIC_SIM_WS_URL`           | yes                         | sim-noirwire's websocket URL (`/v1/stream`)                                                                                                                     |
 | `NEXT_PUBLIC_TRADING_MODE`         | no (default `dev`)          | `dev` talks to sim-noirwire's local-development trading routes; `rollup` signs and sends every trade straight to the real on-chain order book from this browser |
 | `NEXT_PUBLIC_NETWORK_LABEL`        | no (default `TEST NETWORK`) | the words shown beside every balance, volume and speed figure                                                                                                   |
-| `NEXT_PUBLIC_ROLLUP_RPC_URL`       | no - override only          | replaces the RPC URL `/v1/deployment` reports (the query filter on a local stack); also widens the Content-Security-Policy to allow it                          |
+| `NEXT_PUBLIC_ROLLUP_RPC_URL`       | no - override only          | replaces the RPC URL `/v1/deployment` reports (the local query filter), so markets are checked on a rollup the service did not pick; also widens the CSP        |
 | `NEXT_PUBLIC_ROLLUP_WS_URL`        | no - override only          | replaces the websocket URL `/v1/deployment` reports; also widens the CSP                                                                                        |
-| `NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID` | no - override only          | replaces the program id `/v1/deployment` reports, for a redeployment under a different one                                                                      |
+| `NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID` | no - override only          | the program id this build signs for (default: the `@noirwire/orderbook` package's own); a `/v1/deployment` naming another program is refused                    |
 
 No `NEXT_PUBLIC_SOLANA_RPC_URL` and no "private URL" variable: nothing in the
 trading path talks to base-layer Solana directly, and the rollup's query
@@ -313,8 +317,22 @@ already-nonzero balance and skips the funding step entirely.
 
 ## Security
 
-This terminal holds a test wallet's secret key in the browser (localStorage)
-and trades only against a test network. See `SECURITY.md` for scope and how
+This terminal holds a test wallet's secret key in the browser and trades only
+against a test network. A new or imported wallet lives in memory only; once
+the trader sets a passphrase it is kept in localStorage encrypted
+(AES-256-GCM under a PBKDF2-SHA256 key, `src/lib/wallet/sealedSecret.ts`) and has to
+be unlocked after a reload. A plain-text wallet left by an earlier build is
+loaded as before and encrypted, and its plain-text copy removed, as soon as
+the trader sets a passphrase. Order keys come from a hash of the owner
+secret, never from a signature, and the rollup sign-in signs only the
+query filter's own challenge ("Login to Query Filtering Service", a
+timestamp, and this owner's address); an account whose view still holds keys
+from the earlier, signature-based seed has them replaced (`set_order_keys`)
+on its next session. The funding transaction from `/v1/fund/prepare` is
+checked instruction by instruction before the owner signs it, and every
+market `/v1/deployment` describes is checked against the market account the
+rollup RPC serves before it can be traded (independent of the service only
+when `NEXT_PUBLIC_ROLLUP_RPC_URL` is set). See `SECURITY.md` for scope and how
 to report an issue. This code has not been audited.
 
 ## License

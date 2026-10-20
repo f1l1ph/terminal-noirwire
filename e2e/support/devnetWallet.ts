@@ -8,7 +8,11 @@ import path from "node:path";
  * rather than a fresh keypair per run.
  */
 const WALLET_FILE = path.join(process.cwd(), "e2e", ".devnet-wallet.json");
-/** The exact localStorage key `src/lib/wallet/index.ts` reads the wallet secret from. */
+/**
+ * The localStorage key earlier builds kept the plain secret under.
+ * `src/lib/wallet/index.ts` still loads a wallet from it (unlocked, not yet
+ * encrypted), which is how a reused wallet is primed on every page load.
+ */
 export const WALLET_STORAGE_KEY = "noirwire-terminal-wallet-secret";
 
 export interface PersistedWallet {

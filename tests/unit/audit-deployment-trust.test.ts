@@ -69,7 +69,9 @@ function deploymentWith(baseDecimals: number): PublicDeployment {
   };
 }
 
-async function signedSizeFor(deployment: PublicDeployment): Promise<{ size: bigint; price: bigint }> {
+async function signedSizeFor(
+  deployment: PublicDeployment,
+): Promise<{ size: bigint; price: bigint }> {
   let captured: { size: bigint; price: bigint } | null = null;
   const client: TraderClientLike = {
     view: async () => VIEW,

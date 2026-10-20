@@ -14,6 +14,8 @@ import {
   type Timing,
 } from "./sdk";
 
+const EXPIRED_NOT_PLACED_REASON =
+  "Expired, not placed. The venue never ran this order; its order key is free again.";
 const ALL_SLOTS_BUSY_REASON =
   "All four of this wallet's order-key slots are busy right now. Wait for one to free up, then try again.";
 
@@ -82,11 +84,21 @@ function settledToResult(
       status: "rejected",
       filledSize: "0",
       remainingSize: "0",
-      reason: "Expired, not placed. The venue never ran this order; its order key is free again.",
+      reason: EXPIRED_NOT_PLACED_REASON,
       sentAtMs: settled.sentAt,
     };
   }
-  const { result } = settled;
+  return ranToResult(settled.result, settled, units, sizeDecimals, unknownAtMs);
+}
+
+/** An order that ran, whichever way its result reached this device. */
+function ranToResult(
+  result: OrderResult,
+  timing: Timing,
+  units: MarketUnits,
+  sizeDecimals: number,
+  unknownAtMs?: number,
+): PlaceOrderResult {
   const filledSize = lotsToSize(units, result.filled, sizeDecimals);
   const restedSize = lotsToSize(units, result.rested, sizeDecimals);
   const cancelledSize = lotsToSize(units, result.cancelled, sizeDecimals);
@@ -104,8 +116,8 @@ function settledToResult(
     filledSize,
     remainingSize: result.rested > 0n ? restedSize : cancelledSize,
     reason: [reason, landedLateNote].filter(Boolean).join(" ") || null,
-    sentAtMs: settled.sentAt,
-    resultAtMs: settled.resultAt,
+    sentAtMs: timing.sentAt,
+    resultAtMs: timing.resultAt,
   };
 }
 
@@ -120,7 +132,8 @@ function settledToResult(
  * ordinary rejected state with a plain sentence, exactly like a
  * book-dependent refusal, rather than surfacing as a raw thrown error.
  * `OutcomeUnknown` is NOT handled here - it is not certain, and the caller
- * (`RollupTradingClient.placeOrder`) maps it to a pending result instead.
+ * (`RollupTradingClient.placeOrder`) maps it to a pending result instead,
+ * through `placeUnknownToResult`.
  */
 export function thrownToResult(error: unknown): PlaceOrderResult | null {
   if (error instanceof OrderInvalid) {
@@ -157,6 +170,47 @@ export function thrownToResult(error: unknown): PlaceOrderResult | null {
     };
   }
   return null;
+}
+
+/**
+ * `placeOrder` throws `OutcomeUnknown` when a send or a read failed after
+ * the signed order went out: the order may still run, so this is the same
+ * pending result an `unknown` outcome gets, never a reason to send again.
+ * Its `settled` resolves to the order's result, or to null once it can no
+ * longer run.
+ */
+export function placeUnknownToResult(
+  error: unknown,
+  units: MarketUnits,
+  sizeDecimals: number,
+  expiresAtMs: number,
+): PlaceOrderResult | null {
+  if (!(error instanceof OutcomeUnknown)) return null;
+  const unknownAtMs = Date.now();
+  return {
+    orderId: "",
+    tag: "",
+    status: "open",
+    filledSize: "0",
+    remainingSize: "0",
+    reason: "Checking with the venue. Do not resend yet.",
+    pending: {
+      expiresAtMs,
+      settled: error.settled.then((result): PlaceOrderResult => {
+        if (!result) {
+          return {
+            orderId: "",
+            tag: "",
+            status: "rejected",
+            filledSize: "0",
+            remainingSize: "0",
+            reason: EXPIRED_NOT_PLACED_REASON,
+          };
+        }
+        return ranToResult(result, result, units, sizeDecimals, unknownAtMs);
+      }),
+    },
+  };
 }
 
 function describeOrderInvalid(

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
+import { keepWalletEncrypted, unlockWallet } from "../support/walletPassphrase";
 
 /**
  * Opt-in only (`make e2e-rollup`, never part of `make e2e`/`make e2e-live`
@@ -109,8 +110,11 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
     // Own fills marked on the tape before reload.
     await expect(page.getByText("yours", { exact: true }).first()).toBeVisible();
 
-    // Reload: account, positions and own-fill marks all come back.
+    // Reload: once encrypted and unlocked again, account, positions and
+    // own-fill marks all come back.
+    await keepWalletEncrypted(page);
     await page.reload();
+    await unlockWallet(page);
     await expect(page.getByText(/Grant used ·/).first()).toBeVisible({ timeout: 15_000 });
     await page.getByRole("tab", { name: "Positions" }).click();
     await expect(page.getByRole("tabpanel").getByText("NSOL-PERP")).toBeVisible({

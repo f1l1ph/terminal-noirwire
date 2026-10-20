@@ -73,6 +73,7 @@ export function OrderEntry({
   now,
   hasWallet,
   walletReady,
+  walletLocked,
   balances,
   collateral,
   position,
@@ -93,6 +94,8 @@ export function OrderEntry({
   now: number;
   hasWallet: boolean;
   walletReady: boolean;
+  /** An encrypted wallet is kept on this device but not unlocked: never offer to create another over it. */
+  walletLocked: boolean;
   balances: Record<string, Balance>;
   /** The separate perpetuals collateral account. `undefined` in dev mode. */
   collateral?: Balance;
@@ -395,7 +398,7 @@ export function OrderEntry({
   function handlePrimaryClick() {
     if (!walletReady) return;
     if (!hasWallet) {
-      onCreateWallet();
+      if (!walletLocked) onCreateWallet();
       return;
     }
     if (needsTransfer) {
@@ -470,6 +473,10 @@ export function OrderEntry({
   if (!walletReady) {
     primaryLabel = "Loading wallet…";
     primaryClass = btnPrimary;
+    primaryDisabled = true;
+  } else if (!hasWallet && walletLocked) {
+    primaryLabel = "Unlock your wallet to trade";
+    primaryClass = btnGhost;
     primaryDisabled = true;
   } else if (!hasWallet) {
     primaryLabel = "Create test wallet";

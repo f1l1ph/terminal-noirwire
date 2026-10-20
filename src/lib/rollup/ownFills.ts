@@ -36,6 +36,9 @@ export function deriveRollupOwnFills(
 ): OwnFillRecord[] {
   const records: OwnFillRecord[] = [];
   for (const fill of fills) {
+    // Runs during render on rows the service sent: a malformed sequence is
+    // skipped here rather than thrown out of the component tree.
+    if (!Number.isSafeInteger(fill.sequence) || fill.sequence < 0) continue;
     const fillSeq = BigInt(fill.sequence);
     for (const secret of secrets) {
       const asTaker = receiptTag(fillReceipt(secret, fillSeq, "taker")) === fill.takerTag;

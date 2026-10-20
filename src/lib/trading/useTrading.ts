@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hexToBytes } from "../wallet/index";
+import { hexToBytes, ownerDataKeys } from "../wallet/index";
 import type { WalletAccount } from "../wallet/index";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
@@ -41,9 +41,7 @@ function walletOf(account: WalletAccount): WalletIdentity {
  * Local to this browser: a wallet funded elsewhere first still sees the
  * button once, learns `alreadyFunded`, and is remembered here from then on.
  */
-function grantUsedKey(address: string): string {
-  return `noirwire-terminal-grant-used:${address}`;
-}
+const grantUsedKey = ownerDataKeys.grantUsed;
 
 function readGrantUsed(address: string | null): boolean {
   if (!address || typeof window === "undefined") return false;
