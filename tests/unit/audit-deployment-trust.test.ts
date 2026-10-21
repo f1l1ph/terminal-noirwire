@@ -118,6 +118,7 @@ async function signedSizeFor(
     client,
     deployment,
     tokenIndexBySymbol: new Map(),
+    collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
     createdAtMs: Date.now(),
     saveKeyCheckpoint: () => {},
     close: () => {},

@@ -25,6 +25,96 @@ function isAllKeysBusy(error: unknown): boolean {
 }
 
 /**
+ * The program's error list (`programs/noirwire-orderbook/src/errors.rs` in
+ * the order book repository). A failed transaction reports 6000 plus the
+ * number; a refusal written to the view's result ring carries the number
+ * alone. Only the refusals a trader can meet on an ordinary order are named.
+ * A failed transaction's code below 6000 is not one of these: it is any
+ * instruction's own custom error, possibly another program's.
+ */
+const PROGRAM_ERROR = {
+  exchangePaused: 30,
+  marketPaused: 31,
+  marketReduceOnly: 32,
+  stalePrice: 38,
+  priceTooOld: 79,
+  quoteGuardTripped: 81,
+  seatBlocked: 90,
+  makerNotListed: 91,
+  takerNotListed: 92,
+} as const;
+const WIRE_ERROR_OFFSET = 6000;
+
+/** What this session knows about the order's own market, used to word a refusal. */
+export interface RefusalContext {
+  /** The market's own price age limit (`maxPriceAge`), when this session read it. */
+  maxPriceAgeSeconds?: number;
+  /** Whether the market is a perpetual; reduce-only orders exist only there. */
+  isPerp?: boolean;
+}
+
+function knownPriceAgeLimit({ maxPriceAgeSeconds }: RefusalContext): number | null {
+  return maxPriceAgeSeconds !== undefined && maxPriceAgeSeconds > 0 ? maxPriceAgeSeconds : null;
+}
+
+/**
+ * The stale-feed refusal is raised for the order's own market and for any
+ * other market where the account holds a position, so it never pins the
+ * blame on this market's limit alone.
+ */
+function stalePriceReason(market: RefusalContext): string {
+  const limit = knownPriceAgeLimit(market);
+  const ownLimit = limit === null ? "" : ` (this market accepts prices up to ${limit} seconds old)`;
+  return `A price this order is checked against is too old: this market's${ownLimit}, or that of another market where this account holds a position. Wait for a fresh price and try again. No fill occurred.`;
+}
+
+function priceTooOldReason(market: RefusalContext): string {
+  const limit = knownPriceAgeLimit(market);
+  const age =
+    limit === null
+      ? "too old for this market to accept new orders"
+      : `older than the ${limit} seconds this market accepts`;
+  return `The market's price is ${age}. Wait for a fresh price and try again. No fill occurred.`;
+}
+
+/**
+ * A plain sentence for a program refusal, by its number in the program's
+ * error list (a result ring's code), or null for one this terminal has no
+ * sentence for.
+ */
+export function describeProgramError(number: number, market: RefusalContext = {}): string | null {
+  switch (number) {
+    case PROGRAM_ERROR.stalePrice:
+      return stalePriceReason(market);
+    case PROGRAM_ERROR.priceTooOld:
+      return priceTooOldReason(market);
+    case PROGRAM_ERROR.exchangePaused:
+      return "The venue is paused, so it takes no orders right now. No fill occurred.";
+    case PROGRAM_ERROR.marketPaused:
+      return "This market is paused, so it takes no orders right now. No fill occurred.";
+    case PROGRAM_ERROR.marketReduceOnly:
+      return market.isPerp
+        ? "This market only takes orders that shrink a position right now. Use Reduce only to close or reduce one. No fill occurred."
+        : "This market only takes orders that shrink a position right now, which a spot order cannot be, so it takes no orders. No fill occurred.";
+    case PROGRAM_ERROR.quoteGuardTripped:
+      return "The venue's USDC price guard has tripped, so perpetuals only take orders that shrink a position right now. No fill occurred.";
+    case PROGRAM_ERROR.seatBlocked:
+      return "This account is blocked on this venue: it can cancel, reduce and move funds, but not open new orders. No fill occurred.";
+    case PROGRAM_ERROR.makerNotListed:
+      return "This market only lets listed makers rest orders, and this account is not one. No fill occurred.";
+    case PROGRAM_ERROR.takerNotListed:
+      return "This market only lets listed takers place orders that match, and this account is not one. No fill occurred.";
+    default:
+      return null;
+  }
+}
+
+/** `describeProgramError` for a failed transaction's code, which names this program's error only from 6000 up. */
+function describeTransactionError(code: number, market: RefusalContext): string | null {
+  return code >= WIRE_ERROR_OFFSET ? describeProgramError(code - WIRE_ERROR_OFFSET, market) : null;
+}
+
+/**
  * Maps the program's own outcome (RULES.md section 3: a book-dependent
  * refusal is never an error, it is a result only the trader can read) onto
  * this terminal's existing `OrderStatus` wire enum (open / filled /
@@ -38,12 +128,14 @@ function isAllKeysBusy(error: unknown): boolean {
  * clock reading of when the order can no longer run (the caller's own
  * `expirySeconds` added to when it sent the call) - needed only for the
  * `unknown` branch, since neither `Placed` nor `Settled` carries it.
+ * `market` words a refusal: the market's own price age limit and kind.
  */
 export function placedToResult(
   placed: Placed,
   units: MarketUnits,
   sizeDecimals: number,
   expiresAtMs?: number,
+  market: RefusalContext = {},
 ): PlaceOrderResult {
   if (placed.outcome === "unknown") {
     const unknownAtMs = Date.now();
@@ -58,12 +150,12 @@ export function placedToResult(
       pending: {
         expiresAtMs: expiresAtMs ?? Date.now(),
         settled: placed.settled.then((settled) =>
-          settledToResult(settled, units, sizeDecimals, unknownAtMs),
+          settledToResult(settled, units, sizeDecimals, market, unknownAtMs),
         ),
       },
     };
   }
-  return settledToResult(placed, units, sizeDecimals);
+  return settledToResult(placed, units, sizeDecimals, market);
 }
 
 /**
@@ -75,6 +167,7 @@ function settledToResult(
   settled: Settled,
   units: MarketUnits,
   sizeDecimals: number,
+  market: RefusalContext,
   unknownAtMs?: number,
 ): PlaceOrderResult {
   if (settled.outcome === "expired") {
@@ -88,7 +181,7 @@ function settledToResult(
       sentAtMs: settled.sentAt,
     };
   }
-  return ranToResult(settled.result, settled, units, sizeDecimals, unknownAtMs);
+  return ranToResult(settled.result, settled, units, sizeDecimals, market, unknownAtMs);
 }
 
 /** An order that ran, whichever way its result reached this device. */
@@ -97,6 +190,7 @@ function ranToResult(
   timing: Timing,
   units: MarketUnits,
   sizeDecimals: number,
+  market: RefusalContext,
   unknownAtMs?: number,
 ): PlaceOrderResult {
   const filledSize = lotsToSize(units, result.filled, sizeDecimals);
@@ -104,7 +198,7 @@ function ranToResult(
   const cancelledSize = lotsToSize(units, result.cancelled, sizeDecimals);
   const orderId = result.rested > 0n || result.orderSeq > 0n ? result.orderSeq.toString() : "";
 
-  const { status, reason } = describeStatus(result, filledSize);
+  const { status, reason } = describeStatus(result, filledSize, market);
   const landedLateNote =
     unknownAtMs !== undefined
       ? `Landed late, about ${formatDuration(Date.now() - unknownAtMs)} after the venue first seemed unresponsive.`
@@ -135,7 +229,10 @@ function ranToResult(
  * (`RollupTradingClient.placeOrder`) maps it to a pending result instead,
  * through `placeUnknownToResult`.
  */
-export function thrownToResult(error: unknown): PlaceOrderResult | null {
+export function thrownToResult(
+  error: unknown,
+  market: RefusalContext = {},
+): PlaceOrderResult | null {
   if (error instanceof OrderInvalid) {
     return {
       orderId: "",
@@ -154,9 +251,10 @@ export function thrownToResult(error: unknown): PlaceOrderResult | null {
       filledSize: "0",
       remainingSize: "0",
       reason:
-        error.code !== null
-          ? `Refused by the venue (program error ${error.code}). No fill occurred.`
-          : "Refused by the venue. No fill occurred.",
+        error.code === null
+          ? "Refused by the venue. No fill occurred."
+          : (describeTransactionError(error.code, market) ??
+            `Refused by the venue (program error ${error.code}). No fill occurred.`),
     };
   }
   if (isAllKeysBusy(error)) {
@@ -184,6 +282,7 @@ export function placeUnknownToResult(
   units: MarketUnits,
   sizeDecimals: number,
   expiresAtMs: number,
+  market: RefusalContext = {},
 ): PlaceOrderResult | null {
   if (!(error instanceof OutcomeUnknown)) return null;
   const unknownAtMs = Date.now();
@@ -207,7 +306,7 @@ export function placeUnknownToResult(
             reason: EXPIRED_NOT_PLACED_REASON,
           };
         }
-        return ranToResult(result, result, units, sizeDecimals, unknownAtMs);
+        return ranToResult(result, result, units, sizeDecimals, market, unknownAtMs);
       }),
     },
   };
@@ -229,6 +328,7 @@ function describeOrderInvalid(
 function describeStatus(
   result: OrderResult,
   filledSize: string,
+  market: RefusalContext,
 ): { status: OrderStatus; reason: string | null } {
   const filledAny = Number(filledSize) > 0;
   switch (result.status) {
@@ -259,16 +359,11 @@ function describeStatus(
         reason: "The remainder was cancelled: it failed the venue's margin check at this price.",
       };
     case RESULT_STATUS_CODE.refused:
-      // Code 38 (StalePrice, programs/noirwire-orderbook/src/errors.rs) is
-      // the one a trader hits often enough on a real network to need its
-      // own sentence: devnet's price feed updates every few seconds, and
-      // the program refuses an order against a price older than 10s.
       return {
         status: "rejected",
         reason:
-          result.code === 38
-            ? "The venue's mark price is too old to accept new orders right now. Wait for a fresh price and try again."
-            : `Refused by the venue (code ${result.code}). No fill occurred.`,
+          describeProgramError(result.code, market) ??
+          `Refused by the venue (code ${result.code}). No fill occurred.`,
       };
     default:
       return { status: "rejected", reason: `Unrecognised outcome (status ${result.status}).` };

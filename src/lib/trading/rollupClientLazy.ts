@@ -58,6 +58,10 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await this.load()).fund(wallet);
   }
 
+  async knownNoFaucet(): Promise<boolean> {
+    return (await (await this.load()).knownNoFaucet?.()) ?? false;
+  }
+
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
     return (await this.load()).placeOrder(wallet, order);
   }

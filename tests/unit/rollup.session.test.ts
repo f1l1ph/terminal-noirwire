@@ -15,6 +15,7 @@ import {
 const QUOTE_MINT = Keypair.generate().publicKey.toBase58();
 const BASE_MINT = Keypair.generate().publicKey.toBase58();
 const EXCHANGE_MINTS = [QUOTE_MINT, BASE_MINT];
+const COLLATERAL_CUSTODY_NONCE = 0x0bad_cafe_0000_0001n;
 
 type DeploymentMarket = PublicDeployment["markets"][number];
 
@@ -117,7 +118,11 @@ async function build(owner: Keypair, stage: Stage = {}) {
       },
       connectionTo: () => ({ getAccountInfo: async () => ({ data: new Uint8Array() }) }),
       decodeExchangeAccount: () => ({
-        tokens: EXCHANGE_MINTS.map((mint) => ({ mint: new PublicKey(mint) })),
+        collateralToken: 0,
+        tokens: EXCHANGE_MINTS.map((mint, index) => ({
+          mint: new PublicKey(mint),
+          custodyNonce: COLLATERAL_CUSTODY_NONCE + BigInt(index),
+        })),
       }),
       decodeMarketAccount: (data: Uint8Array) => CHAIN.get(data[0]),
       installOrderKeys: async (_c: unknown, _o: unknown, keys: { publicKeys: PublicKey[] }) => {
@@ -153,6 +158,14 @@ describe("buildRealSession: markets are bound only when the rollup's own market 
   it("keeps markets whose entry matches the chain", async () => {
     const owner = Keypair.generate();
     expect(await symbolsOf(build(owner, { view: notOpened }))).toEqual(["NSOL-PERP", "NSOL-NUSD"]);
+  });
+
+  it("keeps the Exchange's own collateral token, mint and custody nonce, for the funding check", async () => {
+    const owner = Keypair.generate();
+    const { session } = await build(owner, { view: notOpened });
+    const { collateralToken } = await session;
+    expect(collateralToken.mint.toBase58()).toBe(QUOTE_MINT);
+    expect(collateralToken.custodyNonce).toBe(COLLATERAL_CUSTODY_NONCE);
   });
 
   it("drops a market whose reported base decimals disagree with this build's pin", async () => {

@@ -5,7 +5,12 @@ import {
   savePersistedWallet,
   WALLET_STORAGE_KEY,
 } from "../support/devnetWallet";
+import { isNusdDeployment, NOT_THE_NUSD_DEPLOYMENT } from "../support/devnetDeployment";
 import { keepWalletEncrypted, openWalletMenu, unlockWallet } from "../support/walletPassphrase";
+
+test.beforeEach(async () => {
+  test.skip(!(await isNusdDeployment()), NOT_THE_NUSD_DEPLOYMENT);
+});
 
 /**
  * Opt-in only (`make e2e-devnet`, never part of `make e2e`/`make e2e-live`/
@@ -85,7 +90,7 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
 
     if (!reused) {
       await page.getByRole("button", { name: "Create test wallet" }).click();
-      await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible({
         timeout: 15_000,
       });
       await ensureWalletPersisted(page, false);
@@ -94,7 +99,7 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
 
     // Funding: a fresh grant, or this wallet already has a balance from an
     // earlier run - either way, a real nonzero balance must show up.
-    const fundButton = page.getByRole("button", { name: "Get 5,000 test nUSD" });
+    const fundButton = page.getByRole("button", { name: "Get test funds" });
     if (await fundButton.isVisible().catch(() => false)) {
       await fundButton.click();
     }
@@ -244,11 +249,11 @@ test.describe("Phone views against real Solana devnet", () => {
 
     if (!reused) {
       await page.getByRole("button", { name: "Create test wallet" }).click();
-      await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible({
         timeout: 15_000,
       });
     }
-    const fundButton = page.getByRole("button", { name: "Get 5,000 test nUSD" });
+    const fundButton = page.getByRole("button", { name: "Get test funds" });
     if (await fundButton.isVisible().catch(() => false)) {
       await fundButton.click();
     }

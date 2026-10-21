@@ -4,7 +4,9 @@
  * defined here, so a client package upgrade is an edit to this one file.
  * Mirrors the same discipline sim-noirwire's own `src/rollup/program.ts`
  * follows for the same package (see that repo's docs/DESIGN.md, "The rollup
- * venue"). Currently on 0.5.0.
+ * venue"). Currently on 0.6.0, which names every perp market in each
+ * order-key call itself, read from the Exchange account, so no caller passes
+ * a risk market list any more.
  */
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
@@ -28,6 +30,7 @@ import {
   sendAndConfirm,
   signIn as sdkSignIn,
   websocketUrl,
+  type CustodyToken,
   type OrderKeyCheckpoint,
   type OrderResult,
   type Placed,
@@ -38,6 +41,7 @@ import {
 } from "@noirwire/orderbook";
 
 export type {
+  CustodyToken,
   View,
   OrderResult,
   Placed,
@@ -53,8 +57,9 @@ export const TransactionFailed = SdkTransactionFailed;
 export const OutcomeUnknown = SdkOutcomeUnknown;
 /** `keys.take()`'s own message when every one of the four order-key slots is already lent out. Not a typed error in the package; matched on its exact text. */
 export const ALL_KEYS_BUSY_MESSAGE = "every order key is in use";
-/** `TraderClient.view()`'s own message when the view account does not exist (the account is not opened yet). Matched on its exact text. */
-export const VIEW_NOT_READABLE_MESSAGE = "the view is not readable by this connection";
+/** `TraderClient.view()`'s own message (0.6.0) when the view account does not exist (the account is not opened yet). Matched on its exact text. */
+export const VIEW_NOT_READABLE_MESSAGE =
+  "the view is not readable by this connection: read through a private connection signed in as the owner";
 /** `OrderKeyManager.fromView`'s own message when the view holds keys this seed never derived. Matched on its exact text. */
 export const KEYS_NOT_FROM_SEED_MESSAGE = "the view's order keys do not all derive from this seed";
 /** The program id this package release was built for. */
@@ -226,7 +231,7 @@ export class TraderClient {
       expiry?: bigint;
       secret?: Uint8Array;
     },
-    options: { expirySeconds?: number; riskMarkets?: number[]; pushWaitMs?: number } = {},
+    options: { expirySeconds?: number; pushWaitMs?: number } = {},
   ): Promise<Placed> {
     return this.inner.placeOrder(marketId, order, options);
   }
@@ -255,16 +260,9 @@ export class TraderClient {
     toCollateral: boolean,
     spotToken: number,
     amount: bigint,
-    riskMarkets: number[],
     expirySeconds?: number,
   ): Promise<OrderResult & Timing> {
-    return this.inner.transferBetweenBalances(
-      toCollateral,
-      spotToken,
-      amount,
-      riskMarkets,
-      expirySeconds,
-    );
+    return this.inner.transferBetweenBalances(toCollateral, spotToken, amount, expirySeconds);
   }
 }
 

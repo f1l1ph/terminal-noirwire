@@ -30,12 +30,12 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
     await shot(page, "01-arrival");
 
     await page.getByRole("button", { name: "Create test wallet" }).click();
-    await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible();
 
     // Opens the real account and deposits 5,000 nUSD of collateral in one
     // on-chain transaction (sim-noirwire's /v1/fund/prepare + /v1/fund/submit),
     // signed locally with the owner key derived from this browser wallet.
-    await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
+    await page.getByRole("button", { name: "Get test funds" }).click();
     await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible({
       timeout: 30_000,
     });
@@ -133,8 +133,8 @@ test.describe("Phone views against the real rollup", () => {
     await expect(page.getByText("NSOL-PERP").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Create test wallet" }).click();
-    await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
-    await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
+    await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible();
+    await page.getByRole("button", { name: "Get test funds" }).click();
     await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible({
       timeout: 30_000,
     });

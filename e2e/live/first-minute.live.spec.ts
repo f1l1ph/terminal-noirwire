@@ -17,9 +17,9 @@ test.describe("First minute against a real sim-noirwire instance", () => {
     await expect(page.getByText("NSOL-PERP").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Create test wallet" }).click();
-    await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible();
 
-    await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
+    await page.getByRole("button", { name: "Get test funds" }).click();
     await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible({
       timeout: 20_000,
     });

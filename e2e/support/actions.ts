@@ -3,11 +3,11 @@ import { expect } from "./test";
 
 export async function createWallet(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Create test wallet" }).click();
-  await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible();
 }
 
 export async function fundWallet(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
+  await page.getByRole("button", { name: "Get test funds" }).click();
   // Third design review, must-fix 2: once this wallet's one-time grant is
   // used, the account details say so instead of a plain "Available:" line -
   // true the moment this grant lands, same session or not.

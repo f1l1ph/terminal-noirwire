@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { test, expect, type Page, type Request } from "@playwright/test";
+import { isNusdDeployment, NOT_THE_NUSD_DEPLOYMENT } from "../support/devnetDeployment";
 import { loadPersistedWallet, WALLET_STORAGE_KEY } from "../support/devnetWallet";
 
 const ORDER_COUNT = 30;
@@ -154,6 +155,7 @@ test.describe("Devnet order latency and request count", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("market longs: click to result and requests per order", async ({ page }) => {
+    test.skip(!(await isNusdDeployment()), NOT_THE_NUSD_DEPLOYMENT);
     const persisted = loadPersistedWallet();
     test.skip(
       !persisted,

@@ -1,7 +1,7 @@
 import { Keypair, PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { z } from "zod";
 import type { FundOutcome } from "../trading/types";
-import { PACKAGE_PROGRAM_ID, programInstructions } from "./sdk";
+import { PACKAGE_PROGRAM_ID, programInstructions, type CustodyToken } from "./sdk";
 import { amountToQuoteAtoms } from "./units";
 
 const prepareResponseSchema = z.object({
@@ -20,21 +20,21 @@ const errorResponseSchema = z.object({ error: z.string() });
 const UNEXPECTED_TRANSACTION =
   "The service's funding transaction was not the expected one, so this wallet did not sign it.";
 
-/** The custody account (index 5 of `deposit`) is the faucet's side: derived from a mint this client does not pin. */
-const DEPOSIT_CUSTODY_INDEX = 5;
+/**
+ * The service's own reason for a 503 from `/v1/fund/*` on a deployment that
+ * hands out no test funds (`NO_FAUCET` in sim-noirwire's rollup wiring).
+ */
+const NO_FAUCET_REASON = /no faucet/i;
 
 function sameInstruction(
   actual: TransactionInstruction,
   expected: TransactionInstruction,
-  skippedKeyIndex?: number,
 ): boolean {
   return (
     actual.programId.equals(expected.programId) &&
     actual.data.equals(expected.data) &&
     actual.keys.length === expected.keys.length &&
-    actual.keys.every(
-      (key, index) => index === skippedKeyIndex || key.pubkey.equals(expected.keys[index].pubkey),
-    )
+    actual.keys.every((key, index) => key.pubkey.equals(expected.keys[index].pubkey))
   );
 }
 
@@ -44,13 +44,17 @@ function sameInstruction(
  * other than the owner, and exactly two instructions, both to this build's
  * own program - `open_trader` from the gate (the fee payer) for this owner
  * with exactly the order keys this client sent, then a collateral
- * `deposit` of exactly the announced amount to this owner's view, from a
- * depositor that is not the owner and naming the owner nowhere.
+ * `deposit` of exactly the announced amount to this owner's view, into the
+ * custody of `collateral` (the Exchange's own collateral token, read from
+ * the Exchange account), from a depositor that is not the owner and naming
+ * the owner nowhere. Only the depositor and its token account are the
+ * service's to choose.
  */
 export function isExpectedFunding(
   transaction: Transaction,
   owner: PublicKey,
   orderKeys: readonly PublicKey[],
+  collateral: CustodyToken,
   programId: PublicKey,
   amountAtoms: bigint,
 ): boolean {
@@ -69,13 +73,13 @@ export function isExpectedFunding(
   const expectedDeposit = program.deposit(
     depositor,
     from,
-    PublicKey.default,
+    collateral,
     owner,
     { collateral: true },
     amountAtoms,
   );
   return (
-    sameInstruction(deposit, expectedDeposit, DEPOSIT_CUSTODY_INDEX) &&
+    sameInstruction(deposit, expectedDeposit) &&
     !deposit.keys.some((key) => key.pubkey.equals(owner))
   );
 }
@@ -94,6 +98,7 @@ export async function openAndFund(
   simUrl: string,
   owner: Keypair,
   orderKeyPublicKeys: string[],
+  collateral: CustodyToken,
   fetchFn: typeof fetch = fetch,
   programId: PublicKey = PACKAGE_PROGRAM_ID,
 ): Promise<FundOutcome> {
@@ -118,6 +123,7 @@ export async function openAndFund(
       transaction,
       owner.publicKey,
       orderKeyPublicKeys.map((key) => new PublicKey(key)),
+      collateral,
       programId,
       amountToQuoteAtoms(prepared.amount),
     );
@@ -155,13 +161,18 @@ export async function openAndFund(
  * server's own reason when it gave one so the daily-limit case reads as
  * itself rather than the generic per-IP copy. Anything else (400, 410, 502)
  * is a genuine error: a malformed request, a prepare that expired before
- * submit, or the rollup not confirming in time.
+ * submit, or the rollup not confirming in time. A 503 that says the
+ * deployment has no faucet is not transient: it is `noFaucet`, never worth
+ * asking again.
  */
 async function asFundOutcome(response: Response): Promise<FundOutcome> {
   const body = await response.json().catch(() => null);
   const parsed = errorResponseSchema.safeParse(body);
   const reason = parsed.success ? parsed.data.error : undefined;
   if (response.status === 409) return { kind: "alreadyFunded" };
+  if (response.status === 503 && reason && NO_FAUCET_REASON.test(reason)) {
+    return { kind: "noFaucet" };
+  }
   if (response.status === 429 || response.status === 503) {
     return { kind: "rateLimited", message: reason };
   }

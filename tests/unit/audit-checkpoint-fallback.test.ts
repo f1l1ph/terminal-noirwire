@@ -64,7 +64,10 @@ describe("audit: stale order-key checkpoint", () => {
         ...real,
         signInAndConnect: async () => ({}),
         connectionTo: () => ({ getAccountInfo: async () => ({ data: new Uint8Array() }) }),
-        decodeExchangeAccount: () => ({ tokens: [] }),
+        decodeExchangeAccount: () => ({
+          collateralToken: 0,
+          tokens: [{ mint: PublicKey.default, custodyNonce: 0n }],
+        }),
         TraderClient: FakeTraderClient,
       };
     });

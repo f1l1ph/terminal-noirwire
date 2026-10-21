@@ -44,6 +44,20 @@ export const deploymentSchema = z.object({
 
 export type PublicDeployment = z.infer<typeof deploymentSchema>;
 
+/**
+ * The quote token `marketId` is priced in, as the deployment names it. With
+ * no market id, or one the deployment does not list, the first perpetual's:
+ * its quote token is the collateral every perpetual shares. Null when the
+ * deployment lists no market at all.
+ */
+export function quoteSymbolOf(deployment: PublicDeployment, marketId?: string): string | null {
+  const market =
+    deployment.markets.find((entry) => entry.symbol === marketId) ??
+    deployment.markets.find((entry) => entry.kind === "perp") ??
+    deployment.markets[0];
+  return market?.quoteToken.symbol ?? null;
+}
+
 export interface DeploymentOverrides {
   rollupRpcUrl?: string;
   rollupWsUrl?: string;

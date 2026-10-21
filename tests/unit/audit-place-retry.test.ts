@@ -10,9 +10,11 @@ import { OutcomeUnknown, type View } from "@/lib/rollup/sdk";
 /**
  * The package's `placeOrder` throws `OutcomeUnknown` (it does not only
  * return `outcome: "unknown"`) when a send or a read fails after the signed
- * transaction went out: node_modules/@noirwire/orderbook/dist/client.js,
- * `confirmed()`, the final catch. The order may still land. The terminal
- * must not place a second order in response.
+ * transaction went out: node_modules/@noirwire/orderbook/dist/client.js
+ * (0.6.0), `confirmed()`, the catch that wraps anything but
+ * `TransactionFailed` in `new OutcomeUnknown(clientOrderId, settled, error)`.
+ * The order may still land. The terminal must not place a second order in
+ * response.
  */
 
 const PERP: MarketInfo = {
@@ -81,11 +83,13 @@ const memoryStorage = () => {
 describe("audit: placeOrder after a post-send failure", () => {
   it("sends exactly one order and reports it as pending when the package throws OutcomeUnknown", async () => {
     let placeCalls = 0;
+    const placeOptions: unknown[] = [];
     const client: TraderClientLike = {
       view: async () => VIEW,
       subscribeView: () => async () => {},
-      placeOrder: async () => {
+      placeOrder: async (_marketId, _order, options) => {
         placeCalls += 1;
+        placeOptions.push(options);
         throw new OutcomeUnknown(1n, new Promise(() => {}), new Error("socket hang up"));
       },
       cancelOrder: async () => {
@@ -107,6 +111,7 @@ describe("audit: placeOrder after a post-send failure", () => {
       client,
       deployment: DEPLOYMENT,
       tokenIndexBySymbol: new Map([["nUSD", 0]]),
+      collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
       createdAtMs: Date.now(),
       saveKeyCheckpoint: () => {},
       close: () => {},
@@ -133,5 +138,8 @@ describe("audit: placeOrder after a post-send failure", () => {
 
     expect(placeCalls).toBe(1);
     expect("result" in outcome && outcome.result.pending).toBeTruthy();
+    // 0.6.0 names every perp market itself, read from the Exchange account;
+    // the terminal no longer passes a list of its own.
+    expect(placeOptions[0]).not.toHaveProperty("riskMarkets");
   });
 });

@@ -21,6 +21,7 @@ import {
   TraderClient,
   VIEW_NOT_READABLE_MESSAGE,
   viewKeysDeriveFrom,
+  type CustodyToken,
   type OrderKeyManager,
   type OrderResult,
   type Placed,
@@ -46,7 +47,7 @@ export interface TraderClientLike {
       expiry?: bigint;
       secret?: Uint8Array;
     },
-    options?: { expirySeconds?: number; riskMarkets?: number[]; pushWaitMs?: number },
+    options?: { expirySeconds?: number; pushWaitMs?: number },
   ): Promise<Placed>;
   /** May throw `OutcomeUnknown` (carries `settled`) instead of returning; see `./sdk.ts`. */
   cancelOrder(
@@ -60,7 +61,6 @@ export interface TraderClientLike {
     toCollateral: boolean,
     spotToken: number,
     amount: bigint,
-    riskMarkets: number[],
     expirySeconds?: number,
   ): Promise<OrderResult & Timing>;
 }
@@ -72,6 +72,10 @@ export interface RollupSession {
   deployment: PublicDeployment;
   /** Token symbol -> its index in `Seat.spot[]`, resolved once from the Exchange account (not a market-by-market scan). */
   tokenIndexBySymbol: Map<string, number>;
+  /** The Exchange's collateral token, read from the Exchange account: every funding deposit must name exactly its custody. */
+  collateralToken: CustodyToken;
+  /** Market id -> the oldest mark, in seconds, its account accepts an order against (`maxPriceAge`). A test fake may omit it. */
+  maxPriceAgeSeconds?: ReadonlyMap<number, number>;
   createdAtMs: number;
   /** Saves this session's current order-key checkpoint, for the next session to restore from. See checkpointStore.ts. */
   saveKeyCheckpoint(): void;
@@ -97,17 +101,30 @@ export function trustedProgramId(overrides: DeploymentOverrides = {}): PublicKey
   return overrides.programId ? new PublicKey(overrides.programId) : PACKAGE_PROGRAM_ID;
 }
 
+interface ExchangeTokens {
+  /** The token mint at each index. */
+  mints: string[];
+  /** The collateral token's mint and custody nonce, which name its custody authority and custody account. */
+  collateral: CustodyToken;
+}
+
 /**
- * The token mint at each index of the Exchange account (public). Read at
- * the program's own Exchange address, not the one `/v1/deployment` names.
+ * The Exchange account's registered tokens (public). Read at the program's
+ * own Exchange address, not the one `/v1/deployment` names.
  */
-async function readExchangeMints(
+async function readExchangeTokens(
   connection: Connection,
   exchangeAddress: PublicKey,
-): Promise<string[]> {
+): Promise<ExchangeTokens> {
   const account = await connection.getAccountInfo(exchangeAddress);
   if (!account) throw new Error("the exchange account is not readable here");
-  return decodeExchangeAccount(account.data).tokens.map((token) => token.mint.toBase58());
+  const exchange = decodeExchangeAccount(account.data);
+  const collateral = exchange.tokens[exchange.collateralToken];
+  if (!collateral) throw new Error("the exchange account names no collateral token");
+  return {
+    mints: exchange.tokens.map((token) => token.mint.toBase58()),
+    collateral: { mint: collateral.mint, custodyNonce: collateral.custodyNonce },
+  };
 }
 
 /**
@@ -134,31 +151,43 @@ function tokenIndicesBySymbol(
   return bySymbol;
 }
 
+interface MatchingMarkets {
+  markets: PublicDeployment["markets"];
+  maxPriceAgeSeconds: Map<number, number>;
+}
+
 /**
  * The deployment's markets whose entry says the same as the market account
- * the rollup holds at that market's address (see `marketMatchesChain`). A
- * market that does not is left out, and so cannot be traded from here.
+ * the rollup holds at that market's address (see `marketMatchesChain`), with
+ * each kept market's own price age limit as its account states it. A market
+ * that does not match is left out, and so cannot be traded from here.
  */
 async function marketsMatchingChain(
   connection: Connection,
   programId: PublicKey,
   deployment: PublicDeployment,
   exchangeMints: readonly string[],
-): Promise<PublicDeployment["markets"]> {
-  if (deployment.markets.length === 0) return [];
+): Promise<MatchingMarkets> {
+  const matching: MatchingMarkets = { markets: [], maxPriceAgeSeconds: new Map() };
+  if (deployment.markets.length === 0) return matching;
   const addresses = programAddresses(programId);
   const accounts = await connection.getMultipleAccountsInfo(
     deployment.markets.map((market) => addresses.market(market.marketId)),
   );
-  return deployment.markets.filter((market, index) => {
+  deployment.markets.forEach((market, index) => {
     const account = accounts[index];
-    if (!account) return false;
+    if (!account) return;
+    let chain: ReturnType<typeof decodeMarketAccount>;
     try {
-      return marketMatchesChain(market, decodeMarketAccount(account.data), exchangeMints);
+      chain = decodeMarketAccount(account.data);
     } catch {
-      return false;
+      return;
     }
+    if (!marketMatchesChain(market, chain, exchangeMints)) return;
+    matching.markets.push(market);
+    matching.maxPriceAgeSeconds.set(market.marketId, Number(chain.params.maxPriceAge));
   });
+  return matching;
 }
 
 const isErrorWithMessage = (error: unknown, message: string) =>
@@ -276,11 +305,10 @@ export async function buildRealSession(
   // keys had moved beyond is replaced rather than searched past each time.
   saveKeyCheckpoint();
 
-  const exchangeMints = await readExchangeMints(anonymous, programAddresses(programId).exchange);
-  const deployment: PublicDeployment = {
-    ...described,
-    markets: await marketsMatchingChain(reader, programId, described, exchangeMints),
-  };
+  const exchangeTokens = await readExchangeTokens(anonymous, programAddresses(programId).exchange);
+  const exchangeMints = exchangeTokens.mints;
+  const matching = await marketsMatchingChain(reader, programId, described, exchangeMints);
+  const deployment: PublicDeployment = { ...described, markets: matching.markets };
 
   // `push` defaults to on; this is the client every order actually goes
   // through, so `ready()` is awaited once here, right after sign-in - the
@@ -295,6 +323,8 @@ export async function buildRealSession(
     client,
     deployment,
     tokenIndexBySymbol: tokenIndicesBySymbol(exchangeMints, deployment),
+    collateralToken: exchangeTokens.collateral,
+    maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
     createdAtMs: (deps.now ?? Date.now)(),
     saveKeyCheckpoint,
     close: () => client.close(),

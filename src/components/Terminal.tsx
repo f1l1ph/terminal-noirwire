@@ -22,7 +22,7 @@ import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import type { CancelResult, Position } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
-import { fetchDeployment } from "@/lib/rollup/deployment";
+import { fetchDeployment, quoteSymbolOf, type PublicDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
@@ -61,11 +61,17 @@ interface OrderSession {
 
 export function Terminal() {
   const store = useSharedMarketDataStore();
-  const [selectedMarketId, setSelectedMarketId] = useState<string>(MARKET_IDS[0]);
+  const [chosenMarketId, setChosenMarketId] = useState<string>(MARKET_IDS[0]);
   const [interval, setInterval] = useState<CandleInterval>("1m");
   const [retryToken, setRetryToken] = useState(0);
-  useMarketDataConnection(store, env.simUrl, env.simWsUrl, selectedMarketId, interval, retryToken);
   const data = useMarketDataState(store);
+  // A deployment may list fewer markets than this build knows: once the
+  // list has loaded, a choice it does not hold falls back to its first.
+  const selectedMarketId =
+    data.markets.length > 0 && !data.markets.some((item) => item.id === chosenMarketId)
+      ? data.markets[0].id
+      : chosenMarketId;
+  useMarketDataConnection(store, env.simUrl, env.simWsUrl, selectedMarketId, interval, retryToken);
   const now = useNow();
   const isDesktop = useMediaQuery("(min-width: 900px)");
   const [layoutResetSignal, setLayoutResetSignal] = useState(0);
@@ -93,19 +99,20 @@ export function Terminal() {
   // the same cached fetch `RollupTradingClient` makes once a wallet
   // exists), so a speed figure never claims "local" for a public network
   // or vice versa (second design review, item 3).
-  const [network, setNetwork] = useState<string>("localnet");
+  const [deployment, setDeployment] = useState<PublicDeployment | null>(null);
   useEffect(() => {
     if (trading.client.mode !== "rollup") return;
     let cancelled = false;
     fetchDeployment(env.simUrl)
-      .then((deployment) => {
-        if (!cancelled) setNetwork(deployment.network);
+      .then((described) => {
+        if (!cancelled) setDeployment(described);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [trading.client.mode]);
+  const network = deployment?.network ?? "localnet";
 
   // One session per market, not one session total: switching markets must
   // not erase what happened in another one (second design review, item 5).
@@ -140,6 +147,16 @@ export function Terminal() {
     });
   }
 
+  /**
+   * Dev mode's reasons are the venue's own short codes, translated here;
+   * rollup mode's are already plain sentences (rollup/outcome.ts), shown
+   * as they are rather than wrapped in a second sentence.
+   */
+  function rejectionDetail(reason: string | null): string {
+    if (trading.client.mode === "rollup" && reason) return reason;
+    return describeRejectReason(reason ?? "");
+  }
+
   /** Builds the session that a (now-certain) place result settles into, shared between the immediate path below and the pending path's background continuation. */
   function sessionFromResult(
     result: PlacedOrderOutcome["result"],
@@ -150,12 +167,7 @@ export function Terminal() {
       return {
         market: descriptor.market,
         descriptor,
-        baseSteps: appendStep(
-          baseSteps,
-          "rejected",
-          Date.now(),
-          describeRejectReason(result.reason ?? ""),
-        ),
+        baseSteps: appendStep(baseSteps, "rejected", Date.now(), rejectionDetail(result.reason)),
         trackedOrderId: null,
         trackedTag: null,
         pendingPlace: null,
@@ -312,7 +324,7 @@ export function Terminal() {
 
   function requestClose(position: Position): void {
     const size = Number(position.size);
-    setSelectedMarketId(position.market);
+    setChosenMarketId(position.market);
     setPrefillRequest({
       market: position.market,
       side: size > 0 ? "sell" : "buy",
@@ -325,7 +337,7 @@ export function Terminal() {
 
   function requestReduce(position: Position): void {
     const size = Number(position.size);
-    setSelectedMarketId(position.market);
+    setChosenMarketId(position.market);
     setPrefillRequest({
       market: position.market,
       side: size > 0 ? "sell" : "buy",
@@ -337,6 +349,19 @@ export function Terminal() {
   }
 
   const market = data.markets.find((item) => item.id === selectedMarketId);
+  // Rollup mode names the quote token as the deployment does (USDC, nUSD),
+  // never as /v1/markets' own label; until that description has loaded,
+  // amounts show without a name rather than with a guessed one.
+  const quoteSymbol =
+    trading.client.mode === "rollup"
+      ? deployment
+        ? (quoteSymbolOf(deployment, selectedMarketId) ?? "")
+        : ""
+      : (market?.quote ?? "");
+  // Moving funds between collateral and spot only means something where a
+  // spot market exists to spend them on.
+  const hasSpotMarket = data.markets.some((item) => item.kind === "spot");
+  const transferBetweenBalances = hasSpotMarket ? trading.transferBetweenBalances : null;
   const mark = data.marksByMarket[selectedMarketId] ?? null;
   // The global connection dot must never say "Live" over a stale selected
   // mark (third design review, must-fix 1): the socket itself can be fully
@@ -514,12 +539,14 @@ export function Terminal() {
       onCreateWallet={() => wallet.create()}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
+      noFaucet={trading.noFaucet}
+      quoteSymbol={quoteSymbol}
       placeOrder={trading.placeOrder}
       onOrderPlaced={handleOrderPlaced}
       onTransferToSpot={
-        trading.transferBetweenBalances
+        transferBetweenBalances
           ? async (toSpot, amount) => {
-              const result = await trading.transferBetweenBalances!(toSpot, amount);
+              const result = await transferBetweenBalances(toSpot, amount);
               // A spot buy is what the trader is about to do right after
               // this transfer completes; the dock should already be ready
               // on Balances so the new holding is visible as soon as it
@@ -547,7 +574,7 @@ export function Terminal() {
       clientDurationMs={clientDurationMs}
       network={network}
       recentMarkets={recentMarkets}
-      onSelectMarket={setSelectedMarketId}
+      onSelectMarket={setChosenMarketId}
       hasAccountHistory={hasAccountHistory}
       onViewFills={() => setDockTab("fills")}
       onCancelAll={() => void handleCancelAll()}
@@ -577,7 +604,8 @@ export function Terminal() {
       marksByMarket={data.marksByMarket}
       now={now}
       hasWallet={!!wallet.account}
-      onTransfer={trading.transferBetweenBalances}
+      quoteSymbol={quoteSymbol}
+      onTransfer={transferBetweenBalances}
       onClosePosition={requestClose}
       onReducePosition={requestReduce}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
@@ -592,6 +620,7 @@ export function Terminal() {
       market={market}
       mark={mark}
       now={now}
+      quoteSymbol={quoteSymbol}
       interval={interval}
       onIntervalChange={setInterval}
       candles={candles}
@@ -604,7 +633,7 @@ export function Terminal() {
       onRetry={() => setRetryToken((token) => token + 1)}
       markets={data.markets}
       selectedMarketId={selectedMarketId}
-      onSelectMarket={setSelectedMarketId}
+      onSelectMarket={setChosenMarketId}
       stats={data.stats}
       network={network}
       clientDurationMs={clientDurationMs}
@@ -620,7 +649,7 @@ export function Terminal() {
       now={now}
       markets={data.markets}
       selectedMarketId={selectedMarketId}
-      onSelectMarket={setSelectedMarketId}
+      onSelectMarket={setChosenMarketId}
       phoneView={phoneView}
       onPhoneViewChange={setPhoneView}
       orderEntry={orderEntry}

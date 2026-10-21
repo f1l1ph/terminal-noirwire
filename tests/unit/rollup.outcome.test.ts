@@ -152,6 +152,73 @@ describe("thrownToResult: OrderInvalid and TransactionFailed map to the rejected
     expect(mapped?.reason).toMatch(/Refused by the venue/);
   });
 
+  const failedWith = (code: number) =>
+    new TransactionFailed("sig", { InstructionError: [0, { Custom: code }] });
+
+  it.each([
+    [6090, /blocked/],
+    [6091, /listed makers/],
+    [6092, /listed takers/],
+    [6081, /USDC price guard/],
+    [6032, /only takes orders that shrink a position/],
+    [6031, /market is paused/],
+    [6030, /venue is paused/],
+  ])("gives program error %i its own plain sentence", (code, sentence) => {
+    const reason = thrownToResult(failedWith(code))?.reason ?? "";
+    expect(reason).toMatch(sentence);
+    expect(reason).not.toMatch(/program error/);
+  });
+
+  it("names a thrown code below 6000 by its number only: it may be another program's", () => {
+    const reason = thrownToResult(failedWith(38), { maxPriceAgeSeconds: 90 })?.reason ?? "";
+    expect(reason).toMatch(/program error 38\b/);
+    expect(reason).not.toMatch(/price/);
+  });
+
+  it("suggests Reduce only on a reduce-only perpetual market", () => {
+    const reason = thrownToResult(failedWith(6032), { isPerp: true })?.reason ?? "";
+    expect(reason).toMatch(/Use Reduce only/);
+  });
+
+  it("does not suggest Reduce only on a spot market, which refuses it", () => {
+    const reason = thrownToResult(failedWith(6032), { isPerp: false })?.reason ?? "";
+    expect(reason).toMatch(/only takes orders that shrink a position/);
+    expect(reason).not.toMatch(/Reduce only/);
+  });
+
+  it("names the market's own price age limit on a stale-price refusal when it is known", () => {
+    const reason = thrownToResult(failedWith(6038), { maxPriceAgeSeconds: 90 })?.reason ?? "";
+    expect(reason).toMatch(/this market accepts prices up to 90 seconds old/);
+    expect(reason).not.toMatch(/10s/);
+  });
+
+  it("does not blame the order's own market alone for a stale price: a position's market can be the stale one", () => {
+    const reason = thrownToResult(failedWith(6038), { maxPriceAgeSeconds: 90 })?.reason ?? "";
+    expect(reason).toMatch(/another market where this account holds a position/);
+  });
+
+  it("says the price is too old without a number when the market's limit is not known", () => {
+    const reason = thrownToResult(failedWith(6038))?.reason ?? "";
+    expect(reason).toMatch(/price this order is checked against is too old/);
+    expect(reason).not.toMatch(/\d+ seconds/);
+  });
+
+  it("names the market's own limit on its price-too-old refusal", () => {
+    const reason = thrownToResult(failedWith(6079), { maxPriceAgeSeconds: 90 })?.reason ?? "";
+    expect(reason).toMatch(/older than the 90 seconds this market accepts/);
+  });
+
+  it("reads a stale-price refusal from the result ring the same way", () => {
+    const placed = placedResult({ status: RESULT_STATUS_CODE.refused, code: 38 });
+    expect(placedToResult(placed, UNITS, 6, undefined, { maxPriceAgeSeconds: 90 }).reason).toMatch(
+      /90 seconds/,
+    );
+  });
+
+  it("keeps the program error number for a refusal it has no sentence for", () => {
+    expect(thrownToResult(failedWith(6024))?.reason).toMatch(/program error 6024/);
+  });
+
   it("returns null for an ordinary error, letting the caller's own handling take over", () => {
     expect(thrownToResult(new Error("network down"))).toBeNull();
   });

@@ -7,14 +7,20 @@ import {
   type TransactionInstruction,
 } from "@solana/web3.js";
 import { openAndFund } from "@/lib/rollup/fundingClient";
-import { PACKAGE_PROGRAM_ID, programInstructions } from "@/lib/rollup/sdk";
+import { PACKAGE_PROGRAM_ID, programInstructions, type CustodyToken } from "@/lib/rollup/sdk";
 
 const GATE = Keypair.generate();
 const FAUCET = Keypair.generate();
 const FAUCET_TOKENS = Keypair.generate().publicKey;
-const MINT = Keypair.generate().publicKey;
+/** The Exchange's collateral token as the Exchange account records it: its mint and custody nonce. */
+const CUSTODY: CustodyToken = {
+  mint: Keypair.generate().publicKey,
+  custodyNonce: 0x1234_5678_9abc_def0n,
+};
 const GRANT = "5000.000000";
 const GRANT_ATOMS = 5_000_000_000n;
+const DEPOSIT_CUSTODY_AUTHORITY_INDEX = 4;
+const DEPOSIT_CUSTODY_INDEX = 5;
 
 interface Shape {
   feePayer?: PublicKey;
@@ -23,6 +29,10 @@ interface Shape {
   amount?: bigint;
   /** Who the deposit says it is from (default: the faucet). */
   depositor?: PublicKey;
+  /** The token whose custody the deposit names (default: the Exchange's collateral token). */
+  custody?: CustodyToken;
+  /** Swaps one account of the deposit for another, leaving every other account as built. */
+  depositKey?: { index: number; pubkey: PublicKey };
   /** Replaces the deposit, keeping the two-instruction shape. */
   second?: TransactionInstruction;
   /** Marks the owner writable in `open_trader`, which lets the transaction spend from it. */
@@ -43,22 +53,25 @@ function preparedTransactionBase64(owner: Keypair, orderKeys: PublicKey[], shape
     shape.orderKeys ?? orderKeys,
   );
   if (shape.ownerWritable) open.keys[1] = { ...open.keys[1], isWritable: true };
+  const deposit =
+    shape.second ??
+    instructions.deposit(
+      shape.depositor ?? FAUCET.publicKey,
+      FAUCET_TOKENS,
+      shape.custody ?? CUSTODY,
+      owner.publicKey,
+      { collateral: true },
+      shape.amount ?? GRANT_ATOMS,
+    );
+  if (shape.depositKey) {
+    const { index, pubkey } = shape.depositKey;
+    deposit.keys[index] = { ...deposit.keys[index], pubkey };
+  }
   const transaction = new Transaction({
     feePayer: shape.feePayer ?? GATE.publicKey,
     blockhash: Keypair.generate().publicKey.toBase58(), // any 32-byte base58 value serializes fine as a stand-in
     lastValidBlockHeight: 0,
-  }).add(
-    open,
-    shape.second ??
-      instructions.deposit(
-        shape.depositor ?? FAUCET.publicKey,
-        FAUCET_TOKENS,
-        MINT,
-        owner.publicKey,
-        { collateral: true },
-        shape.amount ?? GRANT_ATOMS,
-      ),
-  );
+  }).add(open, deposit);
   if (shape.extra) transaction.add(shape.extra);
   return transaction
     .serialize({ requireAllSignatures: false, verifySignatures: false })
@@ -90,6 +103,7 @@ async function signedByOwner(owner: Keypair, keys: PublicKey[], shape: Shape) {
     "http://sim.test",
     owner,
     keys.map((key) => key.toBase58()),
+    CUSTODY,
     fetchFn,
   );
   return { outcome, submitted };
@@ -111,6 +125,7 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
       "http://sim.test",
       owner,
       keys.map((key) => key.toBase58()),
+      CUSTODY,
       fetchFn,
     );
 
@@ -142,7 +157,7 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
       .mockResolvedValueOnce(
         jsonResponse({ error: "this address already received its fund grant" }, 409),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], fetchFn);
+    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
     expect(outcome).toEqual({ kind: "alreadyFunded" });
     expect(fetchFn).toHaveBeenCalledTimes(1); // never gets to sign or submit
   });
@@ -154,11 +169,26 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
       .mockResolvedValueOnce(
         jsonResponse({ error: "no seat can be offered right now, try again" }, 503),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], fetchFn);
+    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
     expect(outcome).toEqual({
       kind: "rateLimited",
       message: "no seat can be offered right now, try again",
     });
+  });
+
+  it("reports a 503 from a deployment with no faucet as noFaucet, not a transient refusal", async () => {
+    const owner = Keypair.generate();
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: "this deployment has no faucet: test funds are not handed out here" },
+          503,
+        ),
+      );
+    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
+    expect(outcome).toEqual({ kind: "noFaucet" });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("reports a 503 from submit (the venue's daily new-account limit) as rateLimited, carrying the venue's own reason", async () => {
@@ -178,7 +208,7 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
           503,
         ),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], fetchFn);
+    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
     expect(outcome).toEqual({
       kind: "rateLimited",
       message: "daily limit reached: no more new accounts can be opened today, try again tomorrow",
@@ -202,14 +232,14 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
           409,
         ),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], fetchFn);
+    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
     expect(outcome).toEqual({ kind: "alreadyFunded" });
   });
 
   it("surfaces a network failure as an error outcome, not a thrown exception", async () => {
     const owner = Keypair.generate();
     const fetchFn = vi.fn().mockRejectedValue(new Error("fetch failed"));
-    const outcome = await openAndFund("http://sim.test", owner, [], fetchFn);
+    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
     expect(outcome.kind).toBe("error");
   });
 });
@@ -236,7 +266,7 @@ describe("openAndFund: the prepared transaction is checked before the owner sign
         extra: programInstructions(PACKAGE_PROGRAM_ID).withdraw(
           owner.publicKey,
           thief,
-          MINT,
+          CUSTODY,
           { collateral: true },
           GRANT_ATOMS,
         ),
@@ -252,7 +282,7 @@ describe("openAndFund: the prepared transaction is checked before the owner sign
         second: programInstructions(PACKAGE_PROGRAM_ID).withdraw(
           owner.publicKey,
           thief,
-          MINT,
+          CUSTODY,
           { collateral: true },
           GRANT_ATOMS,
         ),
@@ -260,6 +290,18 @@ describe("openAndFund: the prepared transaction is checked before the owner sign
     ],
     ["open_trader with the owner writable", { ownerWritable: true }],
     ["a deposit from the owner", { depositor: owner.publicKey }],
+    [
+      "a deposit naming a swapped custody authority",
+      { depositKey: { index: DEPOSIT_CUSTODY_AUTHORITY_INDEX, pubkey: thief } },
+    ],
+    [
+      "a deposit naming a swapped custody account",
+      { depositKey: { index: DEPOSIT_CUSTODY_INDEX, pubkey: thief } },
+    ],
+    [
+      "a deposit into the custody of a token other than the Exchange's collateral",
+      { custody: { mint: Keypair.generate().publicKey, custodyNonce: 7n } },
+    ],
   ];
 
   it.each(refused)("refuses to sign %s", async (_case, shape) => {

@@ -80,6 +80,8 @@ export function OrderEntry({
   onCreateWallet,
   onFund,
   grantAlreadyUsed,
+  noFaucet,
+  quoteSymbol,
   placeOrder,
   onOrderPlaced,
   onTransferToSpot,
@@ -110,6 +112,10 @@ export function OrderEntry({
    * details instead, whatever the current balance is.
    */
   grantAlreadyUsed: boolean;
+  /** The service said this deployment hands out no test funds: the grant action is never offered again on this page. */
+  noFaucet: boolean;
+  /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
+  quoteSymbol: string;
   placeOrder: (input: NewOrderInput) => Promise<PlacedOrderOutcome>;
   onOrderPlaced: (outcome: PlacedOrderOutcome, descriptor: OrderDescriptor) => void;
   /** Present only in rollup mode, where collateral and spot are separate balances. */
@@ -213,11 +219,12 @@ export function OrderEntry({
   const priceText = priceOverride ?? defaultBoundPrice;
 
   const baseUnit = spotAssets?.base ?? market?.base ?? "";
-  const quoteUnit = spotAssets?.quote ?? market?.quote ?? "";
+  const quoteUnit = spotAssets?.quote ?? quoteSymbol;
+  const money = (value: string) => formatMoney(value, quoteUnit);
   const quoteBalance = balances[quoteUnit];
   const availableBase = balances[baseUnit]?.available ?? "0";
   // A perp order draws on the separate collateral account (RULES.md section
-  // 6), not the spot nUSD balance; dev mode has no such split, so there
+  // 6), not the spot quote balance; dev mode has no such split, so there
   // `collateral` is undefined and the spot balance is the only figure.
   const availableQuote =
     isPerp && collateral ? collateral.available : (quoteBalance?.available ?? "0");
@@ -328,9 +335,9 @@ export function OrderEntry({
   const noFunds =
     hasWallet && Number(availableQuote) <= 0 && !(isSpotSell && Number(availableBase) > 0);
 
-  // Spot buy, this browser's nUSD spot balance is empty, but there is
+  // Spot buy, this browser's spot quote balance is empty, but there is
   // collateral to move: the primary action becomes "Move funds to spot"
-  // rather than a pointless "Get 5,000 test nUSD" (one grant only, already
+  // rather than a pointless test-funds grant (one grant only, already
   // spent) or a submit that would just fail for insufficient balance. See
   // `needsSpotTransfer` in trading/spotTransfer.ts for the decision itself.
   const needsTransfer = needsSpotTransfer({
@@ -405,15 +412,16 @@ export function OrderEntry({
       setShowTransfer(true);
       return;
     }
-    if (noFunds && !grantAlreadyUsed) {
+    if (noFunds && !grantAlreadyUsed && !noFaucet) {
       setFunding(true);
       setFundMessage(null);
       onFund()
         .then((outcome) => {
-          if (outcome.kind === "alreadyFunded") {
-            // Learned only now that this wallet was granted elsewhere:
-            // `grantAlreadyUsed` flips on the next render and the account
-            // details take over saying so - no separate notice here.
+          if (outcome.kind === "alreadyFunded" || outcome.kind === "noFaucet") {
+            // Learned only now that this wallet was granted elsewhere, or
+            // that this deployment grants nothing: `grantAlreadyUsed` or
+            // `noFaucet` flips on the next render and says so in place of
+            // the grant action - no separate notice here.
             setFundMessage(null);
           } else if (outcome.kind === "rateLimited") {
             setFundMessage(
@@ -429,6 +437,9 @@ export function OrderEntry({
             confirmingFundTimeoutRef.current = setTimeout(() => setConfirmingFund(false), 15_000);
           }
         })
+        .catch((error: unknown) =>
+          setFundMessage(error instanceof Error ? error.message : "Could not reach the venue."),
+        )
         .finally(() => setFunding(false));
       return;
     }
@@ -501,8 +512,14 @@ export function OrderEntry({
     primaryLabel = "Enter quantity";
     primaryClass = btnGhost;
     primaryDisabled = true;
+  } else if (noFunds && noFaucet) {
+    primaryLabel = "No test funds on this deployment";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (noFunds) {
-    primaryLabel = "Get 5,000 test nUSD";
+    // The size of a grant, and whether one exists at all, is the service's
+    // to say: it is only known once asked, so the offer names no amount.
+    primaryLabel = "Get test funds";
     primaryClass = btnPrimary;
     primaryDisabled = funding;
   } else if (!quantityText.trim()) {
@@ -582,8 +599,8 @@ export function OrderEntry({
               : confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
                 ? "Confirming on chain…"
                 : grantAlreadyUsed
-                  ? `Grant used · ${formatMoney(availableQuote)} available`
-                  : `Available: ${formatMoney(availableQuote)}`}
+                  ? `Grant used · ${money(availableQuote)} available`
+                  : `Available: ${money(availableQuote)}`}
           </span>
         </div>
         <input
@@ -632,8 +649,8 @@ export function OrderEntry({
             ? side === "buy"
               ? "Max buy price"
               : "Min sell price"
-            : "Limit price"}{" "}
-          ({quoteUnit})
+            : "Limit price"}
+          {quoteUnit && ` (${quoteUnit})`}
         </label>
         <input
           ref={priceInputRef}
@@ -745,7 +762,7 @@ export function OrderEntry({
         <p role="alert" className="text-danger text-[12px]">
           {shortfall.asset === "base"
             ? `Available ${formatDecimal(shortfall.available, sizeDecimals)} ${baseUnit}; this order sells ${formatDecimal(shortfall.needed, sizeDecimals)} ${baseUnit}.`
-            : `Available ${formatMoney(shortfall.available)}; this order needs about ${formatMoney(shortfall.needed)} including fee.`}{" "}
+            : `Available ${money(shortfall.available)}; this order needs about ${money(shortfall.needed)} including fee.`}{" "}
           Reduce quantity.
         </p>
       )}
@@ -757,6 +774,7 @@ export function OrderEntry({
           display={estimateDisplay}
           priceDecimals={priceDecimals}
           remainingAvailable={remainingAvailable}
+          quoteSymbol={quoteUnit}
         />
       )}
 
@@ -774,12 +792,19 @@ export function OrderEntry({
           landed) retires it instead of leaving it under the button
           alongside a working order form (third design review, must-fix 2). */}
       {fundMessage && noFunds && <p className="text-warning text-[12px]">{fundMessage}</p>}
+      {noFaucet && noFunds && (
+        <p className="text-dim text-[12px]">
+          This deployment has no faucet, so it hands out no test funds. You can still follow the
+          market, its chart and its public fills here.
+        </p>
+      )}
 
       {showTransfer && onTransferToSpot && collateral && (
         <TransferControl
           onTransfer={onTransferToSpot}
           collateral={collateral}
           spot={quoteBalance ?? null}
+          quoteSymbol={quoteUnit}
           prefillAmount={suggestedTransferAmount}
           initiallyOpen
           onDone={() => setShowTransfer(false)}
@@ -829,6 +854,7 @@ export function OrderEntry({
                 display={estimateDisplay}
                 priceDecimals={priceDecimals}
                 remainingAvailable={remainingAvailable}
+                quoteSymbol={quoteUnit}
               />
               <label className="text-dim mt-3 flex items-center gap-2 text-[12px]">
                 <input

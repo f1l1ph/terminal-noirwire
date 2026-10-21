@@ -47,7 +47,8 @@ describe("audit: open-and-fund signs the service's transaction without inspectin
       throw new Error(url);
     }) as typeof fetch;
 
-    await openAndFund("https://sim.example", owner, [], fetchFn).catch(() => null);
+    const collateral = { mint: Keypair.generate().publicKey, custodyNonce: 1n };
+    await openAndFund("https://sim.example", owner, [], collateral, fetchFn).catch(() => null);
 
     const ownerSignedTheDrain =
       submitted !== null &&

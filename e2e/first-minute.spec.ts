@@ -13,10 +13,10 @@ test.describe("First minute: wallet, funds, a filled market long", () => {
     await shot(page, "01-arrival");
 
     await page.getByRole("button", { name: "Create test wallet" }).click();
-    await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible();
     await shot(page, "02-wallet-created");
 
-    await page.getByRole("button", { name: "Get 5,000 test nUSD" }).click();
+    await page.getByRole("button", { name: "Get test funds" }).click();
     await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible();
     await shot(page, "03-funded");
 

@@ -7,13 +7,16 @@ export function OrderSummary({
   display,
   priceDecimals,
   remainingAvailable,
+  quoteSymbol,
 }: {
   side: Side;
   isPerp: boolean;
   display: OrderCostEstimateDisplay | null;
   priceDecimals: number;
   remainingAvailable: string | null;
+  quoteSymbol: string;
 }) {
+  const money = (value: string) => formatMoney(value, quoteSymbol);
   if (!display) {
     return (
       <p className="border-line-subtle text-dim border-t border-b py-2 text-[13px]">
@@ -23,11 +26,11 @@ export function OrderSummary({
   }
 
   const rows: { label: string; value: string }[] = [
-    { label: "Notional", value: formatMoney(display.notional) },
-    { label: "Fee", value: formatMoney(display.fee) },
+    { label: "Notional", value: money(display.notional) },
+    { label: "Fee", value: money(display.fee) },
   ];
   if (isPerp) {
-    rows.push({ label: "Margin", value: formatMoney(display.initialMargin) });
+    rows.push({ label: "Margin", value: money(display.initialMargin) });
     rows.push({
       label: "Liquidation (est.)",
       value: display.liquidationPrice
@@ -37,7 +40,7 @@ export function OrderSummary({
   }
   rows.push({
     label: "Remaining",
-    value: remainingAvailable ? formatMoney(remainingAvailable) : UNAVAILABLE,
+    value: remainingAvailable ? money(remainingAvailable) : UNAVAILABLE,
   });
 
   return (

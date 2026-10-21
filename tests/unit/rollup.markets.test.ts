@@ -55,6 +55,34 @@ describe("marketMatchesChain", () => {
     expect(marketMatchesChain({ ...PERP, ...change }, CHAIN, MINTS)).toBe(false);
   });
 
+  describe("the USDC deployment's SOL perpetual, followed as NSOL-PERP", () => {
+    const USDC_PERP = { ...PERP, quoteToken: { symbol: "USDC", mint: QUOTE_MINT, decimals: 6 } };
+    const USDC_CHAIN = { ...(CHAIN as object), baseSymbol: "SOL", quoteSymbol: "USDC" } as never;
+
+    it("accepts it: base SOL, quote USDC at 6 decimals", () => {
+      expect(marketMatchesChain(USDC_PERP, USDC_CHAIN, MINTS)).toBe(true);
+    });
+
+    it("refuses an entry that names another quote token than the account", () => {
+      expect(marketMatchesChain(PERP, USDC_CHAIN, MINTS)).toBe(false);
+      expect(marketMatchesChain(USDC_PERP, CHAIN, MINTS)).toBe(false);
+    });
+
+    it("refuses a quote token this build does not trade in", () => {
+      const other = { ...(USDC_CHAIN as object), quoteSymbol: "USDT" } as never;
+      const otherEntry = {
+        ...USDC_PERP,
+        quoteToken: { symbol: "USDT", mint: QUOTE_MINT, decimals: 6 },
+      };
+      expect(marketMatchesChain(otherEntry, other, MINTS)).toBe(false);
+    });
+
+    it("refuses a base asset the pin does not list", () => {
+      const btc = { ...(USDC_CHAIN as object), baseSymbol: "BTC" } as never;
+      expect(marketMatchesChain(USDC_PERP, btc, MINTS)).toBe(false);
+    });
+  });
+
   it("only pins the markets this build trades", () => {
     expect(pinnedBaseDecimals("NSOL-PERP")).toBe(9);
     expect(pinnedBaseDecimals("NNVDA-PERP")).toBe(6);

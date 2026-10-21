@@ -10,17 +10,22 @@ type ChainMarket = ReturnType<typeof decodeMarketAccount>;
  * counts in. Base decimals are not on chain at all (a perpetual's base is
  * not a token), so they cannot be checked against the rollup; they are
  * pinned here instead, and a market this table does not list is not traded.
- * Mirrors the order book's own deployment description (`ops/deployment.ts`
- * in that repository).
+ * Mirrors the order book's own deployment descriptions (`ops/deployment.ts`
+ * in that repository): the test deployment names the SOL perpetual's base
+ * NSOL, the USDC deployment names the same market's base SOL.
  */
-const PINNED_MARKETS: Record<string, { baseSymbol: string; baseDecimals: number }> = {
-  "NSOL-PERP": { baseSymbol: "NSOL", baseDecimals: 9 },
-  "NNVDA-PERP": { baseSymbol: "NNVDA", baseDecimals: 6 },
-  "NSOL-NUSD": { baseSymbol: "NSOL", baseDecimals: 9 },
+const PINNED_MARKETS: Record<string, { baseSymbols: readonly string[]; baseDecimals: number }> = {
+  "NSOL-PERP": { baseSymbols: ["NSOL", "SOL"], baseDecimals: 9 },
+  "NNVDA-PERP": { baseSymbols: ["NNVDA"], baseDecimals: 6 },
+  "NSOL-NUSD": { baseSymbols: ["NSOL"], baseDecimals: 9 },
 };
 
-/** Every quote amount in this terminal is nUSD at 6 decimals (see units.ts). */
-const QUOTE_SYMBOL = "NUSD";
+/**
+ * The quote tokens this build trades in, all at 6 decimals (see units.ts):
+ * the test deployment's nUSD and the USDC deployment's USDC. A market's
+ * account and its deployment entry must both name the same one.
+ */
+const QUOTE_SYMBOLS: readonly string[] = ["NUSD", "USDC"];
 const QUOTE_DECIMALS = 6;
 
 /** The pinned base decimals of a market this build trades, or null for one it does not. */
@@ -29,6 +34,8 @@ export function pinnedBaseDecimals(symbol: string): number | null {
 }
 
 const sameSymbol = (a: string, b: string) => a.toUpperCase() === b.toUpperCase();
+const oneOf = (symbol: string, symbols: readonly string[]) =>
+  symbols.some((pinned) => sameSymbol(symbol, pinned));
 
 /**
  * Whether a `/v1/deployment` market entry says the same as the market
@@ -48,18 +55,18 @@ export function marketMatchesChain(
   if (!pinned) return false;
   const kind = market.kind === "perp" ? MARKET_KIND_CODE.perp : MARKET_KIND_CODE.spot;
   const quoteMatches =
-    sameSymbol(chain.quoteSymbol, QUOTE_SYMBOL) &&
-    sameSymbol(market.quoteToken.symbol, QUOTE_SYMBOL) &&
+    oneOf(chain.quoteSymbol, QUOTE_SYMBOLS) &&
+    sameSymbol(market.quoteToken.symbol, chain.quoteSymbol) &&
     market.quoteToken.decimals === QUOTE_DECIMALS &&
     market.quoteDecimals === QUOTE_DECIMALS &&
     exchangeMints[chain.params.quoteToken] === market.quoteToken.mint;
   const baseMatches =
-    sameSymbol(chain.baseSymbol, pinned.baseSymbol) &&
+    oneOf(chain.baseSymbol, pinned.baseSymbols) &&
     market.baseDecimals === pinned.baseDecimals &&
     (market.kind === "perp"
       ? market.baseToken === null
       : market.baseToken !== null &&
-        sameSymbol(market.baseToken.symbol, pinned.baseSymbol) &&
+        sameSymbol(market.baseToken.symbol, chain.baseSymbol) &&
         market.baseToken.decimals === pinned.baseDecimals &&
         exchangeMints[chain.params.baseToken] === market.baseToken.mint);
   return (

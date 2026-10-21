@@ -620,6 +620,56 @@ does sit in front of the send. Numbers are in the pass report; the venue's
 own answer to a send was bimodal on the day (about 300 ms or about 720 ms),
 which moves the median between runs far more than the terminal does.
 
+## Tenth pass: client 0.6.0 and the USDC deployment
+
+**Client 0.6.0** (`vendor/noirwire-orderbook-0.6.0.tgz`, `src/lib/rollup/sdk.ts`):
+every order-key call now names the perpetual markets itself, read from the
+Exchange account, so no caller passes a risk market list.
+`transferBetweenBalances` takes `(toCollateral, spotToken, amount,
+expirySeconds)`. `deposit` and `withdraw` take a custody token (`{ mint,
+custodyNonce }`) where they took a mint, because the custody authority is
+now named by the token's nonce. The three error texts this terminal matches
+on (`ALL_KEYS_BUSY_MESSAGE`, `VIEW_NOT_READABLE_MESSAGE`,
+`KEYS_NOT_FROM_SEED_MESSAGE`) were re-read from the package.
+
+**The funding check pins every account.** The session reads the Exchange
+account once (`readExchangeTokens` in `session.ts`) and keeps the collateral
+token's mint and custody nonce. The nonce is public: the Exchange stores it
+beside the mint and the custody address. `isExpectedFunding` builds the
+expected deposit from that token and compares all eight accounts, so a
+prepared transaction naming another custody authority, another custody
+account, or another token's custody is refused before the owner signs.
+Only the depositor and its token account are the service's to choose.
+
+**Quote token from the venue.** Markets may quote in nUSD or USDC
+(`QUOTE_SYMBOLS` in `markets.ts`, both 6 decimals). A market's account and
+its deployment entry must name the same one, and its mint must match the
+Exchange's. Every label reads the deployment's own symbol (`quoteSymbolOf`
+in `deployment.ts`). The SOL perpetual's base may be named NSOL or SOL.
+
+**No faucet.** A deployment that hands out no test funds answers
+`/v1/fund/*` with a 503 naming it, which becomes `FundOutcome` `noFaucet`.
+`RollupTradingClient` remembers it in this browser, keyed by the program id
+and its Exchange address, so a reload neither offers the grant again nor
+spends another request against the network's daily funding limit. The
+grant button reads "Get test funds" everywhere: the size of a grant, and
+whether one exists, is only known once the service has been asked. A
+service that refuses first for another reason (409 already funded, 429 rate
+limited) still hides the no-faucet answer on that request; a faucet flag on
+`/v1/deployment` would close that, but it is a change to the service.
+
+**Refusal wording.** A failed transaction's code is named only from 6000 up;
+a lower `Custom` code may be any instruction's, so it keeps its number. The
+stale-feed refusal (38) is raised for the order's own market and for any
+market where the account holds a position, so its sentence says so rather
+than quoting this market's limit alone. "Use Reduce only" is suggested only
+on a perpetual; a spot market refuses reduce-only orders outright.
+
+**Devnet suites.** `e2e/devnet/*.devnet.spec.ts` were written for the nUSD
+deployment with a faucet. They now read `/v1/deployment` first and skip
+against a deployment that does not quote in nUSD
+(`e2e/support/devnetDeployment.ts`).
+
 ## Known non-blocking issue
 
 A `lightweight-charts` internal error ("Value is null") was observed

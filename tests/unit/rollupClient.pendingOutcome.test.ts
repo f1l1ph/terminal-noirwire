@@ -157,6 +157,7 @@ function fakeSession(client: TraderClientLike): RollupSession {
     client,
     deployment: FAKE_DEPLOYMENT,
     tokenIndexBySymbol: new Map([["nUSD", 0]]),
+    collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
     createdAtMs: Date.now(),
     saveKeyCheckpoint: () => {},
     close: () => {},

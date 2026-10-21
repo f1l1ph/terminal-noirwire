@@ -38,6 +38,7 @@ export function AccountDock({
   marksByMarket,
   now,
   hasWallet,
+  quoteSymbol,
   onTransfer,
   onClosePosition,
   onReducePosition,
@@ -59,6 +60,9 @@ export function AccountDock({
   marksByMarket: Record<string, { price: string; time: number } | null>;
   now: number;
   hasWallet: boolean;
+  /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
+  quoteSymbol: string;
+  /** Null in dev mode and wherever there is no spot market to move funds to. */
   onTransfer: TransferFn | null;
   /** A reduce-only market order for the position's full size, one click after the usual confirmation. */
   onClosePosition: (position: Position) => void;
@@ -105,6 +109,7 @@ export function AccountDock({
             marketSettings={marketSettings}
             marksByMarket={marksByMarket}
             now={now}
+            quoteSymbol={quoteSymbol}
             onClose={onClosePosition}
             onReduce={onReducePosition}
           />
@@ -123,10 +128,19 @@ export function AccountDock({
           <FillsTable fills={ownFills} marketSettings={marketSettings} />
         )}
         {hasWallet && tab === "balances" && (
-          <BalancesTable balances={balances} collateral={collateral} onTransfer={onTransfer} />
+          <BalancesTable
+            balances={balances}
+            collateral={collateral}
+            quoteSymbol={quoteSymbol}
+            onTransfer={onTransfer}
+          />
         )}
         {hasWallet && tab === "margin" && (
-          <MarginTable positions={positions} marketSettings={marketSettings} />
+          <MarginTable
+            positions={positions}
+            marketSettings={marketSettings}
+            quoteSymbol={quoteSymbol}
+          />
         )}
       </div>
     </div>
@@ -138,6 +152,7 @@ function PositionsTable({
   marketSettings,
   marksByMarket,
   now,
+  quoteSymbol,
   onClose,
   onReduce,
 }: {
@@ -145,6 +160,7 @@ function PositionsTable({
   marketSettings: MarketSettingsLookup;
   marksByMarket: Record<string, { price: string; time: number } | null>;
   now: number;
+  quoteSymbol: string;
   onClose: (position: Position) => void;
   onReduce: (position: Position) => void;
 }) {
@@ -205,9 +221,11 @@ function PositionsTable({
                   unrealised === null ? "text-faint" : unrealised >= 0 ? "text-safe" : "text-danger"
                 }
               >
-                {unrealised !== null ? formatMoney(unrealised) : "Unavailable - no live mark"}
+                {unrealised !== null
+                  ? formatMoney(unrealised, quoteSymbol)
+                  : "Unavailable - no live mark"}
               </td>
-              <td>{marginUsed !== null ? formatMoney(marginUsed) : UNAVAILABLE}</td>
+              <td>{marginUsed !== null ? formatMoney(marginUsed, quoteSymbol) : UNAVAILABLE}</td>
               <td
                 title="Estimate: half the market's implied initial margin, computed on this device. Not a venue-confirmed threshold."
                 className="underline decoration-dotted"
@@ -358,16 +376,35 @@ function FillsTable({
 function BalancesTable({
   balances,
   collateral,
+  quoteSymbol,
   onTransfer,
 }: {
   balances: Balance[];
   collateral: Balance | null;
+  quoteSymbol: string;
   onTransfer: TransferFn | null;
 }) {
-  const rows = collateral
-    ? [{ ...collateral, asset: "nUSD (perpetuals collateral)" }, ...balances]
-    : balances;
+  const rows = [
+    ...(collateral
+      ? [
+          {
+            ...collateral,
+            label: collateral.asset
+              ? `${collateral.asset} (perpetuals collateral)`
+              : "Perpetuals collateral",
+            quote: true,
+          },
+        ]
+      : []),
+    ...balances.map((balance) => ({
+      ...balance,
+      label: balance.asset,
+      quote: !!quoteSymbol && balance.asset === quoteSymbol,
+    })),
+  ];
   if (rows.length === 0) return <p className="text-faint text-[13px]">No balances yet.</p>;
+  const amount = (value: string, quote: boolean) =>
+    quote ? formatMoney(value, quoteSymbol) : formatDecimal(value, 6);
   return (
     <>
       <table className="tnum w-full text-left text-[13px]">
@@ -380,24 +417,12 @@ function BalancesTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((balance) => (
-            <tr key={balance.asset} className="border-line-subtle border-t">
-              <td className="py-1.5">{balance.asset}</td>
-              <td>
-                {balance.asset.startsWith("nUSD")
-                  ? formatMoney(balance.available)
-                  : formatDecimal(balance.available, 6)}
-              </td>
-              <td>
-                {balance.asset.startsWith("nUSD")
-                  ? formatMoney(balance.reserved)
-                  : formatDecimal(balance.reserved, 6)}
-              </td>
-              <td>
-                {balance.asset.startsWith("nUSD")
-                  ? formatMoney(balance.total)
-                  : formatDecimal(balance.total, 6)}
-              </td>
+          {rows.map((row) => (
+            <tr key={row.label} className="border-line-subtle border-t">
+              <td className="py-1.5">{row.label}</td>
+              <td>{amount(row.available, row.quote)}</td>
+              <td>{amount(row.reserved, row.quote)}</td>
+              <td>{amount(row.total, row.quote)}</td>
             </tr>
           ))}
         </tbody>
@@ -406,7 +431,8 @@ function BalancesTable({
         <TransferControl
           onTransfer={onTransfer}
           collateral={collateral}
-          spot={balances.find((balance) => balance.asset === "nUSD") ?? null}
+          spot={balances.find((balance) => balance.asset === quoteSymbol) ?? null}
+          quoteSymbol={quoteSymbol}
         />
       )}
     </>
@@ -416,9 +442,11 @@ function BalancesTable({
 function MarginTable({
   positions,
   marketSettings,
+  quoteSymbol,
 }: {
   positions: Position[];
   marketSettings: MarketSettingsLookup;
+  quoteSymbol: string;
 }) {
   const perpPositions = positions.filter((position) => {
     const settings = marketSettings(position.market);
@@ -456,7 +484,7 @@ function MarginTable({
             return (
               <tr key={position.market} className="border-line-subtle border-t">
                 <td className="py-1.5">{position.market}</td>
-                <td>{formatMoney(display.initialMargin)}</td>
+                <td>{formatMoney(display.initialMargin, quoteSymbol)}</td>
                 <td>
                   {display.liquidationPrice
                     ? formatDecimal(display.liquidationPrice, priceDecimalsOf(settings))
