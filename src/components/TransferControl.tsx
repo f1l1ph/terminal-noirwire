@@ -28,6 +28,7 @@ export function TransferControl({
   onTransfer,
   collateral,
   spot,
+  quoteSymbol,
   prefillAmount,
   initiallyOpen,
   onDone,
@@ -35,6 +36,8 @@ export function TransferControl({
   onTransfer: TransferFn;
   collateral: Balance;
   spot: Balance | null;
+  /** The quote token's name as the venue gives it (nUSD, USDC). */
+  quoteSymbol: string;
   /** Pre-fills the amount, for "Move funds to spot" from order entry. */
   prefillAmount?: string;
   /** Opens the control immediately rather than showing the collapsed button first. */
@@ -111,7 +114,8 @@ export function TransferControl({
     <div className="border-line-subtle mt-2 border-t pt-2">
       <p className={sectionLabel}>Transfer</p>
       <p className="text-faint mt-1 text-[11px]">
-        Collateral {formatMoney(collateral.available)} · Spot {formatMoney(spot?.available ?? "0")}
+        Collateral {formatMoney(collateral.available, quoteSymbol)} · Spot{" "}
+        {formatMoney(spot?.available ?? "0", quoteSymbol)}
       </p>
       <div className="mt-2 flex gap-2" role="group" aria-label="Direction">
         <button
@@ -137,7 +141,7 @@ export function TransferControl({
         placeholder="0.00"
         value={amount}
         onChange={(event) => setAmount(event.target.value)}
-        aria-label="Transfer amount (nUSD)"
+        aria-label={quoteSymbol ? `Transfer amount (${quoteSymbol})` : "Transfer amount"}
       />
       <div className="mt-2 flex gap-2">
         <button

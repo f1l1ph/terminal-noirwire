@@ -16,10 +16,13 @@ export function MarketContextBar({
   market,
   mark,
   now,
+  quoteSymbol,
 }: {
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
   now: number;
+  /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
+  quoteSymbol: string;
 }) {
   const [showDetails, setShowDetails] = useState(false);
 
@@ -53,7 +56,7 @@ export function MarketContextBar({
         {market.change24hPercent === null ? UNAVAILABLE : formatPercent(market.change24hPercent)}
       </span>
       <span className="text-dim tnum">
-        Vol {formatDecimal(market.volume24h, 2)} {market.quote}
+        Vol {formatDecimal(market.volume24h, 2)} {quoteSymbol}
       </span>
       {market.kind === "perp" && (
         <span className="text-dim tnum">

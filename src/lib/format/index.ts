@@ -25,10 +25,16 @@ export function formatDecimal(value: string | number, decimals: number): string 
   }).format(num);
 }
 
-/** Test money. Never a bare dollar sign. */
-export function formatMoney(value: string | number, decimals = 2): string {
+/**
+ * An amount of the quote token, named by `quoteSymbol` (the venue's own
+ * name for it: nUSD on the test deployment, USDC on the USDC one). Never a
+ * bare dollar sign; an empty symbol, while it is not yet known, shows the
+ * number alone rather than a guessed name.
+ */
+export function formatMoney(value: string | number, quoteSymbol: string, decimals = 2): string {
   const formatted = formatDecimal(value, decimals);
-  return formatted === UNAVAILABLE ? UNAVAILABLE : `${formatted} nUSD`;
+  if (formatted === UNAVAILABLE) return UNAVAILABLE;
+  return quoteSymbol ? `${formatted} ${quoteSymbol}` : formatted;
 }
 
 export function formatPercent(value: number, decimals = 2): string {

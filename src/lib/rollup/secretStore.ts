@@ -1,4 +1,4 @@
-import { bytesToHex, hexToBytes, type KeyValueStore } from "../wallet/index";
+import { bytesToHex, hexToBytes, ownerDataKeys, type KeyValueStore } from "../wallet/index";
 
 export interface TrackedOrderSecret {
   market: string;
@@ -6,13 +6,10 @@ export interface TrackedOrderSecret {
   placedAtMs: number;
 }
 
-const KEY_PREFIX = "noirwire-terminal-rollup-secrets-";
 /** Bounds the store so it cannot grow without end; evicts oldest first (see BUILD-NOTES.md). */
 const MAX_TRACKED = 20;
 
-function keyFor(ownerAddress: string): string {
-  return `${KEY_PREFIX}${ownerAddress}`;
-}
+const keyFor = ownerDataKeys.orderSecrets;
 
 /**
  * Every order secret this session has placed for `ownerAddress`, so a reload
@@ -55,6 +52,18 @@ export function trackSecret(
   ].slice(-MAX_TRACKED);
   storage.setItem(keyFor(ownerAddress), JSON.stringify(next));
   return next;
+}
+
+/** Forgets a secret whose order was never sent, so it does not take the place of one that was. */
+export function untrackSecret(
+  storage: KeyValueStore,
+  ownerAddress: string,
+  secret: Uint8Array,
+): void {
+  const secretHex = bytesToHex(secret);
+  const existing = loadTrackedSecrets(storage, ownerAddress);
+  const next = existing.filter((entry) => entry.secretHex !== secretHex);
+  if (next.length !== existing.length) storage.setItem(keyFor(ownerAddress), JSON.stringify(next));
 }
 
 export function trackedSecretBytes(entries: TrackedOrderSecret[]): Uint8Array[] {

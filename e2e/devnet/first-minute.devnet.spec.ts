@@ -5,6 +5,12 @@ import {
   savePersistedWallet,
   WALLET_STORAGE_KEY,
 } from "../support/devnetWallet";
+import { isNusdDeployment, NOT_THE_NUSD_DEPLOYMENT } from "../support/devnetDeployment";
+import { keepWalletEncrypted, openWalletMenu, unlockWallet } from "../support/walletPassphrase";
+
+test.beforeEach(async () => {
+  test.skip(!(await isNusdDeployment()), NOT_THE_NUSD_DEPLOYMENT);
+});
 
 /**
  * Opt-in only (`make e2e-devnet`, never part of `make e2e`/`make e2e-live`/
@@ -62,7 +68,7 @@ async function ensureWalletPersisted(page: Page, alreadyReused: boolean): Promis
   // A fresh wallet: reveal and persist its secret so every later run (and
   // every other manual check this pass) reuses this exact address instead
   // of spending another of devnet's limited new-account seats.
-  await page.getByRole("button", { name: /^[A-Za-z0-9]+…[A-Za-z0-9]+$/ }).click();
+  await openWalletMenu(page);
   await page.getByRole("button", { name: "Save recovery details" }).click();
   const secretText = await page.locator("p.break-all").last().innerText();
   savePersistedWallet(secretText.trim());
@@ -84,7 +90,7 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
 
     if (!reused) {
       await page.getByRole("button", { name: "Create test wallet" }).click();
-      await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible({
         timeout: 15_000,
       });
       await ensureWalletPersisted(page, false);
@@ -93,7 +99,7 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
 
     // Funding: a fresh grant, or this wallet already has a balance from an
     // earlier run - either way, a real nonzero balance must show up.
-    const fundButton = page.getByRole("button", { name: "Get 5,000 test nUSD" });
+    const fundButton = page.getByRole("button", { name: "Get test funds" });
     if (await fundButton.isVisible().catch(() => false)) {
       await fundButton.click();
     }
@@ -216,8 +222,12 @@ test.describe("First minute, signed in the browser, against real Solana devnet",
     await expect(evidenceDialog.getByText(/Unsigned devnet rollup RPC/)).toBeVisible();
     await shot(page, "09-privacy-evidence-enlarged");
 
-    // Reload: account, positions and own-fill marks all come back.
+    // Reload: account, positions and own-fill marks all come back. A wallet
+    // created this run lives in memory until encrypted, so it is encrypted
+    // first and unlocked after; a reused one is primed again on every load.
+    if (!reused) await keepWalletEncrypted(page);
     await page.reload();
+    if (!reused) await unlockWallet(page);
     await expect(page.getByText(/(Available:|Grant used ·)/).first()).toBeVisible({
       timeout: 30_000,
     });
@@ -239,11 +249,11 @@ test.describe("Phone views against real Solana devnet", () => {
 
     if (!reused) {
       await page.getByRole("button", { name: "Create test wallet" }).click();
-      await expect(page.getByRole("button", { name: "Get 5,000 test nUSD" })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Get test funds" })).toBeVisible({
         timeout: 15_000,
       });
     }
-    const fundButton = page.getByRole("button", { name: "Get 5,000 test nUSD" });
+    const fundButton = page.getByRole("button", { name: "Get test funds" });
     if (await fundButton.isVisible().catch(() => false)) {
       await fundButton.click();
     }

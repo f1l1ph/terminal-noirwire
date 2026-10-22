@@ -66,15 +66,26 @@ export const publicFillSchema = z.object({
   takerSide: sideSchema,
   takerTag: z.string(),
   makerTag: z.string(),
-  timestampMs: z.number(),
-  sequence: z.number(),
+  timestampMs: z.number().int().nonnegative(),
+  sequence: z.number().int().nonnegative().safe(),
 });
 export type PublicFill = z.infer<typeof publicFillSchema>;
+
+/**
+ * One malformed row drops out instead of failing the whole tape: each row is
+ * checked on its own, and only the ones that pass are kept.
+ */
+const tapeRowsSchema = z.array(z.unknown()).transform((rows) =>
+  rows.flatMap((row) => {
+    const parsed = publicFillSchema.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  }),
+);
 
 export const tapeResponseSchema = z.object({
   network: z.string(),
   simulated: z.boolean(),
-  fills: z.array(publicFillSchema),
+  fills: tapeRowsSchema,
 });
 
 export const candleIntervalSchema = z.enum(["1m", "5m", "15m", "1h"]);
@@ -151,8 +162,8 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
     takerSide: sideSchema,
     takerTag: z.string(),
     makerTag: z.string(),
-    timestampMs: z.number(),
-    sequence: z.number(),
+    timestampMs: z.number().int().nonnegative(),
+    sequence: z.number().int().nonnegative().safe(),
   }),
   z.object({
     type: z.literal("candle"),

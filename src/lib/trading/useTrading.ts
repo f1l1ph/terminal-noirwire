@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hexToBytes } from "../wallet/index";
+import { hexToBytes, ownerDataKeys } from "../wallet/index";
 import type { WalletAccount } from "../wallet/index";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
@@ -36,14 +36,12 @@ function walletOf(account: WalletAccount): WalletIdentity {
 
 /**
  * Whether this wallet has ever asked for its one-time grant, so a reload
- * never re-offers "Get 5,000 test nUSD" to an account that already used it
+ * never re-offers the test-funds grant to an account that already used it
  * and has since spent it down to zero (third design review, must-fix 2).
  * Local to this browser: a wallet funded elsewhere first still sees the
  * button once, learns `alreadyFunded`, and is remembered here from then on.
  */
-function grantUsedKey(address: string): string {
-  return `noirwire-terminal-grant-used:${address}`;
-}
+const grantUsedKey = ownerDataKeys.grantUsed;
 
 function readGrantUsed(address: string | null): boolean {
   if (!address || typeof window === "undefined") return false;
@@ -90,6 +88,10 @@ export function useTrading(
   const [ownTags, setOwnTags] = useState<ReadonlySet<string>>(new Set());
   const [rollupSecrets, setRollupSecrets] = useState<Uint8Array[]>([]);
   const [grantUsed, setGrantUsed] = useState(false);
+  // A fact about the deployment, not the wallet: once the service says it
+  // has no faucet, no wallet is offered test funds again, on this page or
+  // after a reload (the client remembers it per deployment).
+  const [noFaucet, setNoFaucet] = useState(false);
   const ownTagsRef = useRef<Set<string>>(new Set());
   const rollupSecretsKeyRef = useRef<string | null>(null);
   const grantUsedKeyRef = useRef<string | null>(null);
@@ -140,6 +142,20 @@ export function useTrading(
     };
   }, [client, wallet, addOwnTag, setStateSynced]);
 
+  useEffect(() => {
+    if (!wallet || !client.knownNoFaucet) return;
+    let current = true;
+    client.knownNoFaucet().then(
+      (known) => {
+        if (current && known) setNoFaucet(true);
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [client, wallet]);
+
   // The page itself unloading (close, refresh, navigate away) does not
   // always run the effect cleanup above in time; this ends the same
   // subscription from the one event guaranteed to fire first.
@@ -161,6 +177,7 @@ export function useTrading(
       writeGrantUsed(wallet.publicKey);
       setGrantUsed(true);
     }
+    if (outcome.kind === "noFaucet") setNoFaucet(true);
     return outcome;
   }, [client, wallet]);
 
@@ -246,6 +263,7 @@ export function useTrading(
     ownTags,
     rollupSecrets,
     grantUsed,
+    noFaucet,
     fund,
     placeOrder,
     cancelAllInMarket,

@@ -44,23 +44,51 @@ export const deploymentSchema = z.object({
 
 export type PublicDeployment = z.infer<typeof deploymentSchema>;
 
+/**
+ * The quote token `marketId` is priced in, as the deployment names it. With
+ * no market id, or one the deployment does not list, the first perpetual's:
+ * its quote token is the collateral every perpetual shares. Null when the
+ * deployment lists no market at all.
+ */
+export function quoteSymbolOf(deployment: PublicDeployment, marketId?: string): string | null {
+  const market =
+    deployment.markets.find((entry) => entry.symbol === marketId) ??
+    deployment.markets.find((entry) => entry.kind === "perp") ??
+    deployment.markets[0];
+  return market?.quoteToken.symbol ?? null;
+}
+
 export interface DeploymentOverrides {
   rollupRpcUrl?: string;
   rollupWsUrl?: string;
+  /**
+   * The program this build trades on (`trustedProgramId`). Never written
+   * over the description's own `programId`, so a service naming another
+   * program is still caught by the comparison in `buildRealSession`.
+   */
   programId?: string;
 }
 
 const cache = new Map<string, Promise<PublicDeployment>>();
 
+/**
+ * One fetch per service and set of overrides for the life of the page. A
+ * failed fetch is forgotten as soon as it fails, so the next caller asks
+ * again instead of inheriting a network blip until the page is reloaded.
+ */
 export function fetchDeployment(
   simUrl: string,
   overrides: DeploymentOverrides = {},
   fetchFn: typeof fetch = fetch,
 ): Promise<PublicDeployment> {
-  const existing = cache.get(simUrl);
+  const key = JSON.stringify([simUrl, overrides.rollupRpcUrl, overrides.rollupWsUrl]);
+  const existing = cache.get(key);
   if (existing) return existing;
   const promise = load(simUrl, overrides, fetchFn);
-  cache.set(simUrl, promise);
+  cache.set(key, promise);
+  promise.catch(() => {
+    if (cache.get(key) === promise) cache.delete(key);
+  });
   return promise;
 }
 
@@ -80,6 +108,5 @@ async function load(
     ...parsed,
     rollupRpcUrl: overrides.rollupRpcUrl ?? parsed.rollupRpcUrl,
     rollupWsUrl: overrides.rollupWsUrl ?? parsed.rollupWsUrl,
-    programId: overrides.programId ?? parsed.programId,
   };
 }

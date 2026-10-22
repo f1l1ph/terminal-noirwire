@@ -1,19 +1,27 @@
-import type { Keypair } from "@solana/web3.js";
+import type { Connection, Keypair } from "@solana/web3.js";
 import { PublicKey } from "@solana/web3.js";
-import nacl from "tweetnacl";
 import { browserLocalStorage, type WalletAccount } from "../wallet/index";
 import { loadCheckpoint, saveCheckpoint } from "./checkpointStore";
 import { fetchDeployment, type DeploymentOverrides, type PublicDeployment } from "./deployment";
-import { deriveOrderSeed, ownerKeypairFrom } from "./keys";
+import { deriveLegacyOrderSeed, deriveOrderSeed, ownerKeypairFrom, signInSigner } from "./keys";
+import { marketMatchesChain } from "./markets";
 import {
   checkpointOf,
   connectionTo,
   decodeExchangeAccount,
+  decodeMarketAccount,
   freshOrderKeys,
+  installOrderKeys,
+  KEYS_NOT_FROM_SEED_MESSAGE,
   orderKeyPublicKeys,
   orderKeysFromCheckpoint,
+  PACKAGE_PROGRAM_ID,
+  programAddresses,
   signInAndConnect,
   TraderClient,
+  VIEW_NOT_READABLE_MESSAGE,
+  viewKeysDeriveFrom,
+  type CustodyToken,
   type OrderKeyManager,
   type OrderResult,
   type Placed,
@@ -39,7 +47,7 @@ export interface TraderClientLike {
       expiry?: bigint;
       secret?: Uint8Array;
     },
-    options?: { expirySeconds?: number; riskMarkets?: number[]; pushWaitMs?: number },
+    options?: { expirySeconds?: number; pushWaitMs?: number },
   ): Promise<Placed>;
   /** May throw `OutcomeUnknown` (carries `settled`) instead of returning; see `./sdk.ts`. */
   cancelOrder(
@@ -53,7 +61,6 @@ export interface TraderClientLike {
     toCollateral: boolean,
     spotToken: number,
     amount: bigint,
-    riskMarkets: number[],
     expirySeconds?: number,
   ): Promise<OrderResult & Timing>;
 }
@@ -65,6 +72,10 @@ export interface RollupSession {
   deployment: PublicDeployment;
   /** Token symbol -> its index in `Seat.spot[]`, resolved once from the Exchange account (not a market-by-market scan). */
   tokenIndexBySymbol: Map<string, number>;
+  /** The Exchange's collateral token, read from the Exchange account: every funding deposit must name exactly its custody. */
+  collateralToken: CustodyToken;
+  /** Market id -> the oldest mark, in seconds, its account accepts an order against (`maxPriceAge`). A test fake may omit it. */
+  maxPriceAgeSeconds?: ReadonlyMap<number, number>;
   createdAtMs: number;
   /** Saves this session's current order-key checkpoint, for the next session to restore from. See checkpointStore.ts. */
   saveKeyCheckpoint(): void;
@@ -80,31 +91,158 @@ export interface RollupSessionDeps {
 }
 
 /**
- * Reads the Exchange account (public, its address is `deployment.exchange`)
- * for the token mint at each index, then matches those mints against every
- * market's own token descriptions (which carry symbol + decimals but not
- * the index `Seat.spot[]` uses) to resolve symbol -> index. One read, not a
- * scan of every market account the way resolving numeric market ids used
- * to require before `/v1/deployment` existed.
+ * The order book program this build signs for, fixed when it is built:
+ * NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID when set, the package's own program id
+ * otherwise. `/v1/deployment` must report the same one; a service that
+ * could name the program could point every address, and every transaction
+ * the owner signs, at a program of its choosing.
  */
-async function resolveTokenIndices(
-  connection: ReturnType<typeof connectionTo>,
-  deployment: PublicDeployment,
-): Promise<Map<string, number>> {
-  const account = await connection.getAccountInfo(new PublicKey(deployment.exchange));
+export function trustedProgramId(overrides: DeploymentOverrides = {}): PublicKey {
+  return overrides.programId ? new PublicKey(overrides.programId) : PACKAGE_PROGRAM_ID;
+}
+
+interface ExchangeTokens {
+  /** The token mint at each index. */
+  mints: string[];
+  /** The collateral token's mint and custody nonce, which name its custody authority and custody account. */
+  collateral: CustodyToken;
+}
+
+/**
+ * The Exchange account's registered tokens (public). Read at the program's
+ * own Exchange address, not the one `/v1/deployment` names.
+ */
+async function readExchangeTokens(
+  connection: Connection,
+  exchangeAddress: PublicKey,
+): Promise<ExchangeTokens> {
+  const account = await connection.getAccountInfo(exchangeAddress);
   if (!account) throw new Error("the exchange account is not readable here");
   const exchange = decodeExchangeAccount(account.data);
+  const collateral = exchange.tokens[exchange.collateralToken];
+  if (!collateral) throw new Error("the exchange account names no collateral token");
+  return {
+    mints: exchange.tokens.map((token) => token.mint.toBase58()),
+    collateral: { mint: collateral.mint, custodyNonce: collateral.custodyNonce },
+  };
+}
+
+/**
+ * Matches the Exchange account's mints against every market's own token
+ * descriptions (which carry symbol + decimals but not the index
+ * `Seat.spot[]` uses) to resolve symbol -> index. One read, not a scan of
+ * every market account the way resolving numeric market ids used to
+ * require before `/v1/deployment` existed.
+ */
+function tokenIndicesBySymbol(
+  exchangeMints: readonly string[],
+  deployment: PublicDeployment,
+): Map<string, number> {
   const mintToSymbol = new Map<string, string>();
   for (const market of deployment.markets) {
     mintToSymbol.set(market.quoteToken.mint, market.quoteToken.symbol);
     if (market.baseToken) mintToSymbol.set(market.baseToken.mint, market.baseToken.symbol);
   }
   const bySymbol = new Map<string, number>();
-  exchange.tokens.forEach((token, index) => {
-    const symbol = mintToSymbol.get(token.mint.toBase58());
+  exchangeMints.forEach((mint, index) => {
+    const symbol = mintToSymbol.get(mint);
     if (symbol) bySymbol.set(symbol, index);
   });
   return bySymbol;
+}
+
+interface MatchingMarkets {
+  markets: PublicDeployment["markets"];
+  maxPriceAgeSeconds: Map<number, number>;
+}
+
+/**
+ * The deployment's markets whose entry says the same as the market account
+ * the rollup holds at that market's address (see `marketMatchesChain`), with
+ * each kept market's own price age limit as its account states it. A market
+ * that does not match is left out, and so cannot be traded from here.
+ */
+async function marketsMatchingChain(
+  connection: Connection,
+  programId: PublicKey,
+  deployment: PublicDeployment,
+  exchangeMints: readonly string[],
+): Promise<MatchingMarkets> {
+  const matching: MatchingMarkets = { markets: [], maxPriceAgeSeconds: new Map() };
+  if (deployment.markets.length === 0) return matching;
+  const addresses = programAddresses(programId);
+  const accounts = await connection.getMultipleAccountsInfo(
+    deployment.markets.map((market) => addresses.market(market.marketId)),
+  );
+  deployment.markets.forEach((market, index) => {
+    const account = accounts[index];
+    if (!account) return;
+    let chain: ReturnType<typeof decodeMarketAccount>;
+    try {
+      chain = decodeMarketAccount(account.data);
+    } catch {
+      return;
+    }
+    if (!marketMatchesChain(market, chain, exchangeMints)) return;
+    matching.markets.push(market);
+    matching.maxPriceAgeSeconds.set(market.marketId, Number(chain.params.maxPriceAge));
+  });
+  return matching;
+}
+
+const isErrorWithMessage = (error: unknown, message: string) =>
+  error instanceof Error && error.message === message;
+
+/**
+ * How far the first, quick searches look. The full search (100,000 indices)
+ * takes many seconds when the keys are not there, so it runs only once the
+ * quick ones have ruled out the common cases: this seed's keys not far in,
+ * or keys left from the earlier seed derivation.
+ */
+const QUICK_KEY_SEARCH = 1_024;
+
+/**
+ * The account's live order keys. No view yet (account not opened): the
+ * fresh keys, exactly what `open_trader` will be asked to install. A view
+ * whose keys this seed never derived (installed under the earlier,
+ * signature-based seed): the owner installs the fresh keys over them with
+ * `set_order_keys`, the one way back to keys only this device can derive.
+ * Any other failure is thrown, never mistaken for a missing account.
+ */
+async function liveOrderKeys(
+  reader: Connection,
+  owner: Keypair,
+  seed: Uint8Array,
+  programId: PublicKey,
+  checkpoint: ReturnType<typeof loadCheckpoint>,
+): Promise<OrderKeyManager> {
+  const fresh = freshOrderKeys(seed);
+  const notFromSeed = (error: unknown) => isErrorWithMessage(error, KEYS_NOT_FROM_SEED_MESSAGE);
+  let existingView: View;
+  try {
+    // A one-shot read, thrown away right after: no benefit from a live
+    // result subscription here, so it asks for none.
+    existingView = await new TraderClient(reader, reader, owner.publicKey, fresh, programId, {
+      push: false,
+    }).view();
+  } catch (error) {
+    if (isErrorWithMessage(error, VIEW_NOT_READABLE_MESSAGE)) return fresh;
+    throw error;
+  }
+  try {
+    return orderKeysFromCheckpoint(seed, existingView, checkpoint, QUICK_KEY_SEARCH);
+  } catch (error) {
+    if (!notFromSeed(error)) throw error;
+  }
+  if (!viewKeysDeriveFrom(deriveLegacyOrderSeed(owner), existingView, QUICK_KEY_SEARCH)) {
+    try {
+      return orderKeysFromCheckpoint(seed, existingView, null);
+    } catch (error) {
+      if (!notFromSeed(error)) throw error;
+    }
+  }
+  await installOrderKeys(reader, owner, fresh, programId);
+  return fresh;
 }
 
 /**
@@ -116,24 +254,29 @@ async function resolveTokenIndices(
  * lazily on first trade) and recovers the live order keys: from a saved
  * checkpoint when one exists (a handful of derivations), from the view's
  * own key list otherwise (a full search), or starts a fresh set when there
- * is no view yet (the keys `open_trader` will be given). `refresh()` (in
- * `RollupTradingClient`) calls this again to rebuild `reader` and the
- * client.
+ * is no view yet (the keys `open_trader` will be given). Only the markets
+ * whose `/v1/deployment` entry matches the rollup's own market account are
+ * kept. `refresh()` (in `RollupTradingClient`) calls this again to rebuild
+ * `reader` and the client.
  */
 export async function buildRealSession(
   wallet: WalletAccount,
   deps: RollupSessionDeps,
 ): Promise<RollupSession> {
   const fetchFn = deps.fetchFn ?? fetch;
-  const deployment = await fetchDeployment(deps.simUrl, deps.overrides, fetchFn);
-  const programId = new PublicKey(deployment.programId);
+  const described = await fetchDeployment(deps.simUrl, deps.overrides, fetchFn);
+  const programId = trustedProgramId(deps.overrides);
+  if (described.programId !== programId.toBase58()) {
+    throw new Error(
+      `the service describes program ${described.programId}, but this build trades on ${programId.toBase58()}`,
+    );
+  }
 
   const owner = ownerKeypairFrom(wallet);
   const seed = deriveOrderSeed(owner);
   // A plain, unsigned connection, for reads that are genuinely public
   // (DESIGN.md section 2: "everyone" - here, only the Exchange account).
-  const anonymous = connectionTo(deployment.rollupRpcUrl, deployment.rollupWsUrl);
-  const signMessage = async (message: Uint8Array) => nacl.sign.detached(message, owner.secretKey);
+  const anonymous = connectionTo(described.rollupRpcUrl, described.rollupWsUrl);
   // The query filter (deployment.rollupRpcUrl) serves both the anonymous
   // read above and the signed-in connection below, at the same address:
   // sign-in is a token appended to it, not a separate endpoint. On this
@@ -142,23 +285,30 @@ export async function buildRealSession(
   // 401 "Missing token query param") - so `reader` is used as both the
   // `TraderClient`'s sending connection and its private reader, never the
   // plain `anonymous` one.
-  const reader = await signInAndConnect(deployment.rollupRpcUrl, owner.publicKey, signMessage);
+  const reader = await signInAndConnect(
+    described.rollupRpcUrl,
+    owner.publicKey,
+    signInSigner(owner),
+  );
 
   const storage = browserLocalStorage();
-  const checkpoint = loadCheckpoint(storage, owner.publicKey.toBase58());
+  const ownerAddress = owner.publicKey.toBase58();
+  const keys = await liveOrderKeys(
+    reader,
+    owner,
+    seed,
+    programId,
+    loadCheckpoint(storage, ownerAddress),
+  );
+  const saveKeyCheckpoint = () => saveCheckpoint(storage, ownerAddress, checkpointOf(keys));
+  // Saved now as well as after every confirmed call, so a checkpoint the
+  // keys had moved beyond is replaced rather than searched past each time.
+  saveKeyCheckpoint();
 
-  let keys: OrderKeyManager = freshOrderKeys(seed);
-  try {
-    // A one-shot read, thrown away right after: no benefit from a live
-    // result subscription here, so it asks for none.
-    const existingView = await new TraderClient(reader, reader, owner.publicKey, keys, programId, {
-      push: false,
-    }).view();
-    keys = orderKeysFromCheckpoint(seed, existingView, checkpoint);
-  } catch {
-    // No view yet (account not opened): the fresh keys are exactly what
-    // `open_trader` will be asked to install.
-  }
+  const exchangeTokens = await readExchangeTokens(anonymous, programAddresses(programId).exchange);
+  const exchangeMints = exchangeTokens.mints;
+  const matching = await marketsMatchingChain(reader, programId, described, exchangeMints);
+  const deployment: PublicDeployment = { ...described, markets: matching.markets };
 
   // `push` defaults to on; this is the client every order actually goes
   // through, so `ready()` is awaited once here, right after sign-in - the
@@ -166,17 +316,17 @@ export async function buildRealSession(
   // order, rather than that order itself paying for warming it up.
   const client = new TraderClient(reader, reader, owner.publicKey, keys, programId);
   await client.ready();
-  const tokenIndexBySymbol = await resolveTokenIndices(anonymous, deployment);
 
   return {
     owner,
     orderKeyPublicKeys: orderKeyPublicKeys(keys),
     client,
     deployment,
-    tokenIndexBySymbol,
+    tokenIndexBySymbol: tokenIndicesBySymbol(exchangeMints, deployment),
+    collateralToken: exchangeTokens.collateral,
+    maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
     createdAtMs: (deps.now ?? Date.now)(),
-    saveKeyCheckpoint: () =>
-      saveCheckpoint(storage, owner.publicKey.toBase58(), checkpointOf(keys)),
+    saveKeyCheckpoint,
     close: () => client.close(),
   };
 }

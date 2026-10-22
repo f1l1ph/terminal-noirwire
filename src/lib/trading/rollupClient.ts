@@ -5,17 +5,28 @@ import {
   type KeyValueStore,
   type WalletAccount,
 } from "../wallet/index";
-import type { DeploymentOverrides, PublicDeployment } from "../rollup/deployment";
+import {
+  quoteSymbolOf,
+  type DeploymentOverrides,
+  type PublicDeployment,
+} from "../rollup/deployment";
 import { openAndFund } from "../rollup/fundingClient";
 import {
   cancelErrorToResult,
   cancelToResult,
   placedToResult,
+  placeUnknownToResult,
   thrownToResult,
   transferErrorToResult,
 } from "../rollup/outcome";
-import { trackSecret } from "../rollup/secretStore";
-import { buildRealSession, type RollupSession, type RollupSessionDeps } from "../rollup/session";
+import { pinnedBaseDecimals } from "../rollup/markets";
+import { trackSecret, untrackSecret } from "../rollup/secretStore";
+import {
+  buildRealSession,
+  trustedProgramId,
+  type RollupSession,
+  type RollupSessionDeps,
+} from "../rollup/session";
 import {
   connectionTo,
   ORDER_TYPE_CODE,
@@ -136,6 +147,32 @@ function closeSession({ session, stopWatching }: OpenSession): void {
   void session.then((built) => built.close()).catch(() => {});
 }
 
+/**
+ * A deployment that answered "no faucet" once is remembered in this browser,
+ * keyed by the program and its Exchange account, so a reload neither offers
+ * test funds again nor spends another request against the network's daily
+ * funding limit asking for them.
+ */
+function noFaucetKey(programId: PublicKey): string {
+  return `noirwire-terminal-no-faucet:${programId.toBase58()}:${programAddresses(programId).exchange.toBase58()}`;
+}
+
+function readFlag(storage: KeyValueStore, key: string): boolean {
+  try {
+    return storage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(storage: KeyValueStore, key: string): void {
+  try {
+    storage.setItem(key, "1");
+  } catch {
+    // Best effort: without storage the next reload asks the service once more.
+  }
+}
+
 function ownerSecretOf(wallet: WalletIdentity): WalletAccount {
   if (!wallet.secretKeyHex) {
     throw new Error(
@@ -149,7 +186,10 @@ function ownerSecretOf(wallet: WalletIdentity): WalletAccount {
  * Every `/v1/deployment` market this terminal's `marketSettingsLookup` also
  * knows about, matched by its string symbol (identical on both sides - no
  * base/quote/kind matching needed now that the deployment names markets by
- * the same id `/v1/markets` uses).
+ * the same id `/v1/markets` uses). A typed size becomes lots through the
+ * market's lot (checked against its on-chain account when the session was
+ * built) and this build's own pinned base decimals, never the decimals the
+ * service reports.
  */
 function bindMarkets(
   session: RollupSession,
@@ -158,11 +198,12 @@ function bindMarkets(
   const bindings = new Map<string, MarketBinding>();
   for (const market of session.deployment.markets) {
     const settings = marketSettingsLookup(market.symbol);
-    if (!settings) continue;
+    const baseDecimals = pinnedBaseDecimals(market.symbol);
+    if (!settings || baseDecimals === null) continue;
     bindings.set(market.symbol, {
       marketId: market.symbol,
       numericId: market.marketId,
-      units: marketUnitsFromChain(BigInt(market.lotSize), market.baseDecimals),
+      units: marketUnitsFromChain(BigInt(market.lotSize), baseDecimals),
       sizeDecimals: sizeDecimalsOf(settings),
       priceDecimals: priceDecimalsOf(settings),
       isPerp: market.kind === "perp",
@@ -181,14 +222,6 @@ function bindingByNumericId(
     if (binding.numericId === numericId) return binding;
   }
   return null;
-}
-
-function riskMarketIds(bindings: Map<string, MarketBinding>): number[] {
-  const ids: number[] = [];
-  for (const binding of bindings.values()) {
-    if (binding.isPerp) ids.push(binding.numericId);
-  }
-  return ids;
 }
 
 /**
@@ -243,6 +276,11 @@ export class RollupTradingClient implements TradingClient {
     const opened = { session, stopWatching: session.then((built) => this.watchView(built)) };
     opened.stopWatching.catch(() => {});
     this.sessions.set(wallet.address, opened);
+    // A build that failed is not kept as this wallet's session: the next
+    // call builds again rather than rejecting until the wallet is closed.
+    session.catch(() => {
+      if (this.sessions.get(wallet.address) === opened) this.sessions.delete(wallet.address);
+    });
     return opened;
   }
 
@@ -280,21 +318,27 @@ export class RollupTradingClient implements TradingClient {
    * call itself throws. An expired token surfaces as a thrown error from
    * the private connection, not a typed result, so any failure gets one
    * retry against a fresh sign-in rather than trying to recognise the exact
-   * shape of an auth error ourselves.
+   * shape of an auth error ourselves. Once `fn` calls `markSent`, nothing it
+   * throws is retried: a transaction that may already have gone out is
+   * never sent a second time.
    */
   private async withSession<T>(
     wallet: WalletIdentity,
-    fn: (session: RollupSession) => Promise<T>,
+    fn: (session: RollupSession, markSent: () => void) => Promise<T>,
   ): Promise<T> {
     let session = await this.ensureSession(wallet);
     if (this.now() - session.createdAtMs > SESSION_REFRESH_MS) {
       session = await this.refreshSession(wallet);
     }
+    let sent = false;
     try {
-      return await fn(session);
-    } catch {
+      return await fn(session, () => {
+        sent = true;
+      });
+    } catch (error) {
+      if (sent) throw error;
       session = await this.refreshSession(wallet);
-      return fn(session);
+      return fn(session, () => {});
     }
   }
 
@@ -313,7 +357,12 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
+  async knownNoFaucet(): Promise<boolean> {
+    return readFlag(this.storage, noFaucetKey(trustedProgramId(this.options.overrides)));
+  }
+
   async fund(wallet: WalletIdentity): Promise<FundOutcome> {
+    if (await this.knownNoFaucet()) return { kind: "noFaucet" };
     const session = await this.ensureSession(wallet);
     try {
       await session.client.view();
@@ -325,8 +374,13 @@ export class RollupTradingClient implements TradingClient {
       this.options.simUrl,
       session.owner,
       session.orderKeyPublicKeys,
+      session.collateralToken,
       this.fetchFn,
+      trustedProgramId(this.options.overrides),
     );
+    if (outcome.kind === "noFaucet") {
+      writeFlag(this.storage, noFaucetKey(trustedProgramId(this.options.overrides)));
+    }
     if (outcome.kind === "granted") {
       // The session's client was built before the account existed, so its
       // reader may not yet see the view; a fresh session re-establishes it
@@ -362,15 +416,21 @@ export class RollupTradingClient implements TradingClient {
   }
 
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
-    return this.withSession(wallet, async (session) => {
-      const bindings = this.bindings(session);
-      const binding = bindings.get(order.market);
+    return this.withSession(wallet, async (session, markSent) => {
+      const binding = this.bindings(session).get(order.market);
       if (!binding) throw new Error(`${order.market} was not found on chain`);
       const price = priceToChainAtoms(binding.units, order.price);
       const size = sizeToLots(binding.units, order.size);
       const secret = randomSecret();
       const expiry = expiryFor(order.goodFor, this.now);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
+      const refusalContext = {
+        maxPriceAgeSeconds: session.maxPriceAgeSeconds?.get(binding.numericId),
+        isPerp: binding.isPerp,
+      };
+      // Tracked before the send, so an order that lands after this call
+      // gave up on it still has its fills recognised as this trader's own.
+      trackSecret(this.storage, wallet.address, order.market, secret);
       let result: PlaceOrderResult;
       try {
         const placed = await session.client.placeOrder(
@@ -384,25 +444,42 @@ export class RollupTradingClient implements TradingClient {
             expiry,
             secret,
           },
-          {
-            expirySeconds: DEFAULT_EXPIRY_SECONDS,
-            riskMarkets: binding.isPerp ? riskMarketIds(bindings) : undefined,
-            pushWaitMs: RESULT_PUSH_WAIT_MS,
-          },
+          { expirySeconds: DEFAULT_EXPIRY_SECONDS, pushWaitMs: RESULT_PUSH_WAIT_MS },
         );
-        result = placedToResult(placed, binding.units, binding.sizeDecimals, expiresAtMs);
+        markSent();
+        result = placedToResult(
+          placed,
+          binding.units,
+          binding.sizeDecimals,
+          expiresAtMs,
+          refusalContext,
+        );
         if (placed.outcome !== "unknown") this.emitState(session, placed.view);
       } catch (error) {
         // OrderInvalid (refused before signing), TransactionFailed (landed
         // and refused), or every order-key slot busy: all map to the
         // ordinary rejected state, like a book-dependent refusal, rather
         // than reaching the submit button's generic error path.
-        const mapped = thrownToResult(error);
-        if (!mapped) throw error;
+        // OutcomeUnknown (sent, and may still run) becomes a pending result.
+        // Whatever is left was thrown before the order was signed, which is
+        // the only case `withSession` may retry.
+        const mapped =
+          thrownToResult(error, refusalContext) ??
+          placeUnknownToResult(
+            error,
+            binding.units,
+            binding.sizeDecimals,
+            expiresAtMs,
+            refusalContext,
+          );
+        if (!mapped) {
+          untrackSecret(this.storage, wallet.address, secret);
+          throw error;
+        }
+        markSent();
         result = mapped;
       }
       session.saveKeyCheckpoint();
-      trackSecret(this.storage, wallet.address, order.market, secret);
       // `tag` is the handle the witness rail uses to find this order's own
       // fills (Terminal.tsx tracks it as `trackedTag`, matched against
       // `OwnFillRecord.tag`). Dev mode's tag is the venue-assigned number;
@@ -461,8 +538,7 @@ export class RollupTradingClient implements TradingClient {
     amount: string,
   ): Promise<TransferResult> {
     return this.withSession(wallet, async (session) => {
-      const bindings = this.bindings(session);
-      const spot = [...bindings.values()].find((binding) => !binding.isPerp);
+      const spot = [...this.bindings(session).values()].find((binding) => !binding.isPerp);
       const quoteIndex = spot ? session.tokenIndexBySymbol.get(spot.quoteTokenSymbol) : undefined;
       if (!spot || quoteIndex === undefined) {
         return { kind: "error", message: "No spot market to transfer into." };
@@ -473,7 +549,6 @@ export class RollupTradingClient implements TradingClient {
           !toSpot,
           quoteIndex,
           amountToQuoteAtoms(amount),
-          riskMarketIds(bindings),
           DEFAULT_EXPIRY_SECONDS,
         );
         session.saveKeyCheckpoint();
@@ -601,7 +676,7 @@ export class RollupTradingClient implements TradingClient {
     }
 
     const collateral: Balance = {
-      asset: "nUSD",
+      asset: quoteSymbolOf(session.deployment) ?? "",
       available: quoteAtomsToAmount(seat.collateral > 0n ? seat.collateral : 0n),
       reserved: "0",
       total: quoteAtomsToAmount(seat.collateral),

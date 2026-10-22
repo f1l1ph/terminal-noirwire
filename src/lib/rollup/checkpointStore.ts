@@ -1,7 +1,7 @@
-import type { KeyValueStore } from "../wallet/index";
+import { ownerDataKeys, type KeyValueStore } from "../wallet/index";
 import type { OrderKeyCheckpoint } from "./sdk";
 
-const KEY_PREFIX = "noirwire-terminal-rollup-checkpoint-";
+const keyFor = ownerDataKeys.keyCheckpoint;
 
 /**
  * Where the four live order keys sit in the derivation (indices and the
@@ -13,7 +13,7 @@ export function loadCheckpoint(
   storage: KeyValueStore,
   ownerAddress: string,
 ): OrderKeyCheckpoint | null {
-  const raw = storage.getItem(`${KEY_PREFIX}${ownerAddress}`);
+  const raw = storage.getItem(keyFor(ownerAddress));
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as OrderKeyCheckpoint;
@@ -29,5 +29,5 @@ export function saveCheckpoint(
   ownerAddress: string,
   checkpoint: OrderKeyCheckpoint,
 ): void {
-  storage.setItem(`${KEY_PREFIX}${ownerAddress}`, JSON.stringify(checkpoint));
+  storage.setItem(keyFor(ownerAddress), JSON.stringify(checkpoint));
 }

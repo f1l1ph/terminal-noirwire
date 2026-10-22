@@ -4,25 +4,33 @@
  * defined here, so a client package upgrade is an edit to this one file.
  * Mirrors the same discipline sim-noirwire's own `src/rollup/program.ts`
  * follows for the same package (see that repo's docs/DESIGN.md, "The rollup
- * venue"). Currently on 0.5.0.
+ * venue"). Currently on 0.6.0, which names every perp market in each
+ * order-key call itself, read from the Exchange account, so no caller passes
+ * a risk market list any more.
  */
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
   Addresses,
+  Instructions,
+  MARKET_KIND,
   OrderInvalid as SdkOrderInvalid,
   OrderKeyManager,
   ORDER_TYPE,
   OutcomeUnknown as SdkOutcomeUnknown,
+  PROGRAM_ID,
   RESULT_STATUS,
   ROLE,
   SIDE,
   TraderClient as SdkTraderClient,
   TransactionFailed as SdkTransactionFailed,
   decodeExchange,
+  decodeMarket,
   randomSecret,
   receipt as sdkReceipt,
+  sendAndConfirm,
   signIn as sdkSignIn,
   websocketUrl,
+  type CustodyToken,
   type OrderKeyCheckpoint,
   type OrderResult,
   type Placed,
@@ -33,6 +41,7 @@ import {
 } from "@noirwire/orderbook";
 
 export type {
+  CustodyToken,
   View,
   OrderResult,
   Placed,
@@ -48,9 +57,39 @@ export const TransactionFailed = SdkTransactionFailed;
 export const OutcomeUnknown = SdkOutcomeUnknown;
 /** `keys.take()`'s own message when every one of the four order-key slots is already lent out. Not a typed error in the package; matched on its exact text. */
 export const ALL_KEYS_BUSY_MESSAGE = "every order key is in use";
+/** `TraderClient.view()`'s own message (0.6.0) when the view account does not exist (the account is not opened yet). Matched on its exact text. */
+export const VIEW_NOT_READABLE_MESSAGE =
+  "the view is not readable by this connection: read through a private connection signed in as the owner";
+/** `OrderKeyManager.fromView`'s own message when the view holds keys this seed never derived. Matched on its exact text. */
+export const KEYS_NOT_FROM_SEED_MESSAGE = "the view's order keys do not all derive from this seed";
+/** The program id this package release was built for. */
+export const PACKAGE_PROGRAM_ID = PROGRAM_ID;
+export const MARKET_KIND_CODE = MARKET_KIND;
 
 export function programAddresses(programId: PublicKey): Addresses {
   return new Addresses(programId);
+}
+
+export function programInstructions(programId: PublicKey): Instructions {
+  return new Instructions(programId);
+}
+
+export function decodeMarketAccount(data: Uint8Array) {
+  return decodeMarket(data);
+}
+
+/**
+ * Replaces the four order keys a view holds, signed by the owner key: the
+ * one way back for an account whose keys this device cannot derive.
+ */
+export async function installOrderKeys(
+  connection: Connection,
+  owner: Keypair,
+  keys: OrderKeyManager,
+  programId: PublicKey,
+): Promise<void> {
+  const instruction = new Instructions(programId).setOrderKeys(owner.publicKey, keys.publicKeys);
+  await sendAndConfirm(connection, [instruction], owner);
 }
 
 const UNSUPPORTED_MEDIA_TYPE = 415;
@@ -98,17 +137,41 @@ export function freshOrderKeys(seed: Uint8Array): OrderKeyManager {
 /**
  * Picks up from a saved checkpoint (a handful of keys derived, rather than
  * searching the whole space from index 0) when one exists; falls back to
- * the slower `fromView` search otherwise (first visit on this device, or a
- * checkpoint that did not survive).
+ * the slower `fromView` search otherwise: first visit on this device, a
+ * checkpoint that did not survive, or one `restore` cannot use (further
+ * behind than its window, after trading from another device, or holding
+ * indices that are not indices). Throws only when the view's keys do not
+ * derive from `seed` within `searchLimit` indices (the package's own
+ * default, 100,000, when omitted).
  */
 export function orderKeysFromCheckpoint(
   seed: Uint8Array,
   view: Pick<View, "orderKeys">,
   checkpoint: OrderKeyCheckpoint | null,
+  searchLimit?: number,
 ): OrderKeyManager {
-  return checkpoint
-    ? OrderKeyManager.restore(seed, view, checkpoint)
-    : OrderKeyManager.fromView(seed, view);
+  if (checkpoint) {
+    try {
+      return OrderKeyManager.restore(seed, view, checkpoint);
+    } catch {
+      // Out of the checkpoint's reach: the full search below finds them.
+    }
+  }
+  return OrderKeyManager.fromView(seed, view, searchLimit);
+}
+
+/** Whether every key `view` holds derives from `seed` within `searchLimit` indices. */
+export function viewKeysDeriveFrom(
+  seed: Uint8Array,
+  view: Pick<View, "orderKeys">,
+  searchLimit: number,
+): boolean {
+  try {
+    OrderKeyManager.fromView(seed, view, searchLimit);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function checkpointOf(keys: OrderKeyManager): OrderKeyCheckpoint {
@@ -168,7 +231,7 @@ export class TraderClient {
       expiry?: bigint;
       secret?: Uint8Array;
     },
-    options: { expirySeconds?: number; riskMarkets?: number[]; pushWaitMs?: number } = {},
+    options: { expirySeconds?: number; pushWaitMs?: number } = {},
   ): Promise<Placed> {
     return this.inner.placeOrder(marketId, order, options);
   }
@@ -197,16 +260,9 @@ export class TraderClient {
     toCollateral: boolean,
     spotToken: number,
     amount: bigint,
-    riskMarkets: number[],
     expirySeconds?: number,
   ): Promise<OrderResult & Timing> {
-    return this.inner.transferBetweenBalances(
-      toCollateral,
-      spotToken,
-      amount,
-      riskMarkets,
-      expirySeconds,
-    );
+    return this.inner.transferBetweenBalances(toCollateral, spotToken, amount, expirySeconds);
   }
 }
 

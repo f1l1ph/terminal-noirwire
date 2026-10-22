@@ -46,6 +46,7 @@ export function DesktopWorkspace({
   market,
   mark,
   now,
+  quoteSymbol,
   interval,
   onIntervalChange,
   candles,
@@ -71,6 +72,8 @@ export function DesktopWorkspace({
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
   now: number;
+  /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
+  quoteSymbol: string;
   interval: CandleInterval;
   onIntervalChange: (interval: CandleInterval) => void;
   candles: Candle[];
@@ -123,7 +126,7 @@ export function DesktopWorkspace({
   return (
     <>
       <div className="shrink-0">
-        <MarketContextBar market={market} mark={mark} now={now} />
+        <MarketContextBar market={market} mark={mark} now={now} quoteSymbol={quoteSymbol} />
       </div>
       <TerminalPanelProvider value={panelData}>
         <TerminalDockview resetSignal={layoutResetSignal} />

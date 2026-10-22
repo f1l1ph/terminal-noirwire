@@ -5,8 +5,9 @@ import { toFixedPoint, fromFixedPoint } from "../trading/decimal";
  * a size in base units) and the on-chain program's (a price in quote atoms
  * per lot and a size in lots). Derived from `market.lotSize` alone, the same
  * human decimal string `/v1/markets` already serves in dev mode: no extra
- * on-chain read is needed for this. The quote token is always nUSD at 6
- * decimals, so quote amounts need no conversion of their own.
+ * on-chain read is needed for this. The quote token, whatever the
+ * deployment names it (nUSD or USDC), is always at 6 decimals (markets.ts
+ * refuses any other), so quote amounts need no conversion of their own.
  *
  * This mirrors sim-noirwire's `src/rollup/units.ts` (`marketUnits` /
  * `toSimSize` / `toChainSize` / `toSimPrice` / `toChainPrice`), which works
@@ -96,7 +97,7 @@ export function chainAtomsToPrice(
   return fromSimScale(chainPrice * units.lotsPerUnit, displayDecimals);
 }
 
-/** Raw quote atoms (nUSD, 6 decimals) to a display decimal string. For collateral and quote balances. */
+/** Raw quote atoms (6 decimals) to a display decimal string. For collateral and quote balances. */
 export function quoteAtomsToAmount(atoms: bigint, displayDecimals = 6): string {
   return fromSimScale(atoms, displayDecimals);
 }

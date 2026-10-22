@@ -35,12 +35,17 @@ describe("formatDecimal", () => {
 });
 
 describe("formatMoney", () => {
-  it("labels the amount nUSD, never a bare dollar sign", () => {
-    expect(formatMoney(5000)).toBe("5,000.00 nUSD");
+  it("labels the amount with the venue's own quote symbol, never a bare dollar sign", () => {
+    expect(formatMoney(5000, "nUSD")).toBe("5,000.00 nUSD");
+    expect(formatMoney("12.5", "USDC")).toBe("12.50 USDC");
+  });
+
+  it("shows the number alone while the quote symbol is not known yet", () => {
+    expect(formatMoney(5000, "")).toBe("5,000.00");
   });
 
   it("stays Unavailable without a trailing label", () => {
-    expect(formatMoney(Number.NaN)).toBe(UNAVAILABLE);
+    expect(formatMoney(Number.NaN, "USDC")).toBe(UNAVAILABLE);
   });
 });
 

@@ -175,6 +175,8 @@ export type FundOutcome =
    * instead of the generic copy.
    */
   | { kind: "rateLimited"; message?: string }
+  /** The deployment hands out no test funds at all: asking again changes nothing. */
+  | { kind: "noFaucet" }
   | { kind: "error"; message: string };
 
 export type TradingMode = "dev" | "rollup";
@@ -189,6 +191,12 @@ export interface TradingClient {
   readonly mode: TradingMode;
   openAccount(wallet: WalletIdentity): Promise<void>;
   fund(wallet: WalletIdentity): Promise<FundOutcome>;
+  /**
+   * Whether this browser already learned that the deployment hands out no
+   * test funds, so the grant is not offered again after a reload. Optional:
+   * dev mode always has a faucet.
+   */
+  knownNoFaucet?(): Promise<boolean>;
   placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult>;
   /** Cancels every resting order this trader has in `market`. There is no narrower scope. */
   cancelAllInMarket(wallet: WalletIdentity, market: string): Promise<CancelResult>;
@@ -233,7 +241,7 @@ export interface TradingClient {
    * Ends this wallet's live result subscription and background refreshes,
    * if one was ever opened. Optional: dev mode has no background
    * connection of its own to end. Call when the wallet is cleared/changed
-   * and on page unload (`@noirwire/orderbook` 0.5.0's `TraderClient.close`).
+   * and on page unload (`@noirwire/orderbook`'s `TraderClient.close`, 0.5.0 on).
    */
   closeWallet?(wallet: WalletIdentity): void;
 }
