@@ -239,7 +239,7 @@ export interface TradingClient {
    * market against another order. Releases that hold, once the outcome is
    * proven or the user has cleared it. Optional: dev mode has no such case.
    */
-  releaseUnknownOutcome?(wallet: WalletIdentity, market: string): void;
+  releaseUnknownOutcome?(wallet: WalletIdentity, market: string, tag?: string): void;
   /** The held order for this market, kept across a reload; null when nothing is held. */
   readUnknownOutcome?(wallet: WalletIdentity, market: string): Promise<UnknownHold | null>;
   /** Fetches the trader's current state once. */

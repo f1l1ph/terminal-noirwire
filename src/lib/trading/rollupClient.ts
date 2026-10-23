@@ -28,7 +28,7 @@ import {
   wasAccountOpened,
   type UnknownHold,
 } from "../rollup/accountMemory";
-import { trackSecret } from "../rollup/secretStore";
+import { trackSecret, untrackSecret } from "../rollup/secretStore";
 import {
   buildRealSession,
   SessionAuthError,
@@ -493,7 +493,10 @@ export class RollupTradingClient implements TradingClient {
         sentAtMs: this.now(),
         orderExpiresAtMs: expiry === undefined ? null : Number(expiry) * 1000,
       };
-      this.holdOrder(wallet, hold);
+      if (!this.holdOrder(wallet, hold)) {
+        untrackSecret(this.storage, wallet.address, secret);
+        throw new Error("Could not record this order on this device first, so it was not sent.");
+      }
       let result: PlaceOrderResult;
       try {
         const placed = await session.client.placeOrder(
@@ -559,16 +562,21 @@ export class RollupTradingClient implements TradingClient {
     );
   }
 
-  private holdOrder(wallet: WalletIdentity, hold: UnknownHold): void {
+  /** False when the hold could not be written to storage: nothing is held then, and the order must not be sent. */
+  private holdOrder(wallet: WalletIdentity, hold: UnknownHold): boolean {
+    if (!saveHold(this.storage, wallet.address, hold)) return false;
     this.unresolvedOrders.set(`${wallet.address}:${hold.market}`, hold);
-    saveHold(this.storage, wallet.address, hold);
+    return true;
   }
 
   async readUnknownOutcome(wallet: WalletIdentity, market: string): Promise<UnknownHold | null> {
     return this.heldOrder(wallet, market);
   }
 
-  releaseUnknownOutcome(wallet: WalletIdentity, market: string): void {
+  /** With a `tag`, releases only the hold that carries it: a record shown for another order or wallet never clears this one. */
+  releaseUnknownOutcome(wallet: WalletIdentity, market: string, tag?: string): void {
+    const held = this.heldOrder(wallet, market);
+    if (tag !== undefined && held && held.tag !== tag) return;
     this.unresolvedOrders.delete(`${wallet.address}:${market}`);
     removeHold(this.storage, wallet.address, market);
   }

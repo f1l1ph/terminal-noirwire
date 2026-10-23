@@ -65,17 +65,19 @@ function writeHolds(
   storage: KeyValueStore,
   address: string,
   holds: Record<string, UnknownHold>,
-): void {
+): boolean {
   try {
     if (Object.keys(holds).length === 0) storage.removeItem(holdsKey(address));
     else storage.setItem(holdsKey(address), JSON.stringify(holds));
+    return true;
   } catch {
-    // The in-memory hold still stands for this page.
+    return false;
   }
 }
 
-export function saveHold(storage: KeyValueStore, address: string, hold: UnknownHold): void {
-  writeHolds(storage, address, { ...loadHolds(storage, address), [hold.market]: hold });
+/** Whether the hold was written: a caller about to send an order must not go ahead without it. */
+export function saveHold(storage: KeyValueStore, address: string, hold: UnknownHold): boolean {
+  return writeHolds(storage, address, { ...loadHolds(storage, address), [hold.market]: hold });
 }
 
 export function removeHold(storage: KeyValueStore, address: string, market: string): void {

@@ -63,6 +63,11 @@ interface OrderSession {
   pendingPlace: { expiresAtMs: number | null; clearableAtMs?: number } | null;
 }
 
+/** An order session belongs to one wallet and one market: another wallet's never shows, blocks or clears this one's. */
+function sessionKey(owner: string, market: string): string {
+  return `${owner}:${market}`;
+}
+
 export function Terminal() {
   const store = useSharedMarketDataStore();
   const [chosenMarketId, setChosenMarketId] = useState<string>(MARKET_IDS[0]);
@@ -83,6 +88,7 @@ export function Terminal() {
   const [dockTab, setDockTab] = useState<Tab>("positions");
 
   const wallet = useWallet();
+  const owner = wallet.account?.publicKey ?? "";
   const marketSettings = useCallback(
     (id: string) => data.markets.find((item) => item.id === id),
     [data.markets],
@@ -144,10 +150,11 @@ export function Terminal() {
   }
 
   function updateSession(market: string, updater: (prev: OrderSession) => OrderSession): void {
+    const key = sessionKey(owner, market);
     setOrderSessions((prev) => {
-      const existing = prev[market];
+      const existing = prev[key];
       if (!existing) return prev;
-      return { ...prev, [market]: updater(existing) };
+      return { ...prev, [key]: updater(existing) };
     });
   }
 
@@ -225,9 +232,10 @@ export function Terminal() {
     }
     if (outcome.result.pending) {
       const { pending } = outcome.result;
+      const key = sessionKey(owner, descriptor.market);
       setOrderSessions((prev) => ({
         ...prev,
-        [descriptor.market]: {
+        [key]: {
           market: descriptor.market,
           descriptor,
           baseSteps: appendStep(baseSteps, "confirmed", Date.now()),
@@ -238,11 +246,11 @@ export function Terminal() {
       }));
       void pending.settled.then((settled) => {
         setOrderSessions((prev) => {
-          const existing = prev[descriptor.market];
+          const existing = prev[key];
           if (!existing || !existing.pendingPlace) return prev;
           return {
             ...prev,
-            [descriptor.market]: sessionFromResult(settled, descriptor, existing.baseSteps),
+            [key]: sessionFromResult(settled, descriptor, existing.baseSteps),
           };
         });
       });
@@ -250,7 +258,11 @@ export function Terminal() {
     }
     setOrderSessions((prev) => ({
       ...prev,
-      [descriptor.market]: sessionFromResult(outcome.result, descriptor, baseSteps),
+      [sessionKey(owner, descriptor.market)]: sessionFromResult(
+        outcome.result,
+        descriptor,
+        baseSteps,
+      ),
     }));
   }
 
@@ -266,11 +278,17 @@ export function Terminal() {
   }
 
   function handleOrderUnknown(descriptor: OrderDescriptor, hold: UnknownHold): void {
-    setOrderSessions((prev) => ({ ...prev, [descriptor.market]: heldSession(descriptor, hold) }));
+    setOrderSessions((prev) => ({
+      ...prev,
+      [sessionKey(owner, descriptor.market)]: heldSession(descriptor, hold),
+    }));
   }
 
+  /** Releases only the hold this wallet's shown record names (its market and tag), and clears only that record. */
   function clearUnknownHold(market: string): void {
-    trading.releaseUnknownOutcome(market);
+    const shown = orderSessions[sessionKey(owner, market)];
+    if (!shown?.trackedTag || shown.pendingPlace?.clearableAtMs === undefined) return;
+    trading.releaseUnknownOutcome(market, shown.trackedTag);
     updateSession(market, (prev) => ({ ...prev, pendingPlace: null }));
   }
 
@@ -389,8 +407,9 @@ export function Terminal() {
     const settings = marketSettings(selectedMarketId);
     if (!settings) return;
     let active = true;
+    const holder = owner;
     void readUnknownOutcome(selectedMarketId).then((hold) => {
-      if (!active || !hold) return;
+      if (!active || !hold || !holder) return;
       const descriptor: OrderDescriptor = {
         market: hold.market,
         side: hold.side,
@@ -403,17 +422,16 @@ export function Terminal() {
         priceDecimals: priceDecimalsOf(settings),
         sizeDecimals: sizeDecimalsOf(settings),
       };
+      const key = sessionKey(holder, hold.market);
       setOrderSessions((prev) =>
-        prev[hold.market]?.pendingPlace
-          ? prev
-          : { ...prev, [hold.market]: heldSession(descriptor, hold) },
+        prev[key]?.pendingPlace ? prev : { ...prev, [key]: heldSession(descriptor, hold) },
       );
     });
     return () => {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readUnknownOutcome, selectedMarketId, marketsLoaded]);
+  }, [readUnknownOutcome, selectedMarketId, marketsLoaded, owner]);
   // Moving funds between collateral and spot only means something where a
   // spot market exists to spend them on.
   const hasSpotMarket = data.markets.some((item) => item.kind === "spot");
@@ -457,7 +475,10 @@ export function Terminal() {
     void syncMarket(selectedMarketId);
   }, [makerFillSequences, selectedMarketId, syncMarket]);
 
-  const relevantSession = orderSessions[selectedMarketId] ?? null;
+  const relevantSession = orderSessions[sessionKey(owner, selectedMarketId)] ?? null;
+  const ownSessions = Object.entries(orderSessions)
+    .filter(([key]) => key.startsWith(`${owner}:`))
+    .map(([, session]) => session);
   const trackedOpenOrder = relevantSession?.trackedOrderId
     ? (trading.state.openOrders.find((order) => order.orderId === relevantSession.trackedOrderId) ??
       null)
@@ -516,7 +537,7 @@ export function Terminal() {
     } else if (trackedFills.length > 0 && lastStep?.type !== "filled") {
       if (relevantSession.pendingPlace?.expiresAtMs === null) {
         // One of its own fills proves the held order ran.
-        trading.releaseUnknownOutcome(selectedMarketId);
+        trading.releaseUnknownOutcome(selectedMarketId, relevantSession.trackedTag ?? undefined);
       }
       updateSession(selectedMarketId, (prev) => ({
         ...prev,
@@ -570,7 +591,7 @@ export function Terminal() {
 
   // A small cross-market "recent activity" control: every other market
   // this session placed an order in, most recent first.
-  const recentMarkets: RecentMarketActivity[] = Object.values(orderSessions)
+  const recentMarkets: RecentMarketActivity[] = ownSessions
     .filter((session) => session.market !== selectedMarketId)
     .sort((a, b) => (b.baseSteps.at(-1)?.at ?? 0) - (a.baseSteps.at(-1)?.at ?? 0))
     .map((session) => ({
@@ -581,7 +602,7 @@ export function Terminal() {
   // do not explain - almost always a reload. Drives the rail's "this
   // session only" copy instead of a bare empty prompt (item 5).
   const hasAccountHistory =
-    Object.keys(orderSessions).length === 0 &&
+    ownSessions.length === 0 &&
     (positionsArray.some((p) => Number(p.size) !== 0) || ownFillsForMarket.length > 0);
 
   const statusBarText = market

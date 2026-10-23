@@ -97,6 +97,15 @@ function memoryStorage(failingKeyPart?: string) {
   };
 }
 
+function unknownFrom(attempt: Promise<unknown>): Promise<OrderOutcomeUnknownError> {
+  return attempt.then(
+    () => {
+      throw new Error("expected an unknown outcome");
+    },
+    (error: unknown) => error as OrderOutcomeUnknownError,
+  );
+}
+
 /** One page load: a fresh client over `storage`, whose SDK `placeOrder` is counted and always fails after sending. */
 function pageLoad(storage: ReturnType<typeof memoryStorage>) {
   let sends = 0;
@@ -200,16 +209,58 @@ describe("an unknown outcome survives a reload", () => {
     expect(other).toBeNull();
   });
 
-  it("falls back to the in-memory hold when the hold's storage fails", async () => {
+  it("refuses to send when the hold cannot be written, and sends nothing", async () => {
     const storage = memoryStorage("unknown-orders");
     const { rollup, sends } = pageLoad(storage);
-    await rollup.placeOrder(WALLET, ORDER).catch(() => {});
-    const second = await rollup.placeOrder(WALLET, ORDER).catch((error: unknown) => error);
-    expect(second).toBeInstanceOf(OrderOutcomeUnknownError);
-    expect(sends()).toBe(1);
-    rollup.releaseUnknownOutcome(WALLET, ORDER.market);
-    await rollup.placeOrder(WALLET, ORDER).catch(() => {});
-    expect(sends()).toBe(2);
+    const failure = await rollup.placeOrder(WALLET, ORDER).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(OrderOutcomeUnknownError);
+    expect((failure as Error).message).toMatch(/not sent/);
+    expect(sends()).toBe(0);
+    expect(await rollup.readUnknownOutcome(WALLET, ORDER.market)).toBeNull();
+  });
+});
+
+describe("holds are per wallet and per tag", () => {
+  const WALLET_B: WalletIdentity = {
+    address: "other-owner-address",
+    secretKeyHex: "bb".repeat(64),
+  };
+
+  it("keeps each wallet's hold in the same market apart, across a reload", async () => {
+    const storage = memoryStorage();
+    const a = await unknownFrom(pageLoad(storage).rollup.placeOrder(WALLET, ORDER));
+    const b = await unknownFrom(pageLoad(storage).rollup.placeOrder(WALLET_B, ORDER));
+    expect(a.secretHex).not.toBe(b.secretHex);
+
+    const reloaded = pageLoad(storage);
+    expect((await reloaded.rollup.readUnknownOutcome(WALLET, ORDER.market))?.tag).toBe(a.secretHex);
+    expect((await reloaded.rollup.readUnknownOutcome(WALLET_B, ORDER.market))?.tag).toBe(
+      b.secretHex,
+    );
+  });
+
+  it("never lets one wallet's record clear the other wallet's hold", async () => {
+    const storage = memoryStorage();
+    const a = await unknownFrom(pageLoad(storage).rollup.placeOrder(WALLET, ORDER));
+    const reloaded = pageLoad(storage);
+    const b = await unknownFrom(reloaded.rollup.placeOrder(WALLET_B, ORDER));
+
+    // A's shown record names A's tag: asking to release it for B changes nothing.
+    reloaded.rollup.releaseUnknownOutcome(WALLET_B, ORDER.market, a.secretHex);
+    expect((await reloaded.rollup.readUnknownOutcome(WALLET_B, ORDER.market))?.tag).toBe(
+      b.secretHex,
+    );
+    const refused = await reloaded.rollup
+      .placeOrder(WALLET_B, ORDER)
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(OrderOutcomeUnknownError);
+    expect(reloaded.sends()).toBe(1);
+
+    // B's own tag releases B and leaves A held.
+    reloaded.rollup.releaseUnknownOutcome(WALLET_B, ORDER.market, b.secretHex);
+    expect(await reloaded.rollup.readUnknownOutcome(WALLET_B, ORDER.market)).toBeNull();
+    expect((await reloaded.rollup.readUnknownOutcome(WALLET, ORDER.market))?.tag).toBe(a.secretHex);
   });
 });
 

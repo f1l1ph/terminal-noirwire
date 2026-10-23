@@ -241,8 +241,8 @@ export function useTrading(
   );
 
   const releaseUnknownOutcome = useCallback(
-    (market: string) => {
-      if (wallet) client.releaseUnknownOutcome?.(walletOf(wallet), market);
+    (market: string, tag?: string) => {
+      if (wallet) client.releaseUnknownOutcome?.(walletOf(wallet), market, tag);
     },
     [client, wallet],
   );

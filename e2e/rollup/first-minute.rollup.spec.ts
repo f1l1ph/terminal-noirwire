@@ -60,30 +60,36 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
     });
     await shot(page, "04-position");
 
-    // A resting limit order below the mark, inside the terminal's 10% price
-    // band: far enough that it should not fill in a first-minute test, near
-    // enough that the terminal does not refuse it.
+    // A resting limit order 8% below the mark, inside the terminal's 10%
+    // price band: far enough that a fill in this test's window is very
+    // unlikely, near enough that the terminal does not refuse it. The mark is
+    // live, so a fill is still accepted, and the cancel part below runs only
+    // when the order actually rests.
     const maxBuyPrice = await page.getByLabel("Max buy price (nUSD)").inputValue();
     const mark = Number(maxBuyPrice) / 1.01;
-    const restingPrice = (Math.round((mark * 0.95) / 0.1) * 0.1).toFixed(2);
+    const restingPrice = (Math.round((mark * 0.92) / 0.1) * 0.1).toFixed(2);
     await page.getByRole("button", { name: "limit", exact: true }).click();
     await page.getByLabel("Quantity (SOL)").fill("0.2");
     await page.getByLabel(/Limit price/).fill(restingPrice);
     await page.getByRole("button", { name: "Place test long", exact: true }).first().click();
-    await expect(page.getByText("Resting", { exact: true })).toBeVisible({ timeout: 20_000 });
+    const limitOutcome = page.getByText(/^(Resting|Filled)$/);
+    await expect(limitOutcome).toBeVisible({ timeout: 20_000 });
+    const rests = (await limitOutcome.textContent()) === "Resting";
 
-    await page.getByRole("tab", { name: "Open orders" }).click();
-    await expect(page.getByRole("tabpanel").getByText("NSOL-PERP")).toBeVisible({
-      timeout: 10_000,
-    });
-    await shot(page, "05-open-orders");
+    if (rests) {
+      await page.getByRole("tab", { name: "Open orders" }).click();
+      await expect(page.getByRole("tabpanel").getByText("NSOL-PERP")).toBeVisible({
+        timeout: 10_000,
+      });
+      await shot(page, "05-open-orders");
 
-    // Per-order cancel: the real program has cancel_order, unlike dev mode.
-    await page.getByRole("button", { name: /Cancel order/ }).click();
-    await expect(page.getByRole("tabpanel").getByText("No open orders.")).toBeVisible({
-      timeout: 20_000,
-    });
-    await shot(page, "06-cancelled");
+      // Per-order cancel: the real program has cancel_order, unlike dev mode.
+      await page.getByRole("button", { name: /Cancel order/ }).click();
+      await expect(page.getByRole("tabpanel").getByText("No open orders.")).toBeVisible({
+        timeout: 20_000,
+      });
+      await shot(page, "06-cancelled");
+    }
 
     // Move funds to spot, then a spot buy on NSOL-NUSD.
     await page.getByRole("button", { name: "NSOL-NUSD" }).click();

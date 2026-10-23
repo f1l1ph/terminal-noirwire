@@ -108,9 +108,9 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await this.load()).fetchState(wallet);
   }
 
-  releaseUnknownOutcome(wallet: WalletIdentity, market: string): void {
+  releaseUnknownOutcome(wallet: WalletIdentity, market: string, tag?: string): void {
     if (!this.loaded) return;
-    void this.loaded.then((client) => client.releaseUnknownOutcome?.(wallet, market));
+    void this.loaded.then((client) => client.releaseUnknownOutcome?.(wallet, market, tag));
   }
 
   async readUnknownOutcome(wallet: WalletIdentity, market: string): Promise<UnknownHold | null> {
