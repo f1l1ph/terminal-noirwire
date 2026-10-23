@@ -107,6 +107,11 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await this.load()).fetchState(wallet);
   }
 
+  releaseUnknownOutcome(wallet: WalletIdentity, market: string): void {
+    if (!this.loaded) return;
+    void this.loaded.then((client) => client.releaseUnknownOutcome?.(wallet, market));
+  }
+
   closeWallet(wallet: WalletIdentity): void {
     // Only closes a session that was actually opened; never forces the
     // on-chain SDK to load just to close nothing.

@@ -233,6 +233,12 @@ export interface TradingClient {
    * back empty. Optional: dev mode has no on-chain accounts to check.
    */
   checkPrivacy?(wallet: WalletIdentity, market: string): Promise<PrivacyCheck>;
+  /**
+   * An order whose outcome is unknown (`OrderOutcomeUnknownError`) holds its
+   * market against another order. Releases that hold, once the outcome is
+   * proven or the user has cleared it. Optional: dev mode has no such case.
+   */
+  releaseUnknownOutcome?(wallet: WalletIdentity, market: string): void;
   /** Fetches the trader's current state once. */
   fetchState(wallet: WalletIdentity): Promise<TraderState>;
   /** Pushes the trader's state until unsubscribed: polled in dev mode, pushed by the rollup's own account subscription in rollup mode. */

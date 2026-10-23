@@ -55,8 +55,11 @@ interface OrderSession {
    * 0.3.1): the device gave up waiting while it could still run. Blocks
    * resubmitting an order in this market (the same intent) until it clears,
    * but not cancelling or transferring - those use other order-key slots.
+   * A null `expiresAtMs` is an order that may have reached the venue with no
+   * way to learn its result: it holds the form until one of its own fills is
+   * seen, or the trader clears it after checking.
    */
-  pendingPlace: { expiresAtMs: number } | null;
+  pendingPlace: { expiresAtMs: number | null } | null;
 }
 
 export function Terminal() {
@@ -248,6 +251,25 @@ export function Terminal() {
       ...prev,
       [descriptor.market]: sessionFromResult(outcome.result, descriptor, baseSteps),
     }));
+  }
+
+  function handleOrderUnknown(descriptor: OrderDescriptor, secretHex: string): void {
+    setOrderSessions((prev) => ({
+      ...prev,
+      [descriptor.market]: {
+        market: descriptor.market,
+        descriptor,
+        baseSteps: [{ type: "submitted", at: Date.now() }],
+        trackedOrderId: null,
+        trackedTag: secretHex,
+        pendingPlace: { expiresAtMs: null },
+      },
+    }));
+  }
+
+  function clearUnknownHold(market: string): void {
+    trading.releaseUnknownOutcome(market);
+    updateSession(market, (prev) => ({ ...prev, pendingPlace: null }));
   }
 
   /**
@@ -458,8 +480,13 @@ export function Terminal() {
         }));
       }
     } else if (trackedFills.length > 0 && lastStep?.type !== "filled") {
+      if (relevantSession.pendingPlace?.expiresAtMs === null) {
+        // One of its own fills proves the held order ran.
+        trading.releaseUnknownOutcome(selectedMarketId);
+      }
       updateSession(selectedMarketId, (prev) => ({
         ...prev,
+        pendingPlace: prev.pendingPlace?.expiresAtMs === null ? null : prev.pendingPlace,
         baseSteps: appendStep(prev.baseSteps, "filled", Date.now()),
       }));
     }
@@ -474,7 +501,10 @@ export function Terminal() {
               {
                 type: "unknown" as RailStepType,
                 at: now,
-                detail: `Checking with the venue. Do not resend yet. About ${Math.max(0, Math.ceil((relevantSession.pendingPlace.expiresAtMs - now) / 1000))}s.`,
+                detail:
+                  relevantSession.pendingPlace.expiresAtMs === null
+                    ? "Outcome unknown. Check open orders and positions before retrying; the order form stays locked until then."
+                    : `Checking with the venue. Do not resend yet. About ${Math.max(0, Math.ceil((relevantSession.pendingPlace.expiresAtMs - now) / 1000))}s.`,
               },
             ]
           : []),
@@ -536,6 +566,10 @@ export function Terminal() {
       balances={trading.state.balances}
       collateral={trading.state.collateral}
       accountError={trading.accountError}
+      accountLoaded={trading.accountLoaded}
+      onOrderUnknown={handleOrderUnknown}
+      unknownHold={relevantSession?.pendingPlace?.expiresAtMs === null}
+      onClearUnknownHold={() => clearUnknownHold(market.id)}
       position={position}
       onCreateWallet={() => wallet.create()}
       onFund={() => trading.fund()}

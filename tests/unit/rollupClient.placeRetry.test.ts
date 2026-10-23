@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
-import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
+import { SessionAuthError, type RollupSession, type TraderClientLike } from "@/lib/rollup/session";
+import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { WalletIdentity } from "@/lib/trading/types";
 import { loadTrackedSecrets } from "@/lib/rollup/secretStore";
-import { OutcomeUnknown, RESULT_STATUS_CODE, type View } from "@/lib/rollup/sdk";
+import { OrderInvalid, OutcomeUnknown, RESULT_STATUS_CODE, type View } from "@/lib/rollup/sdk";
 
 const PERP: MarketInfo = {
   id: "NSOL-PERP",
@@ -63,7 +64,7 @@ const DEPLOYMENT: PublicDeployment = {
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 const ORDER = { market: "NSOL-PERP", side: "sell", type: "market", price: "100.00", size: "1" };
 
-function trading(placeOrder: TraderClientLike["placeOrder"]) {
+function trading(placeOrder: TraderClientLike["placeOrder"], failFirstBuildWith?: Error) {
   const map = new Map<string, string>();
   const storage = {
     getItem: (k: string) => map.get(k) ?? null,
@@ -100,6 +101,7 @@ function trading(placeOrder: TraderClientLike["placeOrder"]) {
     storage,
     buildSession: async () => {
       builds += 1;
+      if (builds === 1 && failFirstBuildWith) throw failFirstBuildWith;
       return session();
     },
   });
@@ -107,37 +109,38 @@ function trading(placeOrder: TraderClientLike["placeOrder"]) {
 }
 
 describe("placeOrder: retries only what was never sent", () => {
-  it("retries once, against a fresh session, an order whose send never started", async () => {
+  it("rebuilds the session once after a typed sign-in failure, before any order call", async () => {
     let calls = 0;
-    const { rollup, storage, builds } = trading(async () => {
-      calls += 1;
-      if (calls === 1) throw new Error("401 Missing token query param");
-      return {
-        outcome: "placed",
-        clientOrderId: 1n,
-        result: {
+    const { rollup, storage, builds } = trading(
+      async () => {
+        calls += 1;
+        return {
+          outcome: "placed",
           clientOrderId: 1n,
-          orderSeq: 0n,
-          filled: 1000n,
-          filledNotional: 0n,
-          rested: 0n,
-          cancelled: 0n,
-          fee: 0n,
-          kind: 1,
-          status: RESULT_STATUS_CODE.filled,
-          code: 0,
-        },
-        secret: new Uint8Array(16),
-        view: VIEW,
-        sentAt: 0,
-        resultAt: 1,
-      } as never;
-    });
+          result: {
+            clientOrderId: 1n,
+            orderSeq: 0n,
+            filled: 1000n,
+            filledNotional: 0n,
+            rested: 0n,
+            cancelled: 0n,
+            fee: 0n,
+            kind: 1,
+            status: RESULT_STATUS_CODE.filled,
+            code: 0,
+          },
+          secret: new Uint8Array(16),
+          view: VIEW,
+          sentAt: 0,
+          resultAt: 1,
+        } as never;
+      },
+      new SessionAuthError(new Error("401 Missing token query param")),
+    );
     const result = await rollup.placeOrder(WALLET, ORDER as never);
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
     expect(builds()).toBe(2);
     expect(result.status).toBe("filled");
-    // Only the attempt that was sent keeps its secret.
     const tracked = loadTrackedSecrets(storage, WALLET.address);
     expect(tracked.map((entry) => entry.secretHex)).toEqual([result.tag]);
   });
@@ -180,18 +183,64 @@ describe("placeOrder: retries only what was never sent", () => {
     expect(final.reason).toMatch(/Landed late/);
   });
 
-  it("never resends after an error that is not a known pre-send auth failure", async () => {
+  it("surfaces a post-dispatch error as an unknown outcome, one signing attempt, one secret", async () => {
+    for (const message of ["socket closed", "401 Missing token query param"]) {
+      let calls = 0;
+      const { rollup, storage, builds } = trading(async () => {
+        calls += 1;
+        throw new Error(message);
+      });
+      const failure = await rollup
+        .placeOrder(WALLET, ORDER as never)
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(OrderOutcomeUnknownError);
+      expect((failure as Error).message).toMatch(/outcome unknown.*check open orders/i);
+      expect(calls).toBe(1);
+      expect(builds()).toBe(1);
+      const tracked = loadTrackedSecrets(storage, WALLET.address);
+      expect(tracked).toHaveLength(1);
+      expect((failure as OrderOutcomeUnknownError).secretHex).toBe(tracked[0].secretHex);
+    }
+  });
+
+  it("refuses a second order in the market after an unknown outcome, so two clicks send one", async () => {
     let calls = 0;
-    const { rollup, storage, builds } = trading(async () => {
+    const { rollup, storage } = trading(async () => {
       calls += 1;
       throw new Error("socket closed");
     });
-    await expect(rollup.placeOrder(WALLET, ORDER as never)).rejects.toThrow(
-      /outcome unknown.*check open orders/i,
+    const first = await rollup.placeOrder(WALLET, ORDER as never).catch((error: unknown) => error);
+    const second = await rollup.placeOrder(WALLET, ORDER as never).catch((error: unknown) => error);
+    expect(first).toBeInstanceOf(OrderOutcomeUnknownError);
+    expect(second).toBeInstanceOf(OrderOutcomeUnknownError);
+    expect((second as OrderOutcomeUnknownError).secretHex).toBe(
+      (first as OrderOutcomeUnknownError).secretHex,
     );
     expect(calls).toBe(1);
-    expect(builds()).toBe(1);
-    // The order may be live, so its secret stays tracked.
     expect(loadTrackedSecrets(storage, WALLET.address)).toHaveLength(1);
+  });
+
+  it("accepts orders again once the hold is released", async () => {
+    let calls = 0;
+    const { rollup } = trading(async () => {
+      calls += 1;
+      throw new Error("socket closed");
+    });
+    await rollup.placeOrder(WALLET, ORDER as never).catch(() => {});
+    rollup.releaseUnknownOutcome(WALLET, ORDER.market);
+    await rollup.placeOrder(WALLET, ORDER as never).catch(() => {});
+    expect(calls).toBe(2);
+  });
+
+  it("does not hold the market after a proven refusal", async () => {
+    let calls = 0;
+    const { rollup } = trading(async () => {
+      calls += 1;
+      throw new OrderInvalid("PriceOffTick");
+    });
+    const result = await rollup.placeOrder(WALLET, ORDER as never);
+    expect(result.status).toBe("rejected");
+    await rollup.placeOrder(WALLET, ORDER as never);
+    expect(calls).toBe(2);
   });
 });
