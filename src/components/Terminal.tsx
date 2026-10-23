@@ -41,6 +41,7 @@ import {
 } from "@/components/WitnessRail";
 import { OrderEntry, type PrefillRequest } from "@/components/OrderEntry";
 import { AccountDock, type Tab } from "@/components/AccountDock";
+import { holdClearableAtMs, type UnknownHold } from "@/lib/rollup/accountMemory";
 import { formatClockTime, formatDecimal } from "@/lib/format";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 
@@ -59,7 +60,7 @@ interface OrderSession {
    * way to learn its result: it holds the form until one of its own fills is
    * seen, or the trader clears it after checking.
    */
-  pendingPlace: { expiresAtMs: number | null } | null;
+  pendingPlace: { expiresAtMs: number | null; clearableAtMs?: number } | null;
 }
 
 export function Terminal() {
@@ -253,18 +254,19 @@ export function Terminal() {
     }));
   }
 
-  function handleOrderUnknown(descriptor: OrderDescriptor, secretHex: string): void {
-    setOrderSessions((prev) => ({
-      ...prev,
-      [descriptor.market]: {
-        market: descriptor.market,
-        descriptor,
-        baseSteps: [{ type: "submitted", at: Date.now() }],
-        trackedOrderId: null,
-        trackedTag: secretHex,
-        pendingPlace: { expiresAtMs: null },
-      },
-    }));
+  function heldSession(descriptor: OrderDescriptor, hold: UnknownHold): OrderSession {
+    return {
+      market: descriptor.market,
+      descriptor,
+      baseSteps: [{ type: "submitted", at: hold.sentAtMs }],
+      trackedOrderId: null,
+      trackedTag: hold.tag,
+      pendingPlace: { expiresAtMs: null, clearableAtMs: holdClearableAtMs(hold) },
+    };
+  }
+
+  function handleOrderUnknown(descriptor: OrderDescriptor, hold: UnknownHold): void {
+    setOrderSessions((prev) => ({ ...prev, [descriptor.market]: heldSession(descriptor, hold) }));
   }
 
   function clearUnknownHold(market: string): void {
@@ -380,6 +382,38 @@ export function Terminal() {
         ? (quoteSymbolOf(deployment, selectedMarketId) ?? "")
         : ""
       : (market?.quote ?? "");
+  // A held order survives a reload: its record is read back from storage so
+  // the form for that market is still locked, with the order shown on the rail.
+  const readUnknownOutcome = trading.readUnknownOutcome;
+  useEffect(() => {
+    const settings = marketSettings(selectedMarketId);
+    if (!settings) return;
+    let active = true;
+    void readUnknownOutcome(selectedMarketId).then((hold) => {
+      if (!active || !hold) return;
+      const descriptor: OrderDescriptor = {
+        market: hold.market,
+        side: hold.side,
+        type: hold.type,
+        price: hold.price,
+        size: hold.size,
+        kind: settings.kind,
+        baseUnit: trading.state.spotAssets?.[hold.market]?.base ?? settings.base,
+        quoteUnit: quoteSymbol,
+        priceDecimals: priceDecimalsOf(settings),
+        sizeDecimals: sizeDecimalsOf(settings),
+      };
+      setOrderSessions((prev) =>
+        prev[hold.market]?.pendingPlace
+          ? prev
+          : { ...prev, [hold.market]: heldSession(descriptor, hold) },
+      );
+    });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readUnknownOutcome, selectedMarketId, marketsLoaded]);
   // Moving funds between collateral and spot only means something where a
   // spot market exists to spend them on.
   const hasSpotMarket = data.markets.some((item) => item.kind === "spot");
@@ -568,7 +602,11 @@ export function Terminal() {
       accountError={trading.accountError}
       accountLoaded={trading.accountLoaded}
       onOrderUnknown={handleOrderUnknown}
-      unknownHold={relevantSession?.pendingPlace?.expiresAtMs === null}
+      unknownHold={
+        relevantSession?.pendingPlace?.clearableAtMs !== undefined
+          ? { clearableAtMs: relevantSession.pendingPlace.clearableAtMs }
+          : null
+      }
       onClearUnknownHold={() => clearUnknownHold(market.id)}
       position={position}
       onCreateWallet={() => wallet.create()}

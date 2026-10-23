@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { createPortal } from "react-dom";
 import {
   formatDecimal,
@@ -16,6 +16,7 @@ import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import { maxOrderSize, orderFunds } from "@/lib/trading/sizing";
 import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
+import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
 import { describeFieldError, markMovedMaterially, validateOrder } from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
@@ -70,6 +71,9 @@ interface FrozenOrder {
   leverage: number;
   /** The price field held a typed price, not the default that follows the mark. */
   priceTyped: boolean;
+  /** The figures the dialog's summary shows, fixed with the order so they cannot drift from the reviewed cost. */
+  estimateDisplay: ComponentProps<typeof OrderSummary>["display"];
+  remainingAvailable: string | null;
 }
 
 export function OrderEntry({
@@ -116,9 +120,9 @@ export function OrderEntry({
   /** The account has been read successfully at least once: until then its balances are unknown, not zero. */
   accountLoaded: boolean;
   /** An order may have reached the venue with no way to learn its result: the draft and secret are held here by the parent. */
-  onOrderUnknown: (descriptor: OrderDescriptor, secretHex: string) => void;
+  onOrderUnknown: (descriptor: OrderDescriptor, hold: UnknownHold) => void;
   /** Such an order is still unresolved for this market: no other order is accepted until it is proven or cleared. */
-  unknownHold: boolean;
+  unknownHold: { clearableAtMs: number } | null;
   onClearUnknownHold: () => void;
   position: Position | null;
   onCreateWallet: () => void;
@@ -424,6 +428,8 @@ export function OrderEntry({
       worstCost,
       leverage,
       priceTyped: priceOverride !== null,
+      estimateDisplay,
+      remainingAvailable,
     };
   }
 
@@ -500,7 +506,7 @@ export function OrderEntry({
       containerRef.current?.scrollTo({ top: 0 });
     } catch (error) {
       if (error instanceof OrderOutcomeUnknownError) {
-        onOrderUnknown(descriptor, error.secretHex);
+        onOrderUnknown(descriptor, error.hold);
       } else {
         setSubmitError(error instanceof Error ? error.message : "Could not reach the venue");
       }
@@ -882,15 +888,19 @@ export function OrderEntry({
           <p>
             An order may have reached the venue and its result is unknown. Check Open orders and
             Positions before placing another. The form stays locked until one of its fills shows up
-            or you clear this.
+            or you clear this, which is possible only{" "}
+            {now >= unknownHold.clearableAtMs
+              ? "now."
+              : `in about ${Math.ceil((unknownHold.clearableAtMs - now) / 1000)}s.`}
           </p>
           <button
             type="button"
             className={`${btnGhost} mt-1 h-8 px-3 text-[12px]`}
+            disabled={now < unknownHold.clearableAtMs}
             onClick={() => {
               if (
                 window.confirm(
-                  "Clear this only if you checked Open orders and Positions and the order is not there, or you accept it may be. Clear the lock?",
+                  "The order may still be live and may still fill. Clear the lock only if you checked Open orders and Positions and accept that risk. Clear the lock?",
                 )
               ) {
                 onClearUnknownHold();
@@ -1005,11 +1015,11 @@ export function OrderEntry({
               </p>
               <p className="text-faint mt-1 text-[12px]">Worst case: {frozen.worstCost}</p>
               <OrderSummary
-                side={side}
+                side={frozen.draft.side}
                 isPerp={isPerp}
-                display={estimateDisplay}
+                display={frozen.estimateDisplay}
                 priceDecimals={priceDecimals}
-                remainingAvailable={remainingAvailable}
+                remainingAvailable={frozen.remainingAvailable}
                 quoteSymbol={quoteUnit}
               />
               {(reviewInvalid ?? confirmBlocker) && (

@@ -67,7 +67,19 @@ const WALLET: WalletIdentity = {
   secretKeyHex: "aa".repeat(64),
 };
 
-function account(view: TraderClientLike["view"]) {
+function memoryStorage() {
+  const map = new Map<string, string>();
+  return {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => void map.set(key, value),
+    removeItem: (key: string) => void map.delete(key),
+  };
+}
+
+function account(
+  view: TraderClientLike["view"],
+  storage: ReturnType<typeof memoryStorage> = memoryStorage(),
+) {
   let push: ((view: View) => void) | null = null;
   const unused = async () => {
     throw new Error("unused");
@@ -97,6 +109,7 @@ function account(view: TraderClientLike["view"]) {
   });
   const rollup = new RollupTradingClient({
     simUrl: "http://sim.test",
+    storage,
     marketSettingsLookup: (id) => (id === "NSOL-PERP" ? PERP : undefined),
     buildSession: async () => session(),
   });
@@ -146,5 +159,41 @@ describe("RollupTradingClient.subscribe: the first account read", () => {
     await vi.waitFor(() => expect(states).toHaveLength(1));
     expect(errors).toHaveLength(0);
     expect(states[0].collateral?.total).toBe("5.000000");
+  });
+
+  it("keeps a wallet seen with an account unknown when its view reads as missing, then shows it once readable", async () => {
+    const storage = memoryStorage();
+    const first = account(async () => viewWithCollateral(5_000_000n, 1), storage);
+    await vi.waitFor(() => expect(first.states).toHaveLength(1));
+
+    let reads = 0;
+    const second = account(async () => {
+      reads += 1;
+      if (reads === 1) return null as unknown as View;
+      return viewWithCollateral(5_000_000n, 2);
+    }, storage);
+    await vi.waitFor(() => expect(second.errors).toHaveLength(1));
+    expect(second.states).toHaveLength(0);
+    second.pushView(viewWithCollateral(5_000_000n, 2));
+    expect(second.states).toHaveLength(1);
+    expect(second.states[0].collateral?.total).toBe("5.000000");
+  });
+
+  it("keeps a wallet seen with an account unknown on the SDK's not-readable answer", async () => {
+    const storage = memoryStorage();
+    const first = account(async () => viewWithCollateral(5_000_000n, 1), storage);
+    await vi.waitFor(() => expect(first.states).toHaveLength(1));
+    const second = account(async () => {
+      throw new Error(VIEW_NOT_READABLE_MESSAGE);
+    }, storage);
+    await vi.waitFor(() => expect(second.errors).toHaveLength(1));
+    expect(second.states).toHaveLength(0);
+  });
+
+  it("treats a null view as empty only for a wallet never seen with an account", async () => {
+    const { states, errors } = account(async () => null as unknown as View);
+    await vi.waitFor(() => expect(states).toHaveLength(1));
+    expect(errors).toHaveLength(0);
+    expect(states[0].balances).toEqual({});
   });
 });

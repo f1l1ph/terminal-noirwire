@@ -20,6 +20,14 @@ import {
   transferErrorToResult,
 } from "../rollup/outcome";
 import { pinnedBaseDecimals } from "../rollup/markets";
+import {
+  loadHolds,
+  markAccountOpened,
+  removeHold,
+  saveHold,
+  wasAccountOpened,
+  type UnknownHold,
+} from "../rollup/accountMemory";
 import { trackSecret } from "../rollup/secretStore";
 import {
   buildRealSession,
@@ -248,7 +256,7 @@ export class RollupTradingClient implements TradingClient {
   private errorListeners = new Map<string, Set<(error: Error) => void>>();
   private newestResultsWritten = new Map<string, number>();
   /** `address:market` -> the secret (hex) of an order that may have reached the venue, until its outcome is proven or released. */
-  private unresolvedOrders = new Map<string, string>();
+  private unresolvedOrders = new Map<string, UnknownHold>();
 
   constructor(private readonly options: RollupTradingClientOptions) {
     this.storage = options.storage ?? browserLocalStorage();
@@ -293,19 +301,28 @@ export class RollupTradingClient implements TradingClient {
   /** Pushes this session's view to the wallet's listeners: once now, then on every change the rollup reports. */
   private async watchView(session: RollupSession): Promise<() => void> {
     const stop = session.client.subscribeView((view) => this.emitState(session, view));
+    const address = session.owner.publicKey.toBase58();
     try {
-      this.emitState(session, await session.client.view());
+      const view = await session.client.view();
+      // A missing view reads the same as the SDK's own "not readable" answer.
+      if (!view) throw new Error(VIEW_NOT_READABLE_MESSAGE);
+      this.emitState(session, view);
     } catch (error) {
-      const address = session.owner.publicKey.toBase58();
-      if (error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE) {
-        // Verified: this account is not open yet, so it really is empty.
-        // The subscription reports it once it exists.
+      const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
+      if (notReadable && !wasAccountOpened(this.storage, address)) {
+        // This wallet has never been seen with an account: no view yet means
+        // it is empty. The subscription reports it once it exists.
         for (const listener of this.listeners.get(address) ?? []) {
           listener(this.emptyState(session));
         }
       } else {
-        // Anything else says nothing about the account: it stays unknown.
-        const failure = error instanceof Error ? error : new Error(String(error));
+        // A failed read, or an account seen before that now reads as missing
+        // (a lagging or refused read looks the same): it stays unknown.
+        const failure = notReadable
+          ? new Error("This account was opened before but cannot be read right now.")
+          : error instanceof Error
+            ? error
+            : new Error(String(error));
         for (const onError of this.errorListeners.get(address) ?? []) onError(failure);
       }
     }
@@ -334,6 +351,7 @@ export class RollupTradingClient implements TradingClient {
     const address = session.owner.publicKey.toBase58();
     if (view.resultsWritten < (this.newestResultsWritten.get(address) ?? 0)) return;
     this.newestResultsWritten.set(address, view.resultsWritten);
+    markAccountOpened(this.storage, address);
     const state = this.mapViewFrom(session, view);
     for (const listener of this.listeners.get(address) ?? []) listener(state);
   }
@@ -394,6 +412,7 @@ export class RollupTradingClient implements TradingClient {
     const session = await this.ensureSession(wallet);
     try {
       await session.client.view();
+      markAccountOpened(this.storage, wallet.address);
       return { kind: "alreadyFunded" };
     } catch {
       // No view yet: account is not open. Fall through to open + fund.
@@ -410,6 +429,7 @@ export class RollupTradingClient implements TradingClient {
       writeFlag(this.storage, noFaucetKey(trustedProgramId(this.options.overrides)));
     }
     if (outcome.kind === "granted") {
+      markAccountOpened(this.storage, wallet.address);
       // The session's client was built before the account existed, so its
       // reader may not yet see the view; a fresh session re-establishes it
       // cleanly rather than guessing whether a retry is needed.
@@ -444,8 +464,7 @@ export class RollupTradingClient implements TradingClient {
   }
 
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
-    const holdKey = `${wallet.address}:${order.market}`;
-    const held = this.unresolvedOrders.get(holdKey);
+    const held = this.heldOrder(wallet, order.market);
     if (held) throw new OrderOutcomeUnknownError(held);
     return this.withSession(wallet, async (session) => {
       const binding = this.bindings(session).get(order.market);
@@ -463,8 +482,18 @@ export class RollupTradingClient implements TradingClient {
       // gave up on it still has its fills recognised as this trader's own.
       trackSecret(this.storage, wallet.address, order.market, secret);
       // From here the order may be on the venue: it counts as sent, and the
-      // market stays held, until a result proves otherwise.
-      this.unresolvedOrders.set(holdKey, bytesToHex(secret));
+      // market stays held, in storage too, until a result proves otherwise.
+      const hold: UnknownHold = {
+        market: order.market,
+        side: order.side,
+        type: order.type,
+        size: order.size,
+        price: order.price,
+        tag: bytesToHex(secret),
+        sentAtMs: this.now(),
+        orderExpiresAtMs: expiry === undefined ? null : Number(expiry) * 1000,
+      };
+      this.holdOrder(wallet, hold);
       let result: PlaceOrderResult;
       try {
         const placed = await session.client.placeOrder(
@@ -480,7 +509,7 @@ export class RollupTradingClient implements TradingClient {
           },
           { expirySeconds: DEFAULT_EXPIRY_SECONDS, pushWaitMs: RESULT_PUSH_WAIT_MS },
         );
-        this.unresolvedOrders.delete(holdKey);
+        this.releaseUnknownOutcome(wallet, order.market);
         result = placedToResult(
           placed,
           binding.units,
@@ -506,8 +535,8 @@ export class RollupTradingClient implements TradingClient {
             expiresAtMs,
             refusalContext,
           );
-        if (!mapped) throw new OrderOutcomeUnknownError(bytesToHex(secret));
-        this.unresolvedOrders.delete(holdKey);
+        if (!mapped) throw new OrderOutcomeUnknownError(hold);
+        this.releaseUnknownOutcome(wallet, order.market);
         result = mapped;
       }
       session.saveKeyCheckpoint();
@@ -521,8 +550,27 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
+  /** The held order for this wallet and market: from memory, else from storage (a reload, a second tab). */
+  private heldOrder(wallet: WalletIdentity, market: string): UnknownHold | null {
+    return (
+      this.unresolvedOrders.get(`${wallet.address}:${market}`) ??
+      loadHolds(this.storage, wallet.address)[market] ??
+      null
+    );
+  }
+
+  private holdOrder(wallet: WalletIdentity, hold: UnknownHold): void {
+    this.unresolvedOrders.set(`${wallet.address}:${hold.market}`, hold);
+    saveHold(this.storage, wallet.address, hold);
+  }
+
+  async readUnknownOutcome(wallet: WalletIdentity, market: string): Promise<UnknownHold | null> {
+    return this.heldOrder(wallet, market);
+  }
+
   releaseUnknownOutcome(wallet: WalletIdentity, market: string): void {
     this.unresolvedOrders.delete(`${wallet.address}:${market}`);
+    removeHold(this.storage, wallet.address, market);
   }
 
   async cancelOrder(

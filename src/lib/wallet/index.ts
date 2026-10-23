@@ -22,6 +22,8 @@ export const ownerDataKeys = {
   orderSecrets: (address: string) => `noirwire-terminal-rollup-secrets-${address}`,
   keyCheckpoint: (address: string) => `noirwire-terminal-rollup-checkpoint-${address}`,
   grantUsed: (address: string) => `noirwire-terminal-grant-used:${address}`,
+  unknownHolds: (address: string) => `noirwire-terminal-unknown-orders:${address}`,
+  accountOpened: (address: string) => `noirwire-terminal-account-opened:${address}`,
 };
 
 export function bytesToHex(bytes: Uint8Array): string {

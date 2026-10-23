@@ -247,6 +247,14 @@ export function useTrading(
     [client, wallet],
   );
 
+  const readUnknownOutcome = useCallback(
+    async (market: string) => {
+      if (!wallet || !client.readUnknownOutcome) return null;
+      return client.readUnknownOutcome(walletOf(wallet), market);
+    },
+    [client, wallet],
+  );
+
   const cancelAllInMarket = useCallback(
     async (market: string): Promise<CancelResult> => {
       if (!wallet) throw new Error("No wallet to cancel for");
@@ -309,6 +317,7 @@ export function useTrading(
     fund,
     placeOrder,
     releaseUnknownOutcome,
+    readUnknownOutcome,
     cancelAllInMarket,
     syncMarket,
     cancelOrder: client.cancelOrder ? cancelOrder : null,

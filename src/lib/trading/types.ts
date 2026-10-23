@@ -1,4 +1,5 @@
 import type { MarketInfo } from "../market-data/types";
+import type { UnknownHold } from "../rollup/accountMemory";
 import type { OrderStatus, OrderType, Side } from "../sim-api/schema";
 
 export type { OrderStatus, OrderType, Side };
@@ -239,6 +240,8 @@ export interface TradingClient {
    * proven or the user has cleared it. Optional: dev mode has no such case.
    */
   releaseUnknownOutcome?(wallet: WalletIdentity, market: string): void;
+  /** The held order for this market, kept across a reload; null when nothing is held. */
+  readUnknownOutcome?(wallet: WalletIdentity, market: string): Promise<UnknownHold | null>;
   /** Fetches the trader's current state once. */
   fetchState(wallet: WalletIdentity): Promise<TraderState>;
   /** Pushes the trader's state until unsubscribed: polled in dev mode, pushed by the rollup's own account subscription in rollup mode. */

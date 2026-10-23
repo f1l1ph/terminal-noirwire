@@ -1,3 +1,4 @@
+import type { UnknownHold } from "../rollup/accountMemory";
 import type { DeploymentOverrides } from "../rollup/deployment";
 import type {
   CancelResult,
@@ -110,6 +111,10 @@ export class LazyRollupTradingClient implements TradingClient {
   releaseUnknownOutcome(wallet: WalletIdentity, market: string): void {
     if (!this.loaded) return;
     void this.loaded.then((client) => client.releaseUnknownOutcome?.(wallet, market));
+  }
+
+  async readUnknownOutcome(wallet: WalletIdentity, market: string): Promise<UnknownHold | null> {
+    return (await (await this.load()).readUnknownOutcome?.(wallet, market)) ?? null;
   }
 
   closeWallet(wallet: WalletIdentity): void {
