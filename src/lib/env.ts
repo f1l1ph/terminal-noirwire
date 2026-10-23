@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { unsignedDevModeRefusal } from "./trading/modeGuard";
 
 /**
  * Every value the terminal needs to reach the simulation service, read once
@@ -53,6 +54,12 @@ function readEnv(): Env {
     const reasons = result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
     throw new Error(`Invalid terminal configuration:\n${reasons.join("\n")}`);
   }
+  const refusal = unsignedDevModeRefusal(
+    result.data.tradingMode,
+    process.env.NODE_ENV,
+    process.env.NEXT_PUBLIC_ALLOW_UNSIGNED_DEV_MODE,
+  );
+  if (refusal) throw new Error(`Invalid terminal configuration:\n${refusal}`);
   return result.data;
 }
 

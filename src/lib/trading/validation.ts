@@ -8,7 +8,12 @@ export type OrderFieldError =
   | "quantityBelowMinimum"
   | "priceRequired"
   | "priceNotMultipleOfTick"
-  | "priceNotPositive";
+  | "priceNotPositive"
+  | "priceTooFarFromMark"
+  | "markUnavailable";
+
+/** The furthest a submitted price (limit price or market bound) may sit from the current mark. */
+export const MAX_LIMIT_PRICE_DEVIATION_BPS = 1000;
 
 export interface OrderValidationResult {
   valid: boolean;
@@ -20,15 +25,36 @@ function isMultipleOf(value: bigint, step: bigint): boolean {
   return value % step === 0n;
 }
 
+function priceDeviationError(
+  price: bigint,
+  markPrice: string | null | undefined,
+): OrderFieldError | null {
+  let mark: bigint;
+  try {
+    mark = toFixedPoint(markPrice ?? "");
+  } catch {
+    return "markUnavailable";
+  }
+  if (mark <= 0n) return "markUnavailable";
+  const distance = price > mark ? price - mark : mark - price;
+  return distance * 10_000n > mark * BigInt(MAX_LIMIT_PRICE_DEVIATION_BPS)
+    ? "priceTooFarFromMark"
+    : null;
+}
+
 /**
  * Checks an order draft against the market's own settings: lot size (which
  * is also the minimum size sim-noirwire accepts; there is no separate
  * maximum in its wire contract) and tick size. Every order type requires a
- * price (see `NewOrderInput`), so the price check always runs.
+ * price (see `NewOrderInput`), so the price check always runs. The price
+ * must also sit within MAX_LIMIT_PRICE_DEVIATION_BPS of `markPrice`; without
+ * a usable mark there is nothing to check it against, so the order is
+ * refused.
  */
 export function validateOrder(
   input: Pick<NewOrderInput, "price" | "size">,
   market: MarketInfo,
+  markPrice: string | null | undefined,
 ): OrderValidationResult {
   const errors: OrderValidationResult["errors"] = {};
 
@@ -63,6 +89,9 @@ export function validateOrder(
         errors.price = "priceNotPositive";
       } else if (!isMultipleOf(price, tick)) {
         errors.price = "priceNotMultipleOfTick";
+      } else {
+        const deviation = priceDeviationError(price, markPrice);
+        if (deviation) errors.price = deviation;
       }
     } catch {
       errors.price = "priceNotMultipleOfTick";
@@ -87,6 +116,10 @@ export function describeFieldError(error: OrderFieldError, market: MarketInfo): 
       return `Price must be above zero.`;
     case "priceNotMultipleOfTick":
       return `Use increments of ${market.tickSize} ${market.quote}.`;
+    case "priceTooFarFromMark":
+      return `Price is more than ${MAX_LIMIT_PRICE_DEVIATION_BPS / 100}% away from the current price. Check for a typo.`;
+    case "markUnavailable":
+      return `Waiting for the current price of ${market.id}. Try again in a moment.`;
   }
 }
 

@@ -38,19 +38,12 @@ import {
   rangeBrand,
 } from "@/components/ui/styles";
 
-const SKIP_CONFIRM_KEY = "noirwire-terminal-skip-order-confirm";
-const SESSION_CONFIRMED_KEY = "noirwire-terminal-session-order-confirmed";
 const PERCENT_SHORTCUTS = [25, 50, 75, 100];
 const GOOD_FOR_OPTIONS = [
   { value: "untilCancelled", label: "Until cancelled" },
   { value: "1m", label: "1 minute" },
   { value: "1h", label: "1 hour" },
 ] as const;
-
-function readFlag(storage: Storage | null, key: string): boolean {
-  if (!storage) return false;
-  return storage.getItem(key) === "1";
-}
 
 /**
  * A dock row's "Close" (reduce-only, full size, submits through the usual
@@ -76,6 +69,7 @@ export function OrderEntry({
   walletLocked,
   balances,
   collateral,
+  accountError,
   position,
   onCreateWallet,
   onFund,
@@ -101,6 +95,8 @@ export function OrderEntry({
   balances: Record<string, Balance>;
   /** The separate perpetuals collateral account. `undefined` in dev mode. */
   collateral?: Balance;
+  /** The account could not be read: balances are unknown, not zero. Trading and funding are off until it can. */
+  accountError: string | null;
   position: Position | null;
   onCreateWallet: () => void;
   onFund: () => Promise<FundOutcome>;
@@ -164,7 +160,7 @@ export function OrderEntry({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showDetails, setShowDetails] = useState(!compact);
-  const [skipFuture, setSkipFuture] = useState(false);
+  const submittingRef = useRef(false);
   const quantityInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
   const appliedPrefillIdRef = useRef<number | null>(null);
@@ -191,9 +187,6 @@ export function OrderEntry({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (prefillRequest.submit) setShowConfirm(true);
   }, [prefillRequest, market]);
-
-  const storage = typeof window === "undefined" ? null : window.localStorage;
-  const sessionStorageRef = typeof window === "undefined" ? null : window.sessionStorage;
 
   const priceDecimals = market ? priceDecimalsOf(market) : 2;
   const sizeDecimals = market ? sizeDecimalsOf(market) : 4;
@@ -280,7 +273,7 @@ export function OrderEntry({
       }
     : null;
 
-  const validation = market && draft ? validateOrder(draft, market) : null;
+  const validation = market && draft ? validateOrder(draft, market, mark?.price) : null;
   const quantityError =
     quantityTouched && validation?.errors.quantity
       ? describeFieldError(validation.errors.quantity, { ...market!, base: baseUnit })
@@ -332,8 +325,12 @@ export function OrderEntry({
   const staleBlock = markStale && orderType === "market";
 
   const isSpotSell = !isPerp && side === "sell";
+  const accountUnknown = hasWallet && !!accountError;
   const noFunds =
-    hasWallet && Number(availableQuote) <= 0 && !(isSpotSell && Number(availableBase) > 0);
+    hasWallet &&
+    !accountUnknown &&
+    Number(availableQuote) <= 0 &&
+    !(isSpotSell && Number(availableBase) > 0);
 
   // Spot buy, this browser's spot quote balance is empty, but there is
   // collateral to move: the primary action becomes "Move funds to spot"
@@ -352,6 +349,7 @@ export function OrderEntry({
 
   const canSubmit =
     hasWallet &&
+    !accountUnknown &&
     !noFunds &&
     !!market &&
     !!validation?.valid &&
@@ -360,8 +358,22 @@ export function OrderEntry({
     !submitting &&
     !placeOrderPending;
 
+  const confirmBlocker = (() => {
+    if (!market) return null;
+    if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
+    if (validation?.errors.quantity) {
+      return describeFieldError(validation.errors.quantity, { ...market, base: baseUnit });
+    }
+    if (validation?.errors.price) return describeFieldError(validation.errors.price, market);
+    if (staleBlock) return "Market data is too old. Wait for a fresh mark.";
+    if (unaffordable) return "Your available balance no longer covers this order.";
+    if (placeOrderPending) return "An order is still being checked with the venue.";
+    return canSubmit ? null : "This order cannot be placed right now.";
+  })();
+
   async function runSubmit() {
-    if (!draft || !market) return;
+    if (!draft || !market || !canSubmit || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
     const descriptor: OrderDescriptor = {
@@ -393,6 +405,7 @@ export function OrderEntry({
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Could not reach the venue");
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }
@@ -403,7 +416,7 @@ export function OrderEntry({
   }
 
   function handlePrimaryClick() {
-    if (!walletReady) return;
+    if (!walletReady || accountUnknown) return;
     if (!hasWallet) {
       if (!walletLocked) onCreateWallet();
       return;
@@ -449,18 +462,11 @@ export function OrderEntry({
       focusFirstInvalid();
       return;
     }
-    const skip = readFlag(storage, SKIP_CONFIRM_KEY);
-    const confirmedThisSession = readFlag(sessionStorageRef, SESSION_CONFIRMED_KEY);
-    if (skip || confirmedThisSession) {
-      void runSubmit();
-      return;
-    }
     setShowConfirm(true);
   }
 
   function handleConfirm() {
-    sessionStorageRef?.setItem(SESSION_CONFIRMED_KEY, "1");
-    if (skipFuture) storage?.setItem(SKIP_CONFIRM_KEY, "1");
+    if (!canSubmit) return;
     setShowConfirm(false);
     void runSubmit();
   }
@@ -493,6 +499,10 @@ export function OrderEntry({
     primaryLabel = "Create test wallet";
     primaryClass = btnPrimary;
     primaryDisabled = false;
+  } else if (accountUnknown) {
+    primaryLabel = "Account unavailable";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (placeOrderPending) {
     primaryLabel = "Checking with the venue…";
     primaryClass = btnGhost;
@@ -752,6 +762,12 @@ export function OrderEntry({
         </div>
       )}
 
+      {accountUnknown && (
+        <p role="alert" className="text-danger text-[12px]">
+          Could not read your account, so your balance is unknown (not zero). Trading and test funds
+          are off until it loads. Reload the page to try again.
+        </p>
+      )}
       {staleBlock && (
         <p role="alert" className="text-warning text-[12px]">
           Market data is {markAge !== null ? formatRelativeAge(markAge) : "too"} old. Wait for a
@@ -856,14 +872,11 @@ export function OrderEntry({
                 remainingAvailable={remainingAvailable}
                 quoteSymbol={quoteUnit}
               />
-              <label className="text-dim mt-3 flex items-center gap-2 text-[12px]">
-                <input
-                  type="checkbox"
-                  checked={skipFuture}
-                  onChange={(event) => setSkipFuture(event.target.checked)}
-                />
-                Do not ask again
-              </label>
+              {confirmBlocker && (
+                <p role="alert" className="text-danger mt-3 text-[12px]">
+                  {confirmBlocker}
+                </p>
+              )}
               <div className="mt-4 flex gap-3">
                 <button
                   type="button"
@@ -875,6 +888,7 @@ export function OrderEntry({
                 <button
                   type="button"
                   className={`${side === "buy" ? btnSafe : btnDanger} h-11 flex-1`}
+                  disabled={!canSubmit}
                   onClick={handleConfirm}
                 >
                   {submitLabel}

@@ -313,14 +313,13 @@ export class RollupTradingClient implements TradingClient {
   }
 
   /**
-   * Runs `fn` against this wallet's session, refreshing the sign-in and
-   * retrying once if the session is older than `SESSION_REFRESH_MS` or the
-   * call itself throws. An expired token surfaces as a thrown error from
-   * the private connection, not a typed result, so any failure gets one
-   * retry against a fresh sign-in rather than trying to recognise the exact
-   * shape of an auth error ourselves. Once `fn` calls `markSent`, nothing it
-   * throws is retried: a transaction that may already have gone out is
-   * never sent a second time.
+   * Runs `fn` against this wallet's session, refreshing the sign-in first if
+   * the session is older than `SESSION_REFRESH_MS`, and retrying once if the
+   * call throws a known session or auth error (`isSessionAuthError`). An
+   * expired token surfaces as a thrown error from the private connection,
+   * not a typed result. Any other error is never retried, since it may have
+   * happened after a transaction went out; and once `fn` calls `markSent`,
+   * nothing it throws is retried either.
    */
   private async withSession<T>(
     wallet: WalletIdentity,
@@ -336,7 +335,7 @@ export class RollupTradingClient implements TradingClient {
         sent = true;
       });
     } catch (error) {
-      if (sent) throw error;
+      if (sent || !isSessionAuthError(error)) throw error;
       session = await this.refreshSession(wallet);
       return fn(session, () => {});
     }
@@ -473,8 +472,14 @@ export class RollupTradingClient implements TradingClient {
             refusalContext,
           );
         if (!mapped) {
-          untrackSecret(this.storage, wallet.address, secret);
-          throw error;
+          if (isSessionAuthError(error)) {
+            untrackSecret(this.storage, wallet.address, secret);
+            throw error;
+          }
+          // Not proven to have happened before the send: the order may be
+          // on the venue, so it stays tracked and is never resent.
+          markSent();
+          throw new OrderOutcomeUnknownError();
         }
         markSent();
         result = mapped;
@@ -621,11 +626,17 @@ export class RollupTradingClient implements TradingClient {
     return this.withSession(wallet, (session) => Promise.resolve(this.mapView(session)));
   }
 
-  subscribe(wallet: WalletIdentity, listener: StateListener): () => void {
+  subscribe(
+    wallet: WalletIdentity,
+    listener: StateListener,
+    onError?: (error: Error) => void,
+  ): () => void {
     const listeners = this.listeners.get(wallet.address) ?? new Set();
     this.listeners.set(wallet.address, listeners);
     listeners.add(listener);
-    void this.ensureSession(wallet).catch(() => {});
+    void this.ensureSession(wallet).catch((error: unknown) =>
+      onError?.(error instanceof Error ? error : new Error(String(error))),
+    );
     return () => listeners.delete(listener);
   }
 
@@ -719,6 +730,21 @@ export class RollupTradingClient implements TradingClient {
       spotAssets: spotAssetsOf(session.deployment),
     };
   }
+}
+
+export class OrderOutcomeUnknownError extends Error {
+  constructor() {
+    super("Order outcome unknown. Check open orders and positions before retrying.");
+    this.name = "OrderOutcomeUnknownError";
+  }
+}
+
+const SESSION_AUTH_ERROR =
+  /\b401\b|\b403\b|unauthori[sz]ed|missing token|token expired|invalid token/i;
+
+/** Failures that mean the sign-in was refused before anything was sent. */
+function isSessionAuthError(error: unknown): boolean {
+  return error instanceof Error && SESSION_AUTH_ERROR.test(error.message);
 }
 
 function expiryFor(goodFor: NewOrderInput["goodFor"], now: () => number): bigint | undefined {

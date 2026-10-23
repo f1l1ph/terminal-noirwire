@@ -535,6 +535,7 @@ export function Terminal() {
       walletLocked={!!wallet.lockedAddress}
       balances={trading.state.balances}
       collateral={trading.state.collateral}
+      accountError={trading.accountError}
       position={position}
       onCreateWallet={() => wallet.create()}
       onFund={() => trading.fund()}

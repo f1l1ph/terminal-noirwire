@@ -7,8 +7,17 @@ export function candlesLoadingKey(market: string, interval: string): string {
 export const STALE_MARK_MS = 10_000;
 export const STALE_STATS_MS = 30_000;
 
+/** How far ahead of the local clock a server timestamp may be before it is not trusted. */
+export const MAX_CLOCK_SKEW_MS = 5_000;
+
+export function isFutureTimestamp(timestamp: number, now: number): boolean {
+  return timestamp - now > MAX_CLOCK_SKEW_MS;
+}
+
+/** A timestamp from the future has no honest age: it reads as unknown, which every caller treats as stale. */
 export function ageMs(updatedAt: number | null | undefined, now: number): number | null {
   if (updatedAt === null || updatedAt === undefined) return null;
+  if (isFutureTimestamp(updatedAt, now)) return null;
   return Math.max(now - updatedAt, 0);
 }
 

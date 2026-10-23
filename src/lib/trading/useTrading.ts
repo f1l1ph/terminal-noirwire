@@ -85,6 +85,9 @@ export function useTrading(
     setState(next);
     setLastSyncedAtMs(Date.now());
   }, []);
+  // Set when the account could not be read at all, so an unreadable account
+  // is never shown as an empty one; cleared by the next state that arrives.
+  const [accountError, setAccountError] = useState<string | null>(null);
   const [ownTags, setOwnTags] = useState<ReadonlySet<string>>(new Set());
   const [rollupSecrets, setRollupSecrets] = useState<Uint8Array[]>([]);
   const [grantUsed, setGrantUsed] = useState(false);
@@ -129,10 +132,15 @@ export function useTrading(
   useEffect(() => {
     if (!wallet) return;
     const identity = walletOf(wallet);
-    const unsubscribe = client.subscribe(identity, (next) => {
-      setStateSynced(next);
-      for (const order of next.openOrders) addOwnTag(order.tag);
-    });
+    const unsubscribe = client.subscribe(
+      identity,
+      (next) => {
+        setAccountError(null);
+        setStateSynced(next);
+        for (const order of next.openOrders) addOwnTag(order.tag);
+      },
+      (error) => setAccountError(error.message || "Could not read the account"),
+    );
     return () => {
       unsubscribe();
       // Wallet changed (cleared, switched) or this component is going away:
@@ -259,6 +267,7 @@ export function useTrading(
   return {
     client,
     state: effectiveState,
+    accountError: wallet ? accountError : null,
     lastSyncedAtMs: effectiveLastSyncedAtMs,
     ownTags,
     rollupSecrets,

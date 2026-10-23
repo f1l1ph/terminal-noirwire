@@ -179,4 +179,19 @@ describe("placeOrder: retries only what was never sent", () => {
     expect(Number(final.filledSize)).toBe(1);
     expect(final.reason).toMatch(/Landed late/);
   });
+
+  it("never resends after an error that is not a known pre-send auth failure", async () => {
+    let calls = 0;
+    const { rollup, storage, builds } = trading(async () => {
+      calls += 1;
+      throw new Error("socket closed");
+    });
+    await expect(rollup.placeOrder(WALLET, ORDER as never)).rejects.toThrow(
+      /outcome unknown.*check open orders/i,
+    );
+    expect(calls).toBe(1);
+    expect(builds()).toBe(1);
+    // The order may be live, so its secret stays tracked.
+    expect(loadTrackedSecrets(storage, WALLET.address)).toHaveLength(1);
+  });
 });

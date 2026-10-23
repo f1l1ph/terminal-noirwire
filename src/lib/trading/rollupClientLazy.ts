@@ -114,13 +114,22 @@ export class LazyRollupTradingClient implements TradingClient {
     void this.loaded.then((client) => client.closeWallet?.(wallet));
   }
 
-  subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void {
+  subscribe(
+    wallet: WalletIdentity,
+    listener: (state: TraderState) => void,
+    onError?: (error: Error) => void,
+  ): () => void {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
-    void this.load().then((client) => {
-      if (cancelled) return;
-      unsubscribe = client.subscribe(wallet, listener);
-    });
+    this.load().then(
+      (client) => {
+        if (cancelled) return;
+        unsubscribe = client.subscribe(wallet, listener, onError);
+      },
+      (error: unknown) => {
+        if (!cancelled) onError?.(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
     return () => {
       cancelled = true;
       unsubscribe?.();

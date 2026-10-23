@@ -236,7 +236,12 @@ export interface TradingClient {
   /** Fetches the trader's current state once. */
   fetchState(wallet: WalletIdentity): Promise<TraderState>;
   /** Pushes the trader's state until unsubscribed: polled in dev mode, pushed by the rollup's own account subscription in rollup mode. */
-  subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void;
+  subscribe(
+    wallet: WalletIdentity,
+    listener: (state: TraderState) => void,
+    /** Called when the account cannot be read at all (sign-in or connection failure), so a failed read is never shown as an empty account. */
+    onError?: (error: Error) => void,
+  ): () => void;
   /**
    * Ends this wallet's live result subscription and background refreshes,
    * if one was ever opened. Optional: dev mode has no background
