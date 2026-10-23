@@ -60,12 +60,15 @@ test.describe("First minute, signed in the browser, against the real rollup", ()
     });
     await shot(page, "04-position");
 
-    // A resting limit order away from the mark (within the program's 50%
-    // outer band, RULES.md section 3 item 3 - far enough from the mark it
-    // should never fill in a first-minute test, not so far it is refused).
+    // A resting limit order below the mark, inside the terminal's 10% price
+    // band: far enough that it should not fill in a first-minute test, near
+    // enough that the terminal does not refuse it.
+    const maxBuyPrice = await page.getByLabel("Max buy price (nUSD)").inputValue();
+    const mark = Number(maxBuyPrice) / 1.01;
+    const restingPrice = (Math.round((mark * 0.95) / 0.1) * 0.1).toFixed(2);
     await page.getByRole("button", { name: "limit", exact: true }).click();
     await page.getByLabel("Quantity (SOL)").fill("0.2");
-    await page.getByLabel(/Limit price/).fill("60.00");
+    await page.getByLabel(/Limit price/).fill(restingPrice);
     await page.getByRole("button", { name: "Place test long", exact: true }).first().click();
     await expect(page.getByText("Resting", { exact: true })).toBeVisible({ timeout: 20_000 });
 
