@@ -37,9 +37,9 @@ test.describe("First minute: wallet, funds, a filled market long", () => {
     await expect(page.getByRole("tabpanel").getByText("long", { exact: true })).toBeVisible();
     await shot(page, "06-positions");
 
-    // A second order in the same session is one click: no confirm dialog.
+    // Every order is confirmed, however many came before it.
     await page.getByLabel("Quantity (SOL)").fill("0.5");
     await page.getByRole("button", { name: "Place test long", exact: true }).first().click();
-    await expect(page.getByRole("dialog", { name: "Confirm order" })).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "Confirm order" })).toBeVisible();
   });
 });

@@ -1,4 +1,5 @@
 import type { MarketInfo } from "../market-data/types";
+import { isStale, STALE_MARK_MS } from "../market-data/selectors";
 import { toFixedPoint } from "./decimal";
 import type { NewOrderInput } from "./types";
 
@@ -8,7 +9,13 @@ export type OrderFieldError =
   | "quantityBelowMinimum"
   | "priceRequired"
   | "priceNotMultipleOfTick"
-  | "priceNotPositive";
+  | "priceNotPositive"
+  | "priceTooFarFromMark"
+  | "markUnavailable"
+  | "markStale";
+
+/** The furthest a submitted price (limit price or market bound) may sit from the current mark. */
+export const MAX_LIMIT_PRICE_DEVIATION_BPS = 1000;
 
 export interface OrderValidationResult {
   valid: boolean;
@@ -20,15 +27,65 @@ function isMultipleOf(value: bigint, step: bigint): boolean {
   return value % step === 0n;
 }
 
+/** How far the live mark may move from the one an order was reviewed at before the review no longer stands. */
+export const MAX_REVIEW_MARK_MOVE_BPS = 50;
+
+export interface OrderMark {
+  price: string;
+  time: number;
+}
+
+/** Whether the mark has moved materially from `reviewedPrice`. An unreadable price on either side counts as moved. */
+export function markMovedMaterially(reviewedPrice: string, livePrice: string | undefined): boolean {
+  try {
+    const reviewed = toFixedPoint(reviewedPrice);
+    const live = toFixedPoint(livePrice ?? "");
+    if (reviewed <= 0n) return true;
+    const distance = live > reviewed ? live - reviewed : reviewed - live;
+    return distance * 10_000n > reviewed * BigInt(MAX_REVIEW_MARK_MOVE_BPS);
+  } catch {
+    return true;
+  }
+}
+
+function priceDeviationError(
+  price: bigint,
+  mark: OrderMark | null | undefined,
+  now: number,
+): OrderFieldError | null {
+  let markPrice: bigint;
+  try {
+    markPrice = toFixedPoint(mark?.price ?? "");
+  } catch {
+    return "markUnavailable";
+  }
+  if (markPrice <= 0n) return "markUnavailable";
+  if (isStale(mark?.time, now, STALE_MARK_MS)) return "markStale";
+  return distanceError(price, markPrice);
+}
+
+function distanceError(price: bigint, mark: bigint): OrderFieldError | null {
+  const distance = price > mark ? price - mark : mark - price;
+  return distance * 10_000n > mark * BigInt(MAX_LIMIT_PRICE_DEVIATION_BPS)
+    ? "priceTooFarFromMark"
+    : null;
+}
+
 /**
  * Checks an order draft against the market's own settings: lot size (which
  * is also the minimum size sim-noirwire accepts; there is no separate
  * maximum in its wire contract) and tick size. Every order type requires a
- * price (see `NewOrderInput`), so the price check always runs.
+ * price (see `NewOrderInput`), so the price check always runs. The price
+ * must also sit within MAX_LIMIT_PRICE_DEVIATION_BPS of the mark, for a
+ * limit order as much as a market one; without a usable, fresh mark (see
+ * STALE_MARK_MS) there is nothing to check it against, so the order is
+ * refused.
  */
 export function validateOrder(
   input: Pick<NewOrderInput, "price" | "size">,
   market: MarketInfo,
+  mark: OrderMark | null | undefined,
+  now: number,
 ): OrderValidationResult {
   const errors: OrderValidationResult["errors"] = {};
 
@@ -63,6 +120,9 @@ export function validateOrder(
         errors.price = "priceNotPositive";
       } else if (!isMultipleOf(price, tick)) {
         errors.price = "priceNotMultipleOfTick";
+      } else {
+        const deviation = priceDeviationError(price, mark, now);
+        if (deviation) errors.price = deviation;
       }
     } catch {
       errors.price = "priceNotMultipleOfTick";
@@ -87,6 +147,12 @@ export function describeFieldError(error: OrderFieldError, market: MarketInfo): 
       return `Price must be above zero.`;
     case "priceNotMultipleOfTick":
       return `Use increments of ${market.tickSize} ${market.quote}.`;
+    case "priceTooFarFromMark":
+      return `Price is more than ${MAX_LIMIT_PRICE_DEVIATION_BPS / 100}% away from the current price. Check for a typo.`;
+    case "markStale":
+      return `The current price of ${market.id} is too old. Wait for a fresh price.`;
+    case "markUnavailable":
+      return `Waiting for the current price of ${market.id}. Try again in a moment.`;
   }
 }
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { latencyDisplay } from "@/lib/market-data/selectors";
+import {
+  ageMs,
+  isStale,
+  latencyDisplay,
+  MAX_CLOCK_SKEW_MS,
+  STALE_MARK_MS,
+} from "@/lib/market-data/selectors";
 import type { StatsResponse } from "@/lib/market-data/types";
 
 function stats(overrides: Partial<StatsResponse> = {}): StatsResponse {
@@ -19,6 +25,21 @@ function stats(overrides: Partial<StatsResponse> = {}): StatsResponse {
     ...overrides,
   };
 }
+
+describe("a timestamp from the future", () => {
+  const now = 1_000_000;
+
+  it("reads as an unknown age and so as stale, never as fresh", () => {
+    const future = now + MAX_CLOCK_SKEW_MS + 1;
+    expect(ageMs(future, now)).toBeNull();
+    expect(isStale(future, now, STALE_MARK_MS)).toBe(true);
+  });
+
+  it("tolerates a small clock skew as age zero", () => {
+    expect(ageMs(now + MAX_CLOCK_SKEW_MS, now)).toBe(0);
+    expect(isStale(now + 1000, now, STALE_MARK_MS)).toBe(false);
+  });
+});
 
 describe("latencyDisplay", () => {
   it("reports ok with the measured figures when fresh and well sampled", () => {

@@ -1,3 +1,4 @@
+import { isFutureTimestamp } from "./selectors";
 import type { ConnectionState } from "./socket";
 import type {
   Candle,
@@ -75,6 +76,7 @@ export class MarketDataStore {
     const marksByMarket = { ...this.state.marksByMarket };
     for (const market of markets) {
       if (market.markPrice === null || market.markPriceUpdatedAtMs === null) continue;
+      if (isFutureTimestamp(market.markPriceUpdatedAtMs, Date.now())) continue;
       const existing = marksByMarket[market.id];
       if (!existing || market.markPriceUpdatedAtMs >= existing.time) {
         marksByMarket[market.id] = { price: market.markPrice, time: market.markPriceUpdatedAtMs };
@@ -159,6 +161,7 @@ export class MarketDataStore {
 
   private applyPrice(market: string, price: string, time: number): void {
     const existing = this.state.marksByMarket[market];
+    if (isFutureTimestamp(time, Date.now())) return;
     if (existing && time < existing.time) return;
     this.setState({
       marksByMarket: { ...this.state.marksByMarket, [market]: { price, time } },

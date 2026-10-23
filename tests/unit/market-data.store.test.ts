@@ -45,6 +45,31 @@ describe("MarketDataStore", () => {
     });
   });
 
+  it("drops a price stamped far in the future so it cannot pin the mark", () => {
+    const store = new MarketDataStore();
+    store.applyMessage({
+      type: "price",
+      market: "NSOL-PERP",
+      price: "150.000000",
+      publishedAtMs: Date.now(),
+    });
+    store.applyMessage({
+      type: "price",
+      market: "NSOL-PERP",
+      price: "9999.000000",
+      publishedAtMs: Date.now() + 3_600_000,
+    });
+    expect(store.getState().marksByMarket["NSOL-PERP"]?.price).toBe("150.000000");
+    const later = Date.now() + 1;
+    store.applyMessage({
+      type: "price",
+      market: "NSOL-PERP",
+      price: "151.000000",
+      publishedAtMs: later,
+    });
+    expect(store.getState().marksByMarket["NSOL-PERP"]?.price).toBe("151.000000");
+  });
+
   it("notifies subscribers exactly once per state change", () => {
     const store = new MarketDataStore();
     let notifications = 0;

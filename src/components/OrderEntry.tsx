@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { createPortal } from "react-dom";
 import {
   formatDecimal,
@@ -16,7 +16,9 @@ import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import { maxOrderSize, orderFunds } from "@/lib/trading/sizing";
 import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
-import { describeFieldError, validateOrder } from "@/lib/trading/validation";
+import type { UnknownHold } from "@/lib/rollup/accountMemory";
+import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
+import { describeFieldError, markMovedMaterially, validateOrder } from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
 import type {
   Balance,
@@ -38,19 +40,12 @@ import {
   rangeBrand,
 } from "@/components/ui/styles";
 
-const SKIP_CONFIRM_KEY = "noirwire-terminal-skip-order-confirm";
-const SESSION_CONFIRMED_KEY = "noirwire-terminal-session-order-confirmed";
 const PERCENT_SHORTCUTS = [25, 50, 75, 100];
 const GOOD_FOR_OPTIONS = [
   { value: "untilCancelled", label: "Until cancelled" },
   { value: "1m", label: "1 minute" },
   { value: "1h", label: "1 hour" },
 ] as const;
-
-function readFlag(storage: Storage | null, key: string): boolean {
-  if (!storage) return false;
-  return storage.getItem(key) === "1";
-}
 
 /**
  * A dock row's "Close" (reduce-only, full size, submits through the usual
@@ -67,6 +62,20 @@ export interface PrefillRequest {
   requestId: number;
 }
 
+/** Exactly what the confirm dialog showed and what will be signed, fixed when the dialog opened. */
+interface FrozenOrder {
+  draft: NewOrderInput;
+  descriptor: OrderDescriptor;
+  markPrice: string;
+  worstCost: string;
+  leverage: number;
+  /** The price field held a typed price, not the default that follows the mark. */
+  priceTyped: boolean;
+  /** The figures the dialog's summary shows, fixed with the order so they cannot drift from the reviewed cost. */
+  estimateDisplay: ComponentProps<typeof OrderSummary>["display"];
+  remainingAvailable: string | null;
+}
+
 export function OrderEntry({
   market,
   mark,
@@ -76,6 +85,11 @@ export function OrderEntry({
   walletLocked,
   balances,
   collateral,
+  accountError,
+  accountLoaded,
+  onOrderUnknown,
+  unknownHold,
+  onClearUnknownHold,
   position,
   onCreateWallet,
   onFund,
@@ -101,6 +115,15 @@ export function OrderEntry({
   balances: Record<string, Balance>;
   /** The separate perpetuals collateral account. `undefined` in dev mode. */
   collateral?: Balance;
+  /** The account could not be read: balances are unknown, not zero. Trading and funding are off until it can. */
+  accountError: string | null;
+  /** The account has been read successfully at least once: until then its balances are unknown, not zero. */
+  accountLoaded: boolean;
+  /** An order may have reached the venue with no way to learn its result: the draft and secret are held here by the parent. */
+  onOrderUnknown: (descriptor: OrderDescriptor, hold: UnknownHold) => void;
+  /** Such an order is still unresolved for this market: no other order is accepted until it is proven or cleared. */
+  unknownHold: { clearableAtMs: number } | null;
+  onClearUnknownHold: () => void;
   position: Position | null;
   onCreateWallet: () => void;
   onFund: () => Promise<FundOutcome>;
@@ -164,7 +187,9 @@ export function OrderEntry({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showDetails, setShowDetails] = useState(!compact);
-  const [skipFuture, setSkipFuture] = useState(false);
+  const [frozen, setFrozen] = useState<FrozenOrder | null>(null);
+  const [openAfterPrefill, setOpenAfterPrefill] = useState(false);
+  const submittingRef = useRef(false);
   const quantityInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
   const appliedPrefillIdRef = useRef<number | null>(null);
@@ -189,11 +214,8 @@ export function OrderEntry({
     setPriceTouched(false);
     setReduceOnly(prefillRequest.reduceOnly);
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (prefillRequest.submit) setShowConfirm(true);
+    if (prefillRequest.submit) setOpenAfterPrefill(true);
   }, [prefillRequest, market]);
-
-  const storage = typeof window === "undefined" ? null : window.localStorage;
-  const sessionStorageRef = typeof window === "undefined" ? null : window.sessionStorage;
 
   const priceDecimals = market ? priceDecimalsOf(market) : 2;
   const sizeDecimals = market ? sizeDecimalsOf(market) : 4;
@@ -280,7 +302,7 @@ export function OrderEntry({
       }
     : null;
 
-  const validation = market && draft ? validateOrder(draft, market) : null;
+  const validation = market && draft ? validateOrder(draft, market, mark, now) : null;
   const quantityError =
     quantityTouched && validation?.errors.quantity
       ? describeFieldError(validation.errors.quantity, { ...market!, base: baseUnit })
@@ -329,11 +351,15 @@ export function OrderEntry({
     : availableQuote;
   const shortfall = funds?.shortfall ?? null;
   const unaffordable = shortfall !== null;
-  const staleBlock = markStale && orderType === "market";
+  const staleBlock = markStale;
 
   const isSpotSell = !isPerp && side === "sell";
+  const accountUnknown = hasWallet && (!!accountError || !accountLoaded);
   const noFunds =
-    hasWallet && Number(availableQuote) <= 0 && !(isSpotSell && Number(availableBase) > 0);
+    hasWallet &&
+    !accountUnknown &&
+    Number(availableQuote) <= 0 &&
+    !(isSpotSell && Number(availableBase) > 0);
 
   // Spot buy, this browser's spot quote balance is empty, but there is
   // collateral to move: the primary action becomes "Move funds to spot"
@@ -352,32 +378,120 @@ export function OrderEntry({
 
   const canSubmit =
     hasWallet &&
+    !accountUnknown &&
     !noFunds &&
     !!market &&
     !!validation?.valid &&
     !unaffordable &&
     !staleBlock &&
     !submitting &&
-    !placeOrderPending;
+    !placeOrderPending &&
+    !unknownHold;
 
-  async function runSubmit() {
-    if (!draft || !market) return;
+  const confirmBlocker = (() => {
+    if (!market) return null;
+    if (unknownHold) return "An earlier order may have reached the venue. Check it first.";
+    if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
+    if (validation?.errors.quantity) {
+      return describeFieldError(validation.errors.quantity, { ...market, base: baseUnit });
+    }
+    if (validation?.errors.price) return describeFieldError(validation.errors.price, market);
+    if (staleBlock) return "Market data is too old. Wait for a fresh mark.";
+    if (unaffordable) return "Your available balance no longer covers this order.";
+    if (placeOrderPending) return "An order is still being checked with the venue.";
+    return canSubmit ? null : "This order cannot be placed right now.";
+  })();
+
+  /** What the dialog will freeze: the exact signed fields and the worst case the order can cost. */
+  function freezeOrder(): FrozenOrder | null {
+    if (!draft || !market || !mark) return null;
+    const worstCost = isSpotSell
+      ? `${formatDecimal(quantityText, sizeDecimals)} ${baseUnit} sold`
+      : funds
+        ? `${money(fromFixedPoint(funds.requiredQuote, 6))} including fee${isPerp ? " and margin" : ""}`
+        : UNAVAILABLE;
+    return {
+      draft: { ...draft },
+      descriptor: {
+        market: market.id,
+        side,
+        type: orderType,
+        price: priceText,
+        size: quantityText,
+        kind: market.kind,
+        baseUnit,
+        quoteUnit,
+        priceDecimals,
+        sizeDecimals,
+      },
+      markPrice: mark.price,
+      worstCost,
+      leverage,
+      priceTyped: priceOverride !== null,
+      estimateDisplay,
+      remainingAvailable,
+    };
+  }
+
+  /** The one entry to the confirmation, from a click and from a dock Close: nothing opens unless the order can be placed right now. */
+  function openConfirm() {
+    if (!canSubmit) {
+      setSubmitError(confirmBlocker);
+      return;
+    }
+    const order = freezeOrder();
+    if (!order) return;
+    // The price stops following the mark while it is under review.
+    setPriceOverride(order.draft.price);
+    setFrozen(order);
+    setSubmitError(null);
+    setShowConfirm(true);
+  }
+
+  // Opens the confirmation for a dock Close only once the prefilled values
+  // are in the render, through the same checks as a click on the primary
+  // button.
+  useEffect(() => {
+    if (!openAfterPrefill) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOpenAfterPrefill(false);
+    openConfirm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openAfterPrefill]);
+
+  // The review stands only while the order is what was shown and the mark is
+  // where it was; otherwise it must be reopened.
+  const reviewInvalid = (() => {
+    if (!showConfirm || !frozen || !draft) return null;
+    const changed =
+      draft.market !== frozen.draft.market ||
+      draft.side !== frozen.draft.side ||
+      draft.type !== frozen.draft.type ||
+      draft.price !== frozen.draft.price ||
+      draft.size !== frozen.draft.size ||
+      draft.reduceOnly !== frozen.draft.reduceOnly ||
+      draft.goodFor !== frozen.draft.goodFor;
+    if (changed) return "The order was changed after you opened this review.";
+    if (markMovedMaterially(frozen.markPrice, mark?.price)) {
+      return "The market price moved after you opened this review.";
+    }
+    return null;
+  })();
+
+  async function runSubmit(order: FrozenOrder) {
+    if (!market || submittingRef.current) return;
+    // The full check again, on the frozen order and the mark as it is now.
+    const recheck = validateOrder(order.draft, market, mark, now);
+    if (!canSubmit || !recheck.valid || markMovedMaterially(order.markPrice, mark?.price)) {
+      setSubmitError(confirmBlocker ?? "The order can no longer be placed as reviewed.");
+      return;
+    }
+    submittingRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
-    const descriptor: OrderDescriptor = {
-      market: market.id,
-      side,
-      type: orderType,
-      price: priceText,
-      size: quantityText,
-      kind: market.kind,
-      baseUnit,
-      quoteUnit,
-      priceDecimals,
-      sizeDecimals,
-    };
+    const { draft: submitted, descriptor } = order;
     try {
-      const outcome = await placeOrder(draft);
+      const outcome = await placeOrder(submitted);
       onOrderPlaced(outcome, descriptor);
       if (outcome.result.status !== "rejected") {
         setQuantityText("");
@@ -391,8 +505,13 @@ export function OrderEntry({
       // scroll position mid-panel on the next render.
       containerRef.current?.scrollTo({ top: 0 });
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Could not reach the venue");
+      if (error instanceof OrderOutcomeUnknownError) {
+        onOrderUnknown(descriptor, error.hold);
+      } else {
+        setSubmitError(error instanceof Error ? error.message : "Could not reach the venue");
+      }
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }
@@ -403,7 +522,7 @@ export function OrderEntry({
   }
 
   function handlePrimaryClick() {
-    if (!walletReady) return;
+    if (!walletReady || accountUnknown) return;
     if (!hasWallet) {
       if (!walletLocked) onCreateWallet();
       return;
@@ -449,20 +568,18 @@ export function OrderEntry({
       focusFirstInvalid();
       return;
     }
-    const skip = readFlag(storage, SKIP_CONFIRM_KEY);
-    const confirmedThisSession = readFlag(sessionStorageRef, SESSION_CONFIRMED_KEY);
-    if (skip || confirmedThisSession) {
-      void runSubmit();
-      return;
-    }
-    setShowConfirm(true);
+    openConfirm();
+  }
+
+  function closeReview() {
+    setShowConfirm(false);
+    if (frozen && !frozen.priceTyped) setPriceOverride(null);
   }
 
   function handleConfirm() {
-    sessionStorageRef?.setItem(SESSION_CONFIRMED_KEY, "1");
-    if (skipFuture) storage?.setItem(SKIP_CONFIRM_KEY, "1");
-    setShowConfirm(false);
-    void runSubmit();
+    if (!frozen || reviewInvalid || !canSubmit) return;
+    closeReview();
+    void runSubmit(frozen);
   }
 
   if (!market) {
@@ -493,6 +610,14 @@ export function OrderEntry({
     primaryLabel = "Create test wallet";
     primaryClass = btnPrimary;
     primaryDisabled = false;
+  } else if (accountUnknown) {
+    primaryLabel = accountError ? "Account unavailable" : "Loading account…";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
+  } else if (unknownHold) {
+    primaryLabel = "Order outcome unknown";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (placeOrderPending) {
     primaryLabel = "Checking with the venue…";
     primaryClass = btnGhost;
@@ -752,6 +877,40 @@ export function OrderEntry({
         </div>
       )}
 
+      {accountUnknown && accountError && (
+        <p role="alert" className="text-danger text-[12px]">
+          Could not read your account, so your balance is unknown (not zero). Trading and test funds
+          are off until it loads. Reload the page to try again.
+        </p>
+      )}
+      {unknownHold && (
+        <div role="alert" className="text-danger text-[12px]">
+          <p>
+            An order may have reached the venue and its result is unknown. Check Open orders and
+            Positions before placing another. The form stays locked until one of its fills shows up
+            or you clear this, which is possible only{" "}
+            {now >= unknownHold.clearableAtMs
+              ? "now."
+              : `in about ${Math.ceil((unknownHold.clearableAtMs - now) / 1000)}s.`}
+          </p>
+          <button
+            type="button"
+            className={`${btnGhost} mt-1 h-8 px-3 text-[12px]`}
+            disabled={now < unknownHold.clearableAtMs}
+            onClick={() => {
+              if (
+                window.confirm(
+                  "The order may still be live and may still fill. Clear the lock only if you checked Open orders and Positions and accept that risk. Clear the lock?",
+                )
+              ) {
+                onClearUnknownHold();
+              }
+            }}
+          >
+            I checked, clear the lock
+          </button>
+        </div>
+      )}
       {staleBlock && (
         <p role="alert" className="text-warning text-[12px]">
           Market data is {markAge !== null ? formatRelativeAge(markAge) : "too"} old. Wait for a
@@ -818,7 +977,7 @@ export function OrderEntry({
       )}
 
       {showConfirm &&
-        draft &&
+        frozen &&
         // A portal to `document.body`, not an in-place `fixed inset-0`: nested
         // inside a dockview panel, this div's ancestor chain includes an
         // element with its own CSS transform (dockview's overlay renderer),
@@ -835,50 +994,61 @@ export function OrderEntry({
           >
             <div className="bg-surface border-line-strong rounded-panel w-full max-w-sm border p-5">
               <p className="text-ink-strong text-[14px] font-medium">
-                {market.id} · {orderType === "market" ? "Market" : "Limit"} ·{" "}
-                {isPerp ? (side === "buy" ? "Long" : "Short") : side === "buy" ? "Buy" : "Sell"}{" "}
-                {formatDecimal(quantityText, sizeDecimals)} {baseUnit}
-                {isPerp ? ` · ${leverage}x cross` : ""}
+                {frozen.draft.market} · {frozen.draft.type === "market" ? "Market" : "Limit"} ·{" "}
+                {isPerp
+                  ? frozen.draft.side === "buy"
+                    ? "Long"
+                    : "Short"
+                  : frozen.draft.side === "buy"
+                    ? "Buy"
+                    : "Sell"}{" "}
+                {formatDecimal(frozen.draft.size, sizeDecimals)} {baseUnit}
+                {isPerp ? ` · ${frozen.leverage}x cross` : ""}
               </p>
               <p className="text-faint mt-1 text-[12px]">
-                {orderType === "market"
-                  ? side === "buy"
+                {frozen.draft.type === "market"
+                  ? frozen.draft.side === "buy"
                     ? "Max buy price "
                     : "Min sell price "
                   : "Limit price "}
-                {formatDecimal(priceText, priceDecimals)} {quoteUnit}
+                {formatDecimal(frozen.draft.price, priceDecimals)} {quoteUnit}
               </p>
+              <p className="text-faint mt-1 text-[12px]">Worst case: {frozen.worstCost}</p>
               <OrderSummary
-                side={side}
+                side={frozen.draft.side}
                 isPerp={isPerp}
-                display={estimateDisplay}
+                display={frozen.estimateDisplay}
                 priceDecimals={priceDecimals}
-                remainingAvailable={remainingAvailable}
+                remainingAvailable={frozen.remainingAvailable}
                 quoteSymbol={quoteUnit}
               />
-              <label className="text-dim mt-3 flex items-center gap-2 text-[12px]">
-                <input
-                  type="checkbox"
-                  checked={skipFuture}
-                  onChange={(event) => setSkipFuture(event.target.checked)}
-                />
-                Do not ask again
-              </label>
+              {(reviewInvalid ?? confirmBlocker) && (
+                <p role="alert" className="text-danger mt-3 text-[12px]">
+                  {reviewInvalid ?? confirmBlocker}
+                </p>
+              )}
               <div className="mt-4 flex gap-3">
-                <button
-                  type="button"
-                  className={`${btnGhost} h-11 flex-1`}
-                  onClick={() => setShowConfirm(false)}
-                >
+                <button type="button" className={`${btnGhost} h-11 flex-1`} onClick={closeReview}>
                   Back
                 </button>
-                <button
-                  type="button"
-                  className={`${side === "buy" ? btnSafe : btnDanger} h-11 flex-1`}
-                  onClick={handleConfirm}
-                >
-                  {submitLabel}
-                </button>
+                {reviewInvalid ? (
+                  <button
+                    type="button"
+                    className={`${btnPrimary} h-11 flex-1`}
+                    onClick={closeReview}
+                  >
+                    Close and review again
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className={`${frozen.draft.side === "buy" ? btnSafe : btnDanger} h-11 flex-1`}
+                    disabled={!canSubmit}
+                    onClick={handleConfirm}
+                  >
+                    {submitLabel}
+                  </button>
+                )}
               </div>
             </div>
           </div>,

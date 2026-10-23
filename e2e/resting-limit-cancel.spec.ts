@@ -11,9 +11,13 @@ test.describe("A resting limit order, then cancelled", () => {
     await page.goto("/");
     await createAndFundWallet(page);
 
+    const maxBuyPrice = await page.getByLabel("Max buy price (nUSD)").inputValue();
+    const mark = Number(maxBuyPrice) / 1.01;
+    const restingPrice = (Math.round((mark * 0.95) / 0.1) * 0.1).toFixed(2);
+
     await page.getByRole("button", { name: "limit", exact: true }).click();
     await page.getByLabel("Quantity (SOL)").fill("1");
-    await page.getByLabel(/Limit price/).fill("1.00");
+    await page.getByLabel(/Limit price/).fill(restingPrice);
 
     await submitOrder(page, "Place test long");
 

@@ -144,6 +144,26 @@ describe("DevTradingClient.subscribe", () => {
   });
 });
 
+describe("DevTradingClient.subscribe read failures", () => {
+  it("reports a failed read through onError instead of staying silent", async () => {
+    vi.useFakeTimers();
+    const fetchFn = vi.fn().mockResolvedValue(jsonResponse({}, 500));
+    const client = new DevTradingClient({
+      baseUrl: "http://sim.test",
+      fetchFn,
+      pollIntervalMs: 1000,
+    });
+    const listener = vi.fn();
+    const onError = vi.fn();
+    const unsubscribe = client.subscribe(WALLET, listener, onError);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listener).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    vi.useRealTimers();
+  });
+});
+
 describe("DevTradingClient error handling", () => {
   it("throws a TradingRequestError on a non-ok response from a non-fund route", async () => {
     const fetchFn = vi.fn().mockResolvedValue(jsonResponse({}, 500));

@@ -20,9 +20,18 @@ import {
   transferErrorToResult,
 } from "../rollup/outcome";
 import { pinnedBaseDecimals } from "../rollup/markets";
+import {
+  loadHolds,
+  markAccountOpened,
+  removeHold,
+  saveHold,
+  wasAccountOpened,
+  type UnknownHold,
+} from "../rollup/accountMemory";
 import { trackSecret, untrackSecret } from "../rollup/secretStore";
 import {
   buildRealSession,
+  SessionAuthError,
   trustedProgramId,
   type RollupSession,
   type RollupSessionDeps,
@@ -33,6 +42,7 @@ import {
   programAddresses,
   SIDE_CODE,
   randomSecret,
+  VIEW_NOT_READABLE_MESSAGE,
   type View,
 } from "../rollup/sdk";
 import {
@@ -63,6 +73,7 @@ import type {
   TransferResult,
   WalletIdentity,
 } from "./types";
+import { OrderOutcomeUnknownError } from "./unknownOutcome";
 
 /**
  * One unsigned read, with a real three-way outcome: a thrown request
@@ -242,7 +253,10 @@ export class RollupTradingClient implements TradingClient {
   ) => Promise<RollupSession>;
   private sessions = new Map<string, OpenSession>();
   private listeners = new Map<string, Set<StateListener>>();
+  private errorListeners = new Map<string, Set<(error: Error) => void>>();
   private newestResultsWritten = new Map<string, number>();
+  /** `address:market` -> the secret (hex) of an order that may have reached the venue, until its outcome is proven or released. */
+  private unresolvedOrders = new Map<string, UnknownHold>();
 
   constructor(private readonly options: RollupTradingClientOptions) {
     this.storage = options.storage ?? browserLocalStorage();
@@ -287,12 +301,49 @@ export class RollupTradingClient implements TradingClient {
   /** Pushes this session's view to the wallet's listeners: once now, then on every change the rollup reports. */
   private async watchView(session: RollupSession): Promise<() => void> {
     const stop = session.client.subscribeView((view) => this.emitState(session, view));
+    const address = session.owner.publicKey.toBase58();
     try {
-      this.emitState(session, await session.client.view());
-    } catch {
-      // No view yet (account not open): the subscription reports it once it exists.
+      const view = await session.client.view();
+      // A missing view reads the same as the SDK's own "not readable" answer.
+      if (!view) throw new Error(VIEW_NOT_READABLE_MESSAGE);
+      this.emitState(session, view);
+    } catch (error) {
+      const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
+      if (notReadable && !wasAccountOpened(this.storage, address)) {
+        // This wallet has never been seen with an account: no view yet means
+        // it is empty. The subscription reports it once it exists.
+        for (const listener of this.listeners.get(address) ?? []) {
+          listener(this.emptyState(session));
+        }
+      } else {
+        // A failed read, or an account seen before that now reads as missing
+        // (a lagging or refused read looks the same): it stays unknown.
+        const failure = notReadable
+          ? new Error("This account was opened before but cannot be read right now.")
+          : error instanceof Error
+            ? error
+            : new Error(String(error));
+        for (const onError of this.errorListeners.get(address) ?? []) onError(failure);
+      }
     }
     return () => void stop();
+  }
+
+  private emptyState(session: RollupSession): TraderState {
+    return {
+      trader: session.owner.publicKey.toBase58(),
+      equity: "0",
+      balances: {},
+      collateral: {
+        asset: quoteSymbolOf(session.deployment) ?? "",
+        available: "0",
+        reserved: "0",
+        total: "0",
+      },
+      positions: {},
+      openOrders: [],
+      spotAssets: spotAssetsOf(session.deployment),
+    };
   }
 
   /** A view older than one already shown is dropped: the order result and the subscription arrive on separate sockets, in either order. */
@@ -300,6 +351,7 @@ export class RollupTradingClient implements TradingClient {
     const address = session.owner.publicKey.toBase58();
     if (view.resultsWritten < (this.newestResultsWritten.get(address) ?? 0)) return;
     this.newestResultsWritten.set(address, view.resultsWritten);
+    markAccountOpened(this.storage, address);
     const state = this.mapViewFrom(session, view);
     for (const listener of this.listeners.get(address) ?? []) listener(state);
   }
@@ -313,33 +365,27 @@ export class RollupTradingClient implements TradingClient {
   }
 
   /**
-   * Runs `fn` against this wallet's session, refreshing the sign-in and
-   * retrying once if the session is older than `SESSION_REFRESH_MS` or the
-   * call itself throws. An expired token surfaces as a thrown error from
-   * the private connection, not a typed result, so any failure gets one
-   * retry against a fresh sign-in rather than trying to recognise the exact
-   * shape of an auth error ourselves. Once `fn` calls `markSent`, nothing it
-   * throws is retried: a transaction that may already have gone out is
-   * never sent a second time.
+   * Runs `fn` against this wallet's session. Building the session again is
+   * retried once, and only for a `SessionAuthError` (a failed sign-in, which
+   * happens before any call exists); the session is also refreshed first
+   * once it is older than `SESSION_REFRESH_MS`. `fn` itself is never run
+   * twice: nothing it throws says whether something already went out.
    */
   private async withSession<T>(
     wallet: WalletIdentity,
-    fn: (session: RollupSession, markSent: () => void) => Promise<T>,
+    fn: (session: RollupSession) => Promise<T>,
   ): Promise<T> {
-    let session = await this.ensureSession(wallet);
+    let session: RollupSession;
+    try {
+      session = await this.ensureSession(wallet);
+    } catch (error) {
+      if (!(error instanceof SessionAuthError)) throw error;
+      session = await this.refreshSession(wallet);
+    }
     if (this.now() - session.createdAtMs > SESSION_REFRESH_MS) {
       session = await this.refreshSession(wallet);
     }
-    let sent = false;
-    try {
-      return await fn(session, () => {
-        sent = true;
-      });
-    } catch (error) {
-      if (sent) throw error;
-      session = await this.refreshSession(wallet);
-      return fn(session, () => {});
-    }
+    return fn(session);
   }
 
   private bindings(session: RollupSession): Map<string, MarketBinding> {
@@ -366,6 +412,7 @@ export class RollupTradingClient implements TradingClient {
     const session = await this.ensureSession(wallet);
     try {
       await session.client.view();
+      markAccountOpened(this.storage, wallet.address);
       return { kind: "alreadyFunded" };
     } catch {
       // No view yet: account is not open. Fall through to open + fund.
@@ -382,6 +429,7 @@ export class RollupTradingClient implements TradingClient {
       writeFlag(this.storage, noFaucetKey(trustedProgramId(this.options.overrides)));
     }
     if (outcome.kind === "granted") {
+      markAccountOpened(this.storage, wallet.address);
       // The session's client was built before the account existed, so its
       // reader may not yet see the view; a fresh session re-establishes it
       // cleanly rather than guessing whether a retry is needed.
@@ -416,7 +464,9 @@ export class RollupTradingClient implements TradingClient {
   }
 
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
-    return this.withSession(wallet, async (session, markSent) => {
+    const held = this.heldOrder(wallet, order.market);
+    if (held) throw new OrderOutcomeUnknownError(held);
+    return this.withSession(wallet, async (session) => {
       const binding = this.bindings(session).get(order.market);
       if (!binding) throw new Error(`${order.market} was not found on chain`);
       const price = priceToChainAtoms(binding.units, order.price);
@@ -431,6 +481,22 @@ export class RollupTradingClient implements TradingClient {
       // Tracked before the send, so an order that lands after this call
       // gave up on it still has its fills recognised as this trader's own.
       trackSecret(this.storage, wallet.address, order.market, secret);
+      // From here the order may be on the venue: it counts as sent, and the
+      // market stays held, in storage too, until a result proves otherwise.
+      const hold: UnknownHold = {
+        market: order.market,
+        side: order.side,
+        type: order.type,
+        size: order.size,
+        price: order.price,
+        tag: bytesToHex(secret),
+        sentAtMs: this.now(),
+        orderExpiresAtMs: expiry === undefined ? null : Number(expiry) * 1000,
+      };
+      if (!this.holdOrder(wallet, hold)) {
+        untrackSecret(this.storage, wallet.address, secret);
+        throw new Error("Could not record this order on this device first, so it was not sent.");
+      }
       let result: PlaceOrderResult;
       try {
         const placed = await session.client.placeOrder(
@@ -446,7 +512,7 @@ export class RollupTradingClient implements TradingClient {
           },
           { expirySeconds: DEFAULT_EXPIRY_SECONDS, pushWaitMs: RESULT_PUSH_WAIT_MS },
         );
-        markSent();
+        this.releaseUnknownOutcome(wallet, order.market);
         result = placedToResult(
           placed,
           binding.units,
@@ -461,8 +527,8 @@ export class RollupTradingClient implements TradingClient {
         // ordinary rejected state, like a book-dependent refusal, rather
         // than reaching the submit button's generic error path.
         // OutcomeUnknown (sent, and may still run) becomes a pending result.
-        // Whatever is left was thrown before the order was signed, which is
-        // the only case `withSession` may retry.
+        // Whatever is left is not proven to have happened before the send,
+        // whatever its text says, so it is never retried.
         const mapped =
           thrownToResult(error, refusalContext) ??
           placeUnknownToResult(
@@ -472,11 +538,8 @@ export class RollupTradingClient implements TradingClient {
             expiresAtMs,
             refusalContext,
           );
-        if (!mapped) {
-          untrackSecret(this.storage, wallet.address, secret);
-          throw error;
-        }
-        markSent();
+        if (!mapped) throw new OrderOutcomeUnknownError(hold);
+        this.releaseUnknownOutcome(wallet, order.market);
         result = mapped;
       }
       session.saveKeyCheckpoint();
@@ -488,6 +551,34 @@ export class RollupTradingClient implements TradingClient {
       // fill it derives for this secret.
       return { ...result, tag: bytesToHex(secret) };
     });
+  }
+
+  /** The held order for this wallet and market: from memory, else from storage (a reload, a second tab). */
+  private heldOrder(wallet: WalletIdentity, market: string): UnknownHold | null {
+    return (
+      this.unresolvedOrders.get(`${wallet.address}:${market}`) ??
+      loadHolds(this.storage, wallet.address)[market] ??
+      null
+    );
+  }
+
+  /** False when the hold could not be written to storage: nothing is held then, and the order must not be sent. */
+  private holdOrder(wallet: WalletIdentity, hold: UnknownHold): boolean {
+    if (!saveHold(this.storage, wallet.address, hold)) return false;
+    this.unresolvedOrders.set(`${wallet.address}:${hold.market}`, hold);
+    return true;
+  }
+
+  async readUnknownOutcome(wallet: WalletIdentity, market: string): Promise<UnknownHold | null> {
+    return this.heldOrder(wallet, market);
+  }
+
+  /** With a `tag`, releases only the hold that carries it: a record shown for another order or wallet never clears this one. */
+  releaseUnknownOutcome(wallet: WalletIdentity, market: string, tag?: string): void {
+    const held = this.heldOrder(wallet, market);
+    if (tag !== undefined && held && held.tag !== tag) return;
+    this.unresolvedOrders.delete(`${wallet.address}:${market}`);
+    removeHold(this.storage, wallet.address, market);
   }
 
   async cancelOrder(
@@ -621,12 +712,24 @@ export class RollupTradingClient implements TradingClient {
     return this.withSession(wallet, (session) => Promise.resolve(this.mapView(session)));
   }
 
-  subscribe(wallet: WalletIdentity, listener: StateListener): () => void {
+  subscribe(
+    wallet: WalletIdentity,
+    listener: StateListener,
+    onError?: (error: Error) => void,
+  ): () => void {
     const listeners = this.listeners.get(wallet.address) ?? new Set();
     this.listeners.set(wallet.address, listeners);
     listeners.add(listener);
-    void this.ensureSession(wallet).catch(() => {});
-    return () => listeners.delete(listener);
+    const errorListeners = this.errorListeners.get(wallet.address) ?? new Set();
+    this.errorListeners.set(wallet.address, errorListeners);
+    if (onError) errorListeners.add(onError);
+    void this.ensureSession(wallet).catch((error: unknown) =>
+      onError?.(error instanceof Error ? error : new Error(String(error))),
+    );
+    return () => {
+      listeners.delete(listener);
+      if (onError) errorListeners.delete(onError);
+    };
   }
 
   private mapView(session: RollupSession): Promise<TraderState> {

@@ -1,4 +1,5 @@
 import type { MarketInfo } from "../market-data/types";
+import type { UnknownHold } from "../rollup/accountMemory";
 import type { OrderStatus, OrderType, Side } from "../sim-api/schema";
 
 export type { OrderStatus, OrderType, Side };
@@ -233,10 +234,23 @@ export interface TradingClient {
    * back empty. Optional: dev mode has no on-chain accounts to check.
    */
   checkPrivacy?(wallet: WalletIdentity, market: string): Promise<PrivacyCheck>;
+  /**
+   * An order whose outcome is unknown (`OrderOutcomeUnknownError`) holds its
+   * market against another order. Releases that hold, once the outcome is
+   * proven or the user has cleared it. Optional: dev mode has no such case.
+   */
+  releaseUnknownOutcome?(wallet: WalletIdentity, market: string, tag?: string): void;
+  /** The held order for this market, kept across a reload; null when nothing is held. */
+  readUnknownOutcome?(wallet: WalletIdentity, market: string): Promise<UnknownHold | null>;
   /** Fetches the trader's current state once. */
   fetchState(wallet: WalletIdentity): Promise<TraderState>;
   /** Pushes the trader's state until unsubscribed: polled in dev mode, pushed by the rollup's own account subscription in rollup mode. */
-  subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void;
+  subscribe(
+    wallet: WalletIdentity,
+    listener: (state: TraderState) => void,
+    /** Called when the account cannot be read at all (sign-in or connection failure), so a failed read is never shown as an empty account. */
+    onError?: (error: Error) => void,
+  ): () => void;
   /**
    * Ends this wallet's live result subscription and background refreshes,
    * if one was ever opened. Optional: dev mode has no background

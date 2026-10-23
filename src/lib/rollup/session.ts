@@ -101,6 +101,18 @@ export function trustedProgramId(overrides: DeploymentOverrides = {}): PublicKey
   return overrides.programId ? new PublicKey(overrides.programId) : PACKAGE_PROGRAM_ID;
 }
 
+/**
+ * The sign-in step of building a session failed. It happens before any
+ * order exists, so building the session again is the one retry that can
+ * never send anything twice.
+ */
+export class SessionAuthError extends Error {
+  constructor(readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Sign-in to the rollup failed");
+    this.name = "SessionAuthError";
+  }
+}
+
 interface ExchangeTokens {
   /** The token mint at each index. */
   mints: string[];
@@ -289,7 +301,9 @@ export async function buildRealSession(
     described.rollupRpcUrl,
     owner.publicKey,
     signInSigner(owner),
-  );
+  ).catch((error: unknown) => {
+    throw new SessionAuthError(error);
+  });
 
   const storage = browserLocalStorage();
   const ownerAddress = owner.publicKey.toBase58();

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
-import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
+import { SessionAuthError, type RollupSession, type TraderClientLike } from "@/lib/rollup/session";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { WalletIdentity } from "@/lib/trading/types";
@@ -140,18 +140,12 @@ function fakeSession(client: TraderClientLike, createdAtMs: number): RollupSessi
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 
 describe("RollupTradingClient: sign-in refresh", () => {
-  it("rebuilds the session once a call throws (an expired token), then succeeds", async () => {
+  it("rebuilds the session once after a typed sign-in failure, then succeeds", async () => {
     let built = 0;
-    const throwingClient = fakeClient({
-      view: async () => {
-        throw new Error("401: token expired");
-      },
-    });
-    const workingClient = fakeClient();
-
     const buildSession = vi.fn(async () => {
       built += 1;
-      return fakeSession(built === 1 ? throwingClient : workingClient, Date.now());
+      if (built === 1) throw new SessionAuthError(new Error("401: token expired"));
+      return fakeSession(fakeClient(), Date.now());
     });
 
     const client = new RollupTradingClient({

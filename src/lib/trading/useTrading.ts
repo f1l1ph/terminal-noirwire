@@ -30,6 +30,12 @@ export interface PlacedOrderOutcome {
   clientDurationMs: number;
 }
 
+interface AccountRead {
+  state: TraderState | null;
+  syncedAtMs: number | null;
+  error: string | null;
+}
+
 function walletOf(account: WalletAccount): WalletIdentity {
   return { address: account.publicKey, secretKeyHex: account.secretKeyHex };
 }
@@ -74,16 +80,29 @@ export function useTrading(
   marketSettingsLookup: MarketSettingsLookup,
 ) {
   const client = useMemo(() => createTradingClient(marketSettingsLookup), [marketSettingsLookup]);
-  const [state, setState] = useState<TraderState>(EMPTY_STATE);
-  // The one piece of truth the footer's sync status reads (item 8 of the
-  // second design review): set every time this hook actually writes `state`
-  // from the venue, including the initial subscribe on reload, so the
-  // footer can never say "not yet synced" beside a dock that already shows
-  // a position - the two now read the same event, not two independent ones.
-  const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
-  const setStateSynced = useCallback((next: TraderState) => {
-    setState(next);
-    setLastSyncedAtMs(Date.now());
+  // What was last read for each wallet, keyed by its address: a late
+  // callback from a wallet no longer in view can only ever write its own
+  // entry, never the current wallet's. `state` stays null until a first
+  // successful read, so an account not read yet is never shown as an empty
+  // one; `error` is set when it could not be read and cleared by the next
+  // state. `syncedAtMs` is the one piece of truth the footer's sync status
+  // reads: set every time this hook writes `state` from the venue.
+  const [reads, setReads] = useState<Record<string, AccountRead>>({});
+  const setStateSynced = useCallback((owner: string, next: TraderState) => {
+    setReads((prev) => ({
+      ...prev,
+      [owner]: { state: next, syncedAtMs: Date.now(), error: null },
+    }));
+  }, []);
+  const setAccountError = useCallback((owner: string, message: string) => {
+    setReads((prev) => ({
+      ...prev,
+      [owner]: {
+        state: prev[owner]?.state ?? null,
+        syncedAtMs: prev[owner]?.syncedAtMs ?? null,
+        error: message,
+      },
+    }));
   }, []);
   const [ownTags, setOwnTags] = useState<ReadonlySet<string>>(new Set());
   const [rollupSecrets, setRollupSecrets] = useState<Uint8Array[]>([]);
@@ -129,18 +148,28 @@ export function useTrading(
   useEffect(() => {
     if (!wallet) return;
     const identity = walletOf(wallet);
-    const unsubscribe = client.subscribe(identity, (next) => {
-      setStateSynced(next);
-      for (const order of next.openOrders) addOwnTag(order.tag);
-    });
+    let active = true;
+    const unsubscribe = client.subscribe(
+      identity,
+      (next) => {
+        if (!active) return;
+        setStateSynced(identity.address, next);
+        for (const order of next.openOrders) addOwnTag(order.tag);
+      },
+      (error) => {
+        if (active)
+          setAccountError(identity.address, error.message || "Could not read the account");
+      },
+    );
     return () => {
+      active = false;
       unsubscribe();
       // Wallet changed (cleared, switched) or this component is going away:
       // end the wallet's own live subscription and background refreshes,
       // never left running for a wallet no longer in view.
       client.closeWallet?.(identity);
     };
-  }, [client, wallet, addOwnTag, setStateSynced]);
+  }, [client, wallet, addOwnTag, setStateSynced, setAccountError]);
 
   useEffect(() => {
     if (!wallet || !client.knownNoFaucet) return;
@@ -167,8 +196,9 @@ export function useTrading(
     return () => window.removeEventListener("beforeunload", onUnload);
   }, [client, wallet]);
 
-  const effectiveState = wallet ? state : EMPTY_STATE;
-  const effectiveLastSyncedAtMs = wallet ? lastSyncedAtMs : null;
+  const currentRead = wallet ? reads[wallet.publicKey] : undefined;
+  const effectiveState = currentRead?.state ?? EMPTY_STATE;
+  const effectiveLastSyncedAtMs = currentRead?.syncedAtMs ?? null;
 
   const fund = useCallback(async (): Promise<FundOutcome> => {
     if (!wallet) return { kind: "error", message: "No wallet to fund" };
@@ -199,12 +229,30 @@ export function useTrading(
       // Rollup mode pushes the state an order leaves behind with the result
       // itself; dev mode only polls, so it is asked once, without waiting.
       if (client.mode === "dev") {
-        void client.fetchState(walletOf(wallet)).then(setStateSynced, () => {});
+        void client.fetchState(walletOf(wallet)).then(
+          (next) => setStateSynced(wallet.publicKey, next),
+          () => {},
+        );
       }
       return { result, clientDurationMs };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- readRollupSecrets closes over wallet/client, already deps
     [client, wallet, addOwnTag, setStateSynced],
+  );
+
+  const releaseUnknownOutcome = useCallback(
+    (market: string, tag?: string) => {
+      if (wallet) client.releaseUnknownOutcome?.(walletOf(wallet), market, tag);
+    },
+    [client, wallet],
+  );
+
+  const readUnknownOutcome = useCallback(
+    async (market: string) => {
+      if (!wallet || !client.readUnknownOutcome) return null;
+      return client.readUnknownOutcome(walletOf(wallet), market);
+    },
+    [client, wallet],
   );
 
   const cancelAllInMarket = useCallback(
@@ -249,7 +297,7 @@ export function useTrading(
       const result = await client.transferBetweenBalances(walletOf(wallet), toSpot, amount);
       if (result.kind === "ok") {
         const next = await client.fetchState(walletOf(wallet));
-        setStateSynced(next);
+        setStateSynced(wallet.publicKey, next);
       }
       return result;
     },
@@ -259,6 +307,8 @@ export function useTrading(
   return {
     client,
     state: effectiveState,
+    accountError: currentRead?.error ?? null,
+    accountLoaded: !!currentRead?.state,
     lastSyncedAtMs: effectiveLastSyncedAtMs,
     ownTags,
     rollupSecrets,
@@ -266,6 +316,8 @@ export function useTrading(
     noFaucet,
     fund,
     placeOrder,
+    releaseUnknownOutcome,
+    readUnknownOutcome,
     cancelAllInMarket,
     syncMarket,
     cancelOrder: client.cancelOrder ? cancelOrder : null,

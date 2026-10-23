@@ -158,14 +158,19 @@ export class DevTradingClient implements TradingClient {
     };
   }
 
-  subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void {
+  subscribe(
+    wallet: WalletIdentity,
+    listener: (state: TraderState) => void,
+    onError?: (error: Error) => void,
+  ): () => void {
     let cancelled = false;
     const tick = async () => {
       try {
         const state = await this.fetchState(wallet);
         if (!cancelled) listener(state);
-      } catch {
-        // Transient failure; the next poll tries again.
+      } catch (error) {
+        // The next poll tries again; meanwhile the account reads as unknown.
+        if (!cancelled) onError?.(error instanceof Error ? error : new Error(String(error)));
       }
     };
     void tick();

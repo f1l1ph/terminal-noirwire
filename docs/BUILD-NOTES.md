@@ -84,11 +84,9 @@ These are required by the brief's explicit overrides, or cut for scope
 - **No review sheet.** Per the task's explicit override: the order summary
   (quantity, protection/limit price, fee, initial margin, estimated
   liquidation) is always visible above the submit button
-  (`OrderSummary`/`OrderEntry`), and only the **first** order each browser
-  session asks for one confirmation (with a "Do not ask again" tick,
-  persisted in `localStorage`); every order after that is one click. Session
-  boundary is `sessionStorage` (a new tab or a reload after the browser
-  fully closes asks again, unless "Do not ask again" was ticked).
+  (`OrderEntry`/`OrderSummary`), and every order asks for one confirmation,
+  every time. The submitted price must also sit within 10% of the current
+  mark, and the form re-checks everything at the moment of confirming.
 - **"always with the word too"** (the brief's phrasing for the safe/danger
   side-button and tape-row override) is read as: color never carries
   direction alone, it is always paired with the literal word - "Buy"/"Sell"

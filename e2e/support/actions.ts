@@ -19,11 +19,9 @@ export async function createAndFundWallet(page: Page): Promise<void> {
   await fundWallet(page);
 }
 
-/** Submits the currently valid order form, confirming the one-time session dialog if it appears. */
+/** Submits the currently valid order form and confirms it in the dialog. */
 export async function submitOrder(page: Page, submitLabel: string): Promise<void> {
   await page.getByRole("button", { name: submitLabel, exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "Confirm order" });
-  if (await dialog.isVisible().catch(() => false)) {
-    await dialog.getByRole("button", { name: submitLabel, exact: true }).click();
-  }
+  await dialog.getByRole("button", { name: submitLabel, exact: true }).click();
 }

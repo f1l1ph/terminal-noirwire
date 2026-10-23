@@ -1,3 +1,4 @@
+import type { UnknownHold } from "../rollup/accountMemory";
 import type { DeploymentOverrides } from "../rollup/deployment";
 import type {
   CancelResult,
@@ -107,6 +108,15 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await this.load()).fetchState(wallet);
   }
 
+  releaseUnknownOutcome(wallet: WalletIdentity, market: string, tag?: string): void {
+    if (!this.loaded) return;
+    void this.loaded.then((client) => client.releaseUnknownOutcome?.(wallet, market, tag));
+  }
+
+  async readUnknownOutcome(wallet: WalletIdentity, market: string): Promise<UnknownHold | null> {
+    return (await (await this.load()).readUnknownOutcome?.(wallet, market)) ?? null;
+  }
+
   closeWallet(wallet: WalletIdentity): void {
     // Only closes a session that was actually opened; never forces the
     // on-chain SDK to load just to close nothing.
@@ -114,13 +124,22 @@ export class LazyRollupTradingClient implements TradingClient {
     void this.loaded.then((client) => client.closeWallet?.(wallet));
   }
 
-  subscribe(wallet: WalletIdentity, listener: (state: TraderState) => void): () => void {
+  subscribe(
+    wallet: WalletIdentity,
+    listener: (state: TraderState) => void,
+    onError?: (error: Error) => void,
+  ): () => void {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
-    void this.load().then((client) => {
-      if (cancelled) return;
-      unsubscribe = client.subscribe(wallet, listener);
-    });
+    this.load().then(
+      (client) => {
+        if (cancelled) return;
+        unsubscribe = client.subscribe(wallet, listener, onError);
+      },
+      (error: unknown) => {
+        if (!cancelled) onError?.(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
     return () => {
       cancelled = true;
       unsubscribe?.();
