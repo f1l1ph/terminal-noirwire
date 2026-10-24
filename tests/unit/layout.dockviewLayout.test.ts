@@ -81,8 +81,9 @@ describe("isValidStoredLayout", () => {
   });
 
   it("rejects a layout missing a panel that exists now", () => {
-    const { ticket: _ticket, ...rest } = validLayout.panels;
-    const broken = { grid: validLayout.grid, panels: rest };
+    const panels: Record<string, unknown> = { ...validLayout.panels };
+    delete panels.ticket;
+    const broken = { grid: validLayout.grid, panels };
     expect(isValidStoredLayout({ version: LAYOUT_VERSION, layout: broken }, PANEL_IDS)).toBe(false);
   });
 
