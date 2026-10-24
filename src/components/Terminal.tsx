@@ -364,7 +364,7 @@ export function Terminal() {
     }
   }
 
-  function requestClose(position: Position): void {
+  function requestReduceOnly(position: Position, submit: boolean): void {
     const size = Number(position.size);
     setChosenMarketId(position.market);
     setPrefillRequest({
@@ -372,23 +372,13 @@ export function Terminal() {
       side: size > 0 ? "sell" : "buy",
       size: String(Math.abs(size)),
       reduceOnly: true,
-      submit: true,
+      submit,
       requestId: Date.now(),
     });
   }
 
-  function requestReduce(position: Position): void {
-    const size = Number(position.size);
-    setChosenMarketId(position.market);
-    setPrefillRequest({
-      market: position.market,
-      side: size > 0 ? "sell" : "buy",
-      size: String(Math.abs(size)),
-      reduceOnly: true,
-      submit: false,
-      requestId: Date.now(),
-    });
-  }
+  const requestClose = (position: Position): void => requestReduceOnly(position, true);
+  const requestReduce = (position: Position): void => requestReduceOnly(position, false);
 
   const market = data.markets.find((item) => item.id === selectedMarketId);
   // Rollup mode names the quote token as the deployment does (USDC, nUSD),

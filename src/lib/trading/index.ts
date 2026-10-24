@@ -17,11 +17,3 @@ export function createTradingClient(marketSettingsLookup: MarketSettingsLookup):
   }
   return new DevTradingClient({ baseUrl: env.simUrl });
 }
-
-export * from "./types";
-export * from "./decimal";
-export * from "./risk";
-export * from "./validation";
-export * from "./tags";
-export * from "./spotTransfer";
-export { DevTradingClient } from "./devClient";

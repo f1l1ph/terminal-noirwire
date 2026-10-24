@@ -32,7 +32,7 @@ export interface OwnFillRecord {
   tag: string;
 }
 
-const opposite = (side: Side): Side => (side === "buy" ? "sell" : "buy");
+export const opposite = (side: Side): Side => (side === "buy" ? "sell" : "buy");
 
 /**
  * Derives this trader's own fills from the public tape plus its known

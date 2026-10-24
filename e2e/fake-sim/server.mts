@@ -412,6 +412,21 @@ function placeOrder(body: Record<string, unknown>): OrderOutcome {
   const willFillNow =
     type === "market" || (side === "buy" ? price >= state.markPrice : price <= state.markPrice);
 
+  const restOrder = (remainingSize: string): void => {
+    const order: OpenOrder = {
+      orderId,
+      tag,
+      market: market.id,
+      side,
+      type,
+      price: round(price),
+      size: round(size),
+      remainingSize,
+      reduceOnly: Boolean(body.reduceOnly),
+    };
+    trader.openOrders.set(orderId, order);
+  };
+
   // Test-only affordance for the Playwright suite's partial-fill screenshot:
   // this fake engine is otherwise strictly all-or-nothing (sim-noirwire's
   // real book can of course match less than a resting order's full size
@@ -431,18 +446,7 @@ function placeOrder(body: Record<string, unknown>): OrderOutcome {
       price: type === "market" ? state.markPrice : price,
       fee: fee * (filledNow / size),
     });
-    const order: OpenOrder = {
-      orderId,
-      tag,
-      market: market.id,
-      side,
-      type,
-      price: round(price),
-      size: round(size),
-      remainingSize: remaining,
-      reduceOnly: Boolean(body.reduceOnly),
-    };
-    trader.openOrders.set(orderId, order);
+    restOrder(remaining);
     return {
       httpStatus: 200,
       body: devOrderResponseSchema.parse({
@@ -457,18 +461,7 @@ function placeOrder(body: Record<string, unknown>): OrderOutcome {
   }
 
   if (!willFillNow) {
-    const order: OpenOrder = {
-      orderId,
-      tag,
-      market: market.id,
-      side,
-      type,
-      price: round(price),
-      size: round(size),
-      remainingSize: round(size),
-      reduceOnly: Boolean(body.reduceOnly),
-    };
-    trader.openOrders.set(orderId, order);
+    restOrder(round(size));
     return {
       httpStatus: 200,
       body: devOrderResponseSchema.parse({

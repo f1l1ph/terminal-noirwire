@@ -50,7 +50,7 @@ function sameInstruction(
  * the owner nowhere. Only the depositor and its token account are the
  * service's to choose.
  */
-export function isExpectedFunding(
+function isExpectedFunding(
   transaction: Transaction,
   owner: PublicKey,
   orderKeys: readonly PublicKey[],

@@ -5,7 +5,7 @@ export function candlesLoadingKey(market: string, interval: string): string {
 }
 
 export const STALE_MARK_MS = 10_000;
-export const STALE_STATS_MS = 30_000;
+const STALE_STATS_MS = 30_000;
 
 /** How far ahead of the local clock a server timestamp may be before it is not trusted. */
 export const MAX_CLOCK_SKEW_MS = 5_000;

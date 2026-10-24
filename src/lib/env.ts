@@ -38,7 +38,7 @@ const envSchema = z.object({
   orderbookProgramIdOverride: z.string().min(32).max(44).optional(),
 });
 
-export type Env = z.infer<typeof envSchema>;
+type Env = z.infer<typeof envSchema>;
 
 function readEnv(): Env {
   const result = envSchema.safeParse({

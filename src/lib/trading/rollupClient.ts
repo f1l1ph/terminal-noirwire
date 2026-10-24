@@ -144,7 +144,6 @@ interface MarketBinding {
   sizeDecimals: number;
   priceDecimals: number;
   isPerp: boolean;
-  baseTokenSymbol: string | null;
   quoteTokenSymbol: string;
 }
 
@@ -226,7 +225,6 @@ function bindMarkets(
       sizeDecimals: sizeDecimalsOf(settings),
       priceDecimals: priceDecimalsOf(settings),
       isPerp: market.kind === "perp",
-      baseTokenSymbol: market.baseToken?.symbol ?? null,
       quoteTokenSymbol: market.quoteToken.symbol,
     });
   }

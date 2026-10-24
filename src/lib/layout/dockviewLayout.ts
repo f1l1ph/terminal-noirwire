@@ -59,7 +59,7 @@ const SHORT_ACCOUNT_HEIGHT = 200;
 const SHORT_HEIGHT_BREAKPOINT = 800;
 
 /** The chart's share of the centre column's height at the default layout; the tape gets the rest. */
-export const DEFAULT_CHART_HEIGHT_FRACTION = 0.7;
+const DEFAULT_CHART_HEIGHT_FRACTION = 0.7;
 /**
  * A representative centre-column content height, used only to pick the
  * tape's initial pixel height before the real container has ever been

@@ -82,7 +82,7 @@ function priceTooOldReason(market: RefusalContext): string {
  * error list (a result ring's code), or null for one this terminal has no
  * sentence for.
  */
-export function describeProgramError(number: number, market: RefusalContext = {}): string | null {
+function describeProgramError(number: number, market: RefusalContext = {}): string | null {
   switch (number) {
     case PROGRAM_ERROR.stalePrice:
       return stalePriceReason(market);
