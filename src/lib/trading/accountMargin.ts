@@ -5,7 +5,7 @@ import { impliedInitialMarginBps } from "./risk";
 export interface PerpExposure {
   /** Signed: long positive, short negative. */
   baseLots: bigint;
-  /** The position's cost basis in quote atoms; only its magnitude is read. */
+  /** Signed net quote cash flow of the position, in quote atoms: negative after buying, positive after selling. */
   quoteAtoms: bigint;
   openBidLots: bigint;
   openAskLots: bigint;
@@ -66,13 +66,15 @@ export function summarizeMargin(collateral: bigint, exposures: PerpExposure[]): 
     const imBps = impliedInitialMarginBps(exposure.maxLeverage);
     if (mark === null || imBps === null) return { kind: "unknown" };
 
-    const valueOf = (lots: bigint, rounding: (n: bigint, d: bigint) => bigint) =>
-      rounding(lots * exposure.sizePerLot * mark, FIXED_POINT_SCALE);
-
-    if (exposure.baseLots > 0n) {
-      unrealised += valueOf(exposure.baseLots, floorDiv) - abs(exposure.quoteAtoms);
-    } else if (exposure.baseLots < 0n) {
-      unrealised += abs(exposure.quoteAtoms) - valueOf(abs(exposure.baseLots), ceilDiv);
+    // Signed base value plus the signed net quote cash flow, counted only
+    // while a position is open. Flooring the signed value lowers equity for a
+    // long and a short alike.
+    if (exposure.baseLots !== 0n) {
+      const markedValue = floorDiv(
+        exposure.baseLots * exposure.sizePerLot * mark,
+        FIXED_POINT_SCALE,
+      );
+      unrealised += markedValue + exposure.quoteAtoms;
     }
 
     const worstLots = [

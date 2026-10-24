@@ -213,6 +213,68 @@ describe("RollupTradingClient: margin-aware collateral", () => {
     expect(state.collateral?.availableUnknown).toBe(true);
   });
 
+  it("values a short's loss from its signed quote after a partial buy-back", async () => {
+    const rollup = clientShowing(
+      [view(5000n * USDC, [{ base: -1_000n, quote: -800n * USDC }, {}])],
+      { "NSOL-PERP": perp("NSOL-PERP", "200.000000") },
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.equity).toBe("4000.000000");
+  });
+
+  it("marks the available figure valid only until the oldest exposed mark goes stale", async () => {
+    const rollup = clientShowing(
+      [
+        view(1000n * USDC, [
+          { base: 1_000n, quote: -100n * USDC },
+          { base: 1_000n, quote: -90n * USDC },
+        ]),
+      ],
+      {
+        "NSOL-PERP": perp("NSOL-PERP", "150.000000", 1_000),
+        "NNVDA-PERP": perp("NNVDA-PERP", "100.000000", 4_000),
+      },
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral?.availableUnknown).toBeUndefined();
+    expect(state.collateral?.availableValidUntilMs).toBe(NOW - 4_000 + 10_000);
+  });
+
+  it("ignores the mark of a market with no exposure when bounding validity", async () => {
+    const rollup = clientShowing(
+      [view(1000n * USDC, [{ base: 1_000n, quote: -100n * USDC }, {}])],
+      {
+        "NSOL-PERP": perp("NSOL-PERP", "150.000000", 1_000),
+        "NNVDA-PERP": perp("NNVDA-PERP", "100.000000", 9_000),
+      },
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral?.availableValidUntilMs).toBe(NOW - 1_000 + 10_000);
+  });
+
+  it("reports available as unknown when a deployment market with a position has no settings", async () => {
+    const rollup = clientShowing(
+      [view(1000n * USDC, [{}, { base: 1_000n, quote: -100n * USDC }])],
+      marks,
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.equity).toBeNull();
+    expect(state.collateral).toMatchObject({ available: "0", availableUnknown: true });
+  });
+
+  it("reports available as unknown when a market with no settings holds only resting orders", async () => {
+    const rollup = clientShowing([view(1000n * USDC, [{}, { openBidLots: 5n }])], marks);
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral?.availableUnknown).toBe(true);
+  });
+
+  it("needs no settings for a market whose slot is empty", async () => {
+    const rollup = clientShowing([view(1000n * USDC, [{}, {}])], marks);
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral).toMatchObject({ available: "1000.000000" });
+    expect(state.collateral?.availableUnknown).toBeUndefined();
+  });
+
   it("needs no mark when the account has no exposure", async () => {
     const rollup = clientShowing([view(500n * USDC, [{}, {}])], {});
     const state = await rollup.fetchState(WALLET);

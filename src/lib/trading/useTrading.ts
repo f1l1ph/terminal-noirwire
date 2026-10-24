@@ -200,6 +200,31 @@ export function useTrading(
   const effectiveState = currentRead?.state ?? EMPTY_STATE;
   const effectiveLastSyncedAtMs = currentRead?.syncedAtMs ?? null;
 
+  // The collateral's available figure is priced from marks that go stale
+  // (the UI treats it as unknown from then on), and the venue pushes a view
+  // only when the seat changes. Re-reading just after that moment prices it
+  // again from the marks as they are now.
+  const marginValidUntilMs = effectiveState.collateral?.availableValidUntilMs;
+  useEffect(() => {
+    if (!wallet || marginValidUntilMs === undefined) return;
+    let active = true;
+    const refresh = setTimeout(
+      () => {
+        client.fetchState(walletOf(wallet)).then(
+          (next) => {
+            if (active) setStateSynced(wallet.publicKey, next);
+          },
+          () => {},
+        );
+      },
+      Math.max(marginValidUntilMs - Date.now(), 0) + 250,
+    );
+    return () => {
+      active = false;
+      clearTimeout(refresh);
+    };
+  }, [client, wallet, marginValidUntilMs, setStateSynced]);
+
   const fund = useCallback(async (): Promise<FundOutcome> => {
     if (!wallet) return { kind: "error", message: "No wallet to fund" };
     const outcome = await client.fund(walletOf(wallet));

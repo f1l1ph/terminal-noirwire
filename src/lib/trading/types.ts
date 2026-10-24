@@ -91,6 +91,8 @@ export interface Balance {
   total: string;
   /** Perpetuals collateral only: no fresh mark, so `available` is a fail-closed "0", not a measurement. */
   availableUnknown?: boolean;
+  /** Perpetuals collateral only: `available` was priced from marks that go stale at this time (ms); after it the figure is unknown, not a measurement. */
+  availableValidUntilMs?: number;
 }
 
 /** Signed: positive is long, negative is short, zero means no position. */

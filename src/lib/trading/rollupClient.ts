@@ -771,20 +771,46 @@ export class RollupTradingClient implements TradingClient {
     const positions: Record<string, Position> = {};
     const exposures: PerpExposure[] = [];
     const now = this.now();
-    for (const binding of bindings.values()) {
-      if (!binding.isPerp) continue;
-      const slot = seat.perp[binding.numericId];
+    let marksFreshUntilMs: number | null = null;
+    for (const market of session.deployment.markets) {
+      if (market.kind !== "perp") continue;
+      const slot = seat.perp[market.marketId];
       if (!slot) continue;
+      const openBidLots = slot.openBidLots ?? 0n;
+      const openAskLots = slot.openAskLots ?? 0n;
+      const hasExposure = slot.base !== 0n || openBidLots !== 0n || openAskLots !== 0n;
+      const binding = bindings.get(market.symbol);
+      if (!binding) {
+        // A slot that cannot be bound cannot be priced: with a position or
+        // resting orders in it, the margin is unknown rather than guessed.
+        if (hasExposure) {
+          exposures.push({
+            baseLots: slot.base,
+            quoteAtoms: slot.quote,
+            openBidLots,
+            openAskLots,
+            sizePerLot: 0n,
+            mark: null,
+            maxLeverage: 0,
+          });
+        }
+        continue;
+      }
       const settings = this.options.marketSettingsLookup(binding.marketId);
       const freshMark =
         settings?.markPrice != null && !isStale(settings.markPriceUpdatedAtMs, now, STALE_MARK_MS)
           ? settings.markPrice
           : null;
+      if (hasExposure && freshMark !== null && settings?.markPriceUpdatedAtMs != null) {
+        const staleAtMs = settings.markPriceUpdatedAtMs + STALE_MARK_MS;
+        marksFreshUntilMs =
+          marksFreshUntilMs === null ? staleAtMs : Math.min(marksFreshUntilMs, staleAtMs);
+      }
       exposures.push({
         baseLots: slot.base,
         quoteAtoms: slot.quote,
-        openBidLots: slot.openBidLots ?? 0n,
-        openAskLots: slot.openAskLots ?? 0n,
+        openBidLots,
+        openAskLots,
         sizePerLot: binding.units.sizePerLot,
         mark: freshMark,
         maxLeverage: settings?.maxLeverage ?? 0,
@@ -812,6 +838,9 @@ export class RollupTradingClient implements TradingClient {
       reserved: margin.kind === "known" ? quoteAtomsToAmount(margin.reserved) : "0",
       total: quoteAtomsToAmount(seat.collateral),
       ...(margin.kind === "unknown" ? { availableUnknown: true } : {}),
+      ...(margin.kind === "known" && marksFreshUntilMs !== null
+        ? { availableValidUntilMs: marksFreshUntilMs }
+        : {}),
     };
 
     const openOrders = this.restingOrders(session.owner.publicKey.toBase58(), view, bindings);

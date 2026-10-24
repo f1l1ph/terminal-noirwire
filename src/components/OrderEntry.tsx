@@ -249,8 +249,16 @@ export function OrderEntry({
   // A perp order draws on the separate collateral account (RULES.md section
   // 6), not the spot quote balance; dev mode has no such split, so there
   // `collateral` is undefined and the spot balance is the only figure.
+  // The collateral's available figure was priced from the marks of every
+  // market with exposure; once any of them goes stale it is unknown, whatever
+  // market is selected here.
+  const availableUnknown = isPerp && isAvailableUnknown(collateral, now);
   const availableQuote =
-    isPerp && collateral ? collateral.available : (quoteBalance?.available ?? "0");
+    isPerp && collateral
+      ? availableUnknown
+        ? "0"
+        : collateral.available
+      : (quoteBalance?.available ?? "0");
 
   useEffect(() => {
     if (confirmingFund && Number(availableQuote) > 0) {
@@ -356,7 +364,6 @@ export function OrderEntry({
 
   const isSpotSell = !isPerp && side === "sell";
   const accountUnknown = hasWallet && (!!accountError || !accountLoaded);
-  const availableUnknown = isPerp && isAvailableUnknown(collateral);
   const noFunds =
     hasWallet &&
     !accountUnknown &&
@@ -376,7 +383,7 @@ export function OrderEntry({
     canTransfer: !!onTransferToSpot,
     spotAvailable: Number(quoteBalance?.available ?? "0"),
     collateralAvailable:
-      collateral && !isAvailableUnknown(collateral) ? Number(collateral.available) : null,
+      collateral && !isAvailableUnknown(collateral, now) ? Number(collateral.available) : null,
   });
   const suggestedTransferAmount = funds ? fromFixedPoint(funds.requiredQuote, 6) : undefined;
 
@@ -488,7 +495,13 @@ export function OrderEntry({
     if (!market || submittingRef.current) return;
     // The full check again, on the frozen order and the mark as it is now.
     const recheck = validateOrder(order.draft, market, mark, now);
-    if (!canSubmit || !recheck.valid || markMovedMaterially(order.markPrice, mark?.price)) {
+    const marginExpired = isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now()));
+    if (
+      !canSubmit ||
+      marginExpired ||
+      !recheck.valid ||
+      markMovedMaterially(order.markPrice, mark?.price)
+    ) {
       setSubmitError(confirmBlocker ?? "The order can no longer be placed as reviewed.");
       return;
     }
@@ -732,7 +745,7 @@ export function OrderEntry({
             {isSpotSell
               ? `Available: ${formatDecimal(availableBase, sizeDecimals)} ${baseUnit}`
               : availableUnknown && collateral
-                ? availableLabel(collateral, money)
+                ? availableLabel(collateral, money, now)
                 : confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
                   ? "Confirming on chain…"
                   : grantAlreadyUsed
