@@ -1,10 +1,7 @@
 import type { PublicFill } from "../market-data/types";
-import type { OwnFillRecord } from "../trading/tags";
-import type { Side } from "../trading/types";
+import { opposite, type OwnFillRecord } from "../trading/tags";
 import { bytesToHex } from "../wallet/index";
 import { fillReceipt } from "./sdk";
-
-const opposite = (side: Side): Side => (side === "buy" ? "sell" : "buy");
 
 /**
  * Reads an 8-byte receipt as the big-endian u64 decimal string sim-noirwire

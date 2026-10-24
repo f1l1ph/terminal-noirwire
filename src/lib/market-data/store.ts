@@ -1,4 +1,4 @@
-import { isFutureTimestamp } from "./selectors";
+import { candlesLoadingKey, isFutureTimestamp } from "./selectors";
 import type { ConnectionState } from "./socket";
 import type {
   Candle,
@@ -48,10 +48,6 @@ function emptyState(): MarketDataState {
     stats: null,
     connectionState: "closed",
   };
-}
-
-function candlesLoadingKey(market: string, interval: CandleInterval): string {
-  return `${market}:${interval}`;
 }
 
 /**

@@ -1,21 +1,11 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import type { ReactNode } from "react";
 import { MarketContextBar } from "@/components/MarketContextBar";
 import {
   TerminalPanelProvider,
   type TerminalPanelData,
 } from "@/components/panels/TerminalPanelContext";
-import type {
-  Candle,
-  CandleInterval,
-  MarketInfo,
-  PublicFill,
-  StatsResponse,
-} from "@/lib/market-data/types";
-import type { ConnectionState } from "@/lib/market-data/socket";
-import type { useTrading } from "@/lib/trading/useTrading";
 
 /**
  * The real docking board depends on `dockview-react`; loading it through
@@ -43,90 +33,24 @@ const TerminalDockview = dynamic(
  * ever being involved in where they sit.
  */
 export function DesktopWorkspace({
-  market,
-  mark,
-  now,
   quoteSymbol,
-  interval,
-  onIntervalChange,
-  candles,
-  tape,
-  ownSequences,
-  connectionState,
-  candlesLoading,
-  candlesFetchFailed,
-  markStale,
-  onRetry,
-  markets,
-  selectedMarketId,
-  onSelectMarket,
-  stats,
-  network,
-  clientDurationMs,
-  witnessRail,
-  checkPrivacy,
-  orderEntry,
-  accountDock,
   layoutResetSignal,
-}: {
-  market: MarketInfo | undefined;
-  mark: { price: string; time: number } | null;
-  now: number;
+  ...panelData
+}: TerminalPanelData & {
   /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
   quoteSymbol: string;
-  interval: CandleInterval;
-  onIntervalChange: (interval: CandleInterval) => void;
-  candles: Candle[];
-  tape: PublicFill[];
-  ownSequences: ReadonlySet<number>;
-  connectionState: ConnectionState;
-  candlesLoading: boolean;
-  candlesFetchFailed: boolean;
-  markStale: boolean;
-  onRetry: () => void;
-  markets: MarketInfo[];
-  selectedMarketId: string;
-  onSelectMarket: (id: string) => void;
-  stats: StatsResponse | null;
-  network: string;
-  clientDurationMs: number | null;
-  witnessRail: ReactNode;
-  checkPrivacy: ReturnType<typeof useTrading>["checkPrivacy"];
-  orderEntry: ReactNode;
-  accountDock: ReactNode;
   /** Bumped by the shell's "Reset layout" link; rebuilds the default arrangement and clears the saved one. */
   layoutResetSignal: number;
 }) {
-  const panelData: TerminalPanelData = {
-    market,
-    mark,
-    now,
-    interval,
-    onIntervalChange,
-    candles,
-    tape,
-    ownSequences,
-    connectionState,
-    candlesLoading,
-    candlesFetchFailed,
-    markStale,
-    onRetry,
-    markets,
-    selectedMarketId,
-    onSelectMarket,
-    stats,
-    network,
-    clientDurationMs,
-    checkPrivacy,
-    orderEntry,
-    witnessRail,
-    accountDock,
-  };
-
   return (
     <>
       <div className="shrink-0">
-        <MarketContextBar market={market} mark={mark} now={now} quoteSymbol={quoteSymbol} />
+        <MarketContextBar
+          market={panelData.market}
+          mark={panelData.mark}
+          now={panelData.now}
+          quoteSymbol={quoteSymbol}
+        />
       </div>
       <TerminalPanelProvider value={panelData}>
         <TerminalDockview resetSignal={layoutResetSignal} />

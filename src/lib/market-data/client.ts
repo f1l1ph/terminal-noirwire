@@ -10,7 +10,7 @@ import {
   type StatsResponse,
 } from "@/lib/sim-api/schema";
 
-export class MarketDataRequestError extends Error {
+class MarketDataRequestError extends Error {
   constructor(
     message: string,
     public readonly url: string,

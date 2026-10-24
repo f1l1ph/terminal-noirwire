@@ -182,26 +182,6 @@ export const MIN_LATENCY_SAMPLE_SIZE = 20;
 // Registered only when VENUE=memory and DEV_TRADING=1.
 // ---------------------------------------------------------------------------
 
-const decimalAmountSchema = z.string().regex(/^\d+(\.\d+)?$/, "must be a plain decimal number");
-
-/**
- * Every order type requires a price: it is the matching bound for `market`
- * and `ioc`, and the resting price for `limit` (and `postOnly`, not exposed
- * here). There is no separate "protection bound" field - the venue already
- * requires a worst price on a market order, so this terminal's `price` on a
- * market order IS that bound. See sim-noirwire's
- * `MemoryVenue.validateShape`.
- */
-export const devOrderRequestSchema = z.object({
-  address: z.string().min(1),
-  market: z.enum(MARKET_IDS),
-  side: sideSchema,
-  type: orderTypeSchema,
-  price: decimalAmountSchema,
-  size: decimalAmountSchema,
-  reduceOnly: z.boolean().optional(),
-});
-
 export const devOrderResponseSchema = z.object({
   orderId: z.string(),
   tag: z.string(),

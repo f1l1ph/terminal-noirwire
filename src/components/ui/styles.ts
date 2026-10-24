@@ -6,7 +6,7 @@
 export const panel = "bg-surface border border-line-subtle rounded-panel";
 export const tile = "bg-surface-raised border border-line-subtle rounded-tile";
 
-export const btnBase =
+const btnBase =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-tile px-4 text-[13px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40";
 
 /*
