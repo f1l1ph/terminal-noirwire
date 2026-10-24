@@ -23,7 +23,7 @@
     "@solana/web3.js": "1.99.0",
     "dockview-react": "8.5.1",
     "lightweight-charts": "4.2.3",
-    "next": "16.3.8",
+    "next": "16.4.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "zod": "3.25.76"
@@ -36,7 +36,7 @@
     "@types/react-dom": "19.2.3",
     "@types/ws": "8.18.1",
     "eslint": "9.38.0",
-    "eslint-config-next": "16.3.8",
+    "eslint-config-next": "16.4.3",
     "eslint-config-prettier": "10.1.8",
     "prettier": "3.9.8",
     "prettier-plugin-tailwindcss": "0.8.1",
