@@ -3,6 +3,11 @@
 import { useEffect, useState } from "react";
 import { formatMoney } from "@/lib/format";
 import type { Balance, TransferResult } from "@/lib/trading/types";
+import {
+  availableLabel,
+  isAvailableUnknown,
+  transferableAmount,
+} from "@/lib/trading/balanceDisplay";
 import { btnGhost, btnPrimary, input, sectionLabel } from "@/components/ui/styles";
 
 /** A local, one-second ticker while this control is awaiting a pending transfer's settlement - self-contained, so a countdown needs no `now` prop threaded through AccountDock/BalancesTable. */
@@ -114,8 +119,11 @@ export function TransferControl({
     <div className="border-line-subtle mt-2 border-t pt-2">
       <p className={sectionLabel}>Transfer</p>
       <p className="text-faint mt-1 text-[11px]">
-        Collateral {formatMoney(collateral.available, quoteSymbol)} · Spot{" "}
-        {formatMoney(spot?.available ?? "0", quoteSymbol)}
+        Collateral{" "}
+        {availableLabel({ ...collateral, available: transferableAmount(collateral) }, (amount) =>
+          formatMoney(amount, quoteSymbol),
+        )}{" "}
+        · Spot {formatMoney(spot?.available ?? "0", quoteSymbol)}
       </p>
       <div className="mt-2 flex gap-2" role="group" aria-label="Direction">
         <button
@@ -157,7 +165,14 @@ export function TransferControl({
         <button
           type="button"
           className={`${btnPrimary} h-8 flex-1 text-[12px]`}
-          disabled={busy || !amount.trim() || Number(amount) <= 0}
+          disabled={
+            busy ||
+            !amount.trim() ||
+            Number(amount) <= 0 ||
+            (direction === "toSpot" &&
+              (isAvailableUnknown(collateral) ||
+                Number(amount) > Number(transferableAmount(collateral))))
+          }
           onClick={() => void submit()}
         >
           {busy ? "Moving…" : "Move"}
