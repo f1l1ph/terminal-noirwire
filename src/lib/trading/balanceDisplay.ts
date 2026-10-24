@@ -15,6 +15,11 @@ export function isAvailableUnknown(
   return balance?.availableValidUntilMs !== undefined && now > balance.availableValidUntilMs;
 }
 
+/** What may move out of this balance: its transferable figure when it has one, else its available amount. */
+export function transferableAmount(balance: Balance): string {
+  return balance.transferable ?? balance.available;
+}
+
 /** The balance's available amount for display, or plain text when it is not known. */
 export function availableLabel(
   balance: Balance,

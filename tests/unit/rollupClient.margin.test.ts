@@ -213,6 +213,30 @@ describe("RollupTradingClient: margin-aware collateral", () => {
     expect(state.collateral?.availableUnknown).toBe(true);
   });
 
+  it("caps the transferable figure at the deposited collateral, not equity", async () => {
+    const rollup = clientShowing(
+      [view(100n * USDC, [{ base: 10_000n, quote: -1000n * USDC }, {}])],
+      { "NSOL-PERP": perp("NSOL-PERP", "150.000000") },
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral).toMatchObject({ available: "450.000000", transferable: "100.000000" });
+  });
+
+  it("caps the transferable figure at free margin when that is lower", async () => {
+    const rollup = clientShowing([view(1000n * USDC, [{ openBidLots: 2_000n }, {}])], marks);
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral).toMatchObject({ available: "970.000000", transferable: "970.000000" });
+  });
+
+  it("offers no transferable figure when available is unknown", async () => {
+    const rollup = clientShowing(
+      [view(500n * USDC, [{ base: 10_000n, quote: -1000n * USDC }, {}])],
+      { "NSOL-PERP": perp("NSOL-PERP", null) },
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral?.transferable).toBeUndefined();
+  });
+
   it("values a short's loss from its signed quote after a partial buy-back", async () => {
     const rollup = clientShowing(
       [view(5000n * USDC, [{ base: -1_000n, quote: -800n * USDC }, {}])],

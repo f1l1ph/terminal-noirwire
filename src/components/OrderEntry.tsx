@@ -20,7 +20,11 @@ import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
 import { describeFieldError, markMovedMaterially, validateOrder } from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
-import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
+import {
+  availableLabel,
+  isAvailableUnknown,
+  transferableAmount,
+} from "@/lib/trading/balanceDisplay";
 import type {
   Balance,
   FundOutcome,
@@ -383,7 +387,9 @@ export function OrderEntry({
     canTransfer: !!onTransferToSpot,
     spotAvailable: Number(quoteBalance?.available ?? "0"),
     collateralAvailable:
-      collateral && !isAvailableUnknown(collateral, now) ? Number(collateral.available) : null,
+      collateral && !isAvailableUnknown(collateral, now)
+        ? Number(transferableAmount(collateral))
+        : null,
   });
   const suggestedTransferAmount = funds ? fromFixedPoint(funds.requiredQuote, 6) : undefined;
 

@@ -91,6 +91,8 @@ export interface Balance {
   total: string;
   /** Perpetuals collateral only: no fresh mark, so `available` is a fail-closed "0", not a measurement. */
   availableUnknown?: boolean;
+  /** Perpetuals collateral only: what may move out to spot, never more than the deposited collateral (unrealised profit is not paid out) nor the free margin. Absent when `available` is unknown. */
+  transferable?: string;
   /** Perpetuals collateral only: `available` was priced from marks that go stale at this time (ms); after it the figure is unknown, not a measurement. */
   availableValidUntilMs?: number;
 }

@@ -3,6 +3,7 @@ import {
   AVAILABLE_UNKNOWN_TEXT,
   availableLabel,
   isAvailableUnknown,
+  transferableAmount,
 } from "@/lib/trading/balanceDisplay";
 import type { Balance } from "@/lib/trading/types";
 
@@ -31,6 +32,11 @@ describe("availableLabel", () => {
     expect(isAvailableUnknown({ ...KNOWN, availableValidUntilMs: Date.now() + 60_000 })).toBe(
       false,
     );
+  });
+
+  it("moves out the transferable figure, falling back to available", () => {
+    expect(transferableAmount({ ...KNOWN, transferable: "2.000000" })).toBe("2.000000");
+    expect(transferableAmount(KNOWN)).toBe("5.000000");
   });
 
   it("treats a missing balance as not unknown", () => {

@@ -838,6 +838,13 @@ export class RollupTradingClient implements TradingClient {
       reserved: margin.kind === "known" ? quoteAtomsToAmount(margin.reserved) : "0",
       total: quoteAtomsToAmount(seat.collateral),
       ...(margin.kind === "unknown" ? { availableUnknown: true } : {}),
+      ...(margin.kind === "known"
+        ? {
+            transferable: quoteAtomsToAmount(
+              margin.available < seat.collateral ? margin.available : seat.collateral,
+            ),
+          }
+        : {}),
       ...(margin.kind === "known" && marksFreshUntilMs !== null
         ? { availableValidUntilMs: marksFreshUntilMs }
         : {}),
