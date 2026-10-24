@@ -87,8 +87,10 @@ export interface Balance {
   available: string;
   /** Reserved against a resting order (the engine's `locked`). */
   reserved: string;
-  /** `available + reserved`. */
+  /** `available + reserved`; for the perpetuals collateral, the deposited collateral instead (margin and P&L move `available`). */
   total: string;
+  /** Perpetuals collateral only: no fresh mark, so `available` is a fail-closed "0", not a measurement. */
+  availableUnknown?: boolean;
 }
 
 /** Signed: positive is long, negative is short, zero means no position. */
@@ -112,8 +114,8 @@ export interface OpenOrder {
 
 export interface TraderState {
   trader: string;
-  /** Free balance plus unrealised perp PnL and pending funding; can differ from `balances`. */
-  equity: string;
+  /** Free balance plus unrealised perp PnL and pending funding; can differ from `balances`. Null when a perp mark is missing (rollup mode). */
+  equity: string | null;
   /** Spot wallet balances: dev mode's only balance. */
   balances: Record<string, Balance>;
   /**

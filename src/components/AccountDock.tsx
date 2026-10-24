@@ -12,6 +12,7 @@ import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
+import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 
@@ -405,6 +406,8 @@ function BalancesTable({
   if (rows.length === 0) return <p className="text-faint text-[13px]">No balances yet.</p>;
   const amount = (value: string, quote: boolean) =>
     quote ? formatMoney(value, quoteSymbol) : formatDecimal(value, 6);
+  const availableCell = (row: (typeof rows)[number]) =>
+    availableLabel(row, (value) => amount(value, row.quote));
   return (
     <>
       <table className="tnum w-full text-left text-[13px]">
@@ -420,8 +423,8 @@ function BalancesTable({
           {rows.map((row) => (
             <tr key={row.label} className="border-line-subtle border-t">
               <td className="py-1.5">{row.label}</td>
-              <td>{amount(row.available, row.quote)}</td>
-              <td>{amount(row.reserved, row.quote)}</td>
+              <td>{availableCell(row)}</td>
+              <td>{isAvailableUnknown(row) ? "-" : amount(row.reserved, row.quote)}</td>
               <td>{amount(row.total, row.quote)}</td>
             </tr>
           ))}

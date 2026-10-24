@@ -20,6 +20,7 @@ import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
 import { describeFieldError, markMovedMaterially, validateOrder } from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
+import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import type {
   Balance,
   FundOutcome,
@@ -355,9 +356,11 @@ export function OrderEntry({
 
   const isSpotSell = !isPerp && side === "sell";
   const accountUnknown = hasWallet && (!!accountError || !accountLoaded);
+  const availableUnknown = isPerp && isAvailableUnknown(collateral);
   const noFunds =
     hasWallet &&
     !accountUnknown &&
+    !availableUnknown &&
     Number(availableQuote) <= 0 &&
     !(isSpotSell && Number(availableBase) > 0);
 
@@ -372,13 +375,15 @@ export function OrderEntry({
     hasWallet,
     canTransfer: !!onTransferToSpot,
     spotAvailable: Number(quoteBalance?.available ?? "0"),
-    collateralAvailable: collateral ? Number(collateral.available) : null,
+    collateralAvailable:
+      collateral && !isAvailableUnknown(collateral) ? Number(collateral.available) : null,
   });
   const suggestedTransferAmount = funds ? fromFixedPoint(funds.requiredQuote, 6) : undefined;
 
   const canSubmit =
     hasWallet &&
     !accountUnknown &&
+    !availableUnknown &&
     !noFunds &&
     !!market &&
     !!validation?.valid &&
@@ -392,6 +397,7 @@ export function OrderEntry({
     if (!market) return null;
     if (unknownHold) return "An earlier order may have reached the venue. Check it first.";
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
+    if (availableUnknown) return "Available collateral is unavailable until the price updates.";
     if (validation?.errors.quantity) {
       return describeFieldError(validation.errors.quantity, { ...market, base: baseUnit });
     }
@@ -614,6 +620,10 @@ export function OrderEntry({
     primaryLabel = accountError ? "Account unavailable" : "Loading account…";
     primaryClass = btnGhost;
     primaryDisabled = true;
+  } else if (availableUnknown) {
+    primaryLabel = "Waiting for price";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (unknownHold) {
     primaryLabel = "Order outcome unknown";
     primaryClass = btnGhost;
@@ -721,11 +731,13 @@ export function OrderEntry({
             {/* "Confirming on chain" only makes sense where funding lands - the separate perpetuals collateral account, rollup mode only (`collateral` is undefined in dev mode, which has no chain to confirm against). */}
             {isSpotSell
               ? `Available: ${formatDecimal(availableBase, sizeDecimals)} ${baseUnit}`
-              : confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
-                ? "Confirming on chain…"
-                : grantAlreadyUsed
-                  ? `Grant used · ${money(availableQuote)} available`
-                  : `Available: ${money(availableQuote)}`}
+              : availableUnknown && collateral
+                ? availableLabel(collateral, money)
+                : confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
+                  ? "Confirming on chain…"
+                  : grantAlreadyUsed
+                    ? `Grant used · ${money(availableQuote)} available`
+                    : `Available: ${money(availableQuote)}`}
           </span>
         </div>
         <input

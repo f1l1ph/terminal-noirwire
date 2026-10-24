@@ -56,6 +56,8 @@ import {
   sizeToLots,
 } from "../rollup/units";
 import { priceDecimalsOf, sizeDecimalsOf } from "../market-data/precision";
+import { isStale, STALE_MARK_MS } from "../market-data/selectors";
+import { summarizeMargin, type PerpExposure } from "./accountMargin";
 import type {
   AccountReadOutcome,
   Balance,
@@ -144,6 +146,12 @@ interface MarketBinding {
   isPerp: boolean;
   baseTokenSymbol: string | null;
   quoteTokenSymbol: string;
+}
+
+interface RestingRead {
+  orders: OpenOrder[];
+  bidLots: bigint;
+  askLots: bigint;
 }
 
 type StateListener = (state: TraderState) => void;
@@ -255,6 +263,8 @@ export class RollupTradingClient implements TradingClient {
   private listeners = new Map<string, Set<StateListener>>();
   private errorListeners = new Map<string, Set<(error: Error) => void>>();
   private newestResultsWritten = new Map<string, number>();
+  /** address -> perp market id -> the resting orders last read from the view, with the slot's open lots at that moment. */
+  private restingByMarket = new Map<string, Map<number, RestingRead>>();
   /** `address:market` -> the secret (hex) of an order that may have reached the venue, until its outcome is proven or released. */
   private unresolvedOrders = new Map<string, UnknownHold>();
 
@@ -759,10 +769,27 @@ export class RollupTradingClient implements TradingClient {
     }
 
     const positions: Record<string, Position> = {};
+    const exposures: PerpExposure[] = [];
+    const now = this.now();
     for (const binding of bindings.values()) {
       if (!binding.isPerp) continue;
       const slot = seat.perp[binding.numericId];
-      if (!slot || slot.base === 0n) continue;
+      if (!slot) continue;
+      const settings = this.options.marketSettingsLookup(binding.marketId);
+      const freshMark =
+        settings?.markPrice != null && !isStale(settings.markPriceUpdatedAtMs, now, STALE_MARK_MS)
+          ? settings.markPrice
+          : null;
+      exposures.push({
+        baseLots: slot.base,
+        quoteAtoms: slot.quote,
+        openBidLots: slot.openBidLots ?? 0n,
+        openAskLots: slot.openAskLots ?? 0n,
+        sizePerLot: binding.units.sizePerLot,
+        mark: freshMark,
+        maxLeverage: settings?.maxLeverage ?? 0,
+      });
+      if (slot.base === 0n) continue;
       const entryPrice =
         slot.base === 0n
           ? "0"
@@ -778,49 +805,87 @@ export class RollupTradingClient implements TradingClient {
       };
     }
 
+    const margin = summarizeMargin(seat.collateral, exposures);
     const collateral: Balance = {
       asset: quoteSymbolOf(session.deployment) ?? "",
-      available: quoteAtomsToAmount(seat.collateral > 0n ? seat.collateral : 0n),
-      reserved: "0",
+      available: margin.kind === "known" ? quoteAtomsToAmount(margin.available) : "0",
+      reserved: margin.kind === "known" ? quoteAtomsToAmount(margin.reserved) : "0",
       total: quoteAtomsToAmount(seat.collateral),
+      ...(margin.kind === "unknown" ? { availableUnknown: true } : {}),
     };
 
-    // RULES.md / accounts.ts: a trader's view carries open orders for ONE
-    // market at a time (`snapshot.marketId`), the market the last trading
-    // instruction targeted - not every market at once the way dev mode's
-    // `/v1/dev/trader` does. See docs/BUILD-NOTES.md for this limitation.
-    const snapshotBinding = bindingByNumericId(bindings, view.snapshot.marketId);
-    const openOrders: OpenOrder[] = snapshotBinding
-      ? view.snapshot.orders.map((order) => ({
-          orderId: order.sequence.toString(),
-          tag: "",
-          market: snapshotBinding.marketId,
-          side: order.side === 0 ? "buy" : "sell",
-          type: "limit",
-          price: chainAtomsToPrice(
-            snapshotBinding.units,
-            order.price,
-            snapshotBinding.priceDecimals,
-          ),
-          size: lotsToSize(snapshotBinding.units, order.remaining, snapshotBinding.sizeDecimals),
-          remainingSize: lotsToSize(
-            snapshotBinding.units,
-            order.remaining,
-            snapshotBinding.sizeDecimals,
-          ),
-          reduceOnly: false,
-        }))
-      : [];
+    const openOrders = this.restingOrders(session.owner.publicKey.toBase58(), view, bindings);
 
     return {
       trader: session.owner.publicKey.toBase58(),
-      equity: quoteAtomsToAmount(seat.collateral),
+      equity: margin.kind === "known" ? quoteAtomsToAmount(margin.equity) : null,
       balances,
       collateral,
       positions,
       openOrders,
       spotAssets: spotAssetsOf(session.deployment),
     };
+  }
+
+  /**
+   * A view carries the order list of ONE market (`snapshot.marketId`, the
+   * market the last instruction targeted), but every perp slot carries its
+   * resting bid and ask lots. Orders last read for a perp market stay listed
+   * only while those lots still match what was read, so an order that has
+   * since filled or been cancelled elsewhere is dropped, never shown stale.
+   * A spot market's orders show only while it is the snapshot market.
+   */
+  private restingOrders(
+    address: string,
+    view: View,
+    bindings: Map<string, MarketBinding>,
+  ): OpenOrder[] {
+    const seen = this.restingByMarket.get(address) ?? new Map<number, RestingRead>();
+    this.restingByMarket.set(address, seen);
+    const { seat, orders, marketId } = view.snapshot;
+    const snapshotBinding = bindingByNumericId(bindings, marketId);
+    const mapOrders = (binding: MarketBinding): OpenOrder[] =>
+      orders.map((order) => ({
+        orderId: order.sequence.toString(),
+        tag: "",
+        market: binding.marketId,
+        side: order.side === 0 ? "buy" : "sell",
+        type: "limit",
+        price: chainAtomsToPrice(binding.units, order.price, binding.priceDecimals),
+        size: lotsToSize(binding.units, order.remaining, binding.sizeDecimals),
+        remainingSize: lotsToSize(binding.units, order.remaining, binding.sizeDecimals),
+        // The view's order record has no reduce-only flag; the venue keeps it off-view.
+        reduceOnly: false,
+      }));
+
+    if (snapshotBinding?.isPerp) {
+      const slot = seat.perp[snapshotBinding.numericId];
+      seen.set(snapshotBinding.numericId, {
+        orders: mapOrders(snapshotBinding),
+        bidLots: slot?.openBidLots ?? 0n,
+        askLots: slot?.openAskLots ?? 0n,
+      });
+    }
+
+    const listed: OpenOrder[] = [];
+    for (const binding of bindings.values()) {
+      if (!binding.isPerp) continue;
+      const read = seen.get(binding.numericId);
+      const slot = seat.perp[binding.numericId];
+      const unchanged =
+        read &&
+        (binding === snapshotBinding ||
+          (slot &&
+            read.bidLots === (slot.openBidLots ?? 0n) &&
+            read.askLots === (slot.openAskLots ?? 0n)));
+      if (!unchanged) {
+        seen.delete(binding.numericId);
+        continue;
+      }
+      listed.push(...read.orders);
+    }
+    if (snapshotBinding && !snapshotBinding.isPerp) listed.push(...mapOrders(snapshotBinding));
+    return listed;
   }
 }
 
