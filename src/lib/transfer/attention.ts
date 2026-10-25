@@ -15,10 +15,12 @@ export interface Attention {
   atoms: string;
   /** The signature to look the transfer up by, when one was written down. */
   signature?: string;
+  /** Whether the flow can carry this record on: not one that did not land, cannot be placed, is still settling on the rollup, or is a return. */
+  resumable: boolean;
 }
 
-/** The actions a record may offer. A resend is never one of them. */
-export type RecordAction = "copy-signature" | "dismiss";
+/** The actions a record may offer. A resend is never one of them: resuming runs the flow, which judges every earlier send first. */
+export type RecordAction = "copy-signature" | "dismiss" | "resume";
 
 const operationOf = (record: OperationRecord): Attention["operation"] =>
   record.step === "return" ? "return" : record.kind;
@@ -35,21 +37,29 @@ const lastSignature = (record: OperationRecord): string | undefined =>
  * this build, where nothing can be judged).
  */
 export function attentionOf(record: OperationRecord, seat: SeatJudgement | null): Attention {
-  const base = { id: record.id, operation: operationOf(record), atoms: record.atoms };
+  const operation = operationOf(record);
+  const base = { id: record.id, operation, atoms: record.atoms };
   const pending = record.seat?.state === "pending" ? record.seat : undefined;
   if (pending && seat === "not-seen") {
-    return { ...base, kind: "not-landed", signature: pending.signature };
+    return { ...base, kind: "not-landed", signature: pending.signature, resumable: false };
   }
   if (pending && seat === "unknown") {
-    return { ...base, kind: "unknown", signature: pending.signature };
+    return { ...base, kind: "unknown", signature: pending.signature, resumable: false };
   }
-  return { ...base, kind: "waiting", signature: pending?.signature ?? lastSignature(record) };
+  const settled = !pending || seat === "landed" || seat === "failed";
+  return {
+    ...base,
+    kind: "waiting",
+    signature: pending?.signature ?? lastSignature(record),
+    resumable: settled && operation !== "return",
+  };
 }
 
 /** What a record offers: the signature to copy when it has one, and Dismiss for a send that did not land and nothing else. */
 export function actionsOf(attention: Attention): RecordAction[] {
   const actions: RecordAction[] = attention.signature ? ["copy-signature"] : [];
   if (attention.kind === "not-landed") actions.push("dismiss");
+  if (attention.resumable) actions.push("resume");
   return actions;
 }
 

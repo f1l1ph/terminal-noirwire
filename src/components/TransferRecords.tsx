@@ -10,6 +10,7 @@ import {
   type SeatJudgement,
 } from "@/lib/transfer/attention";
 import { atomsText } from "@/lib/transfer/amount";
+import { newTransferBlocked } from "@/lib/transfer/resume";
 import type { DismissOutcome } from "@/lib/transfer/dismiss";
 import { createJournal, indexedDbStorage, type OperationRecord } from "@/lib/transfer/journal";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
@@ -18,6 +19,8 @@ import { btnGhost, sectionLabel } from "@/components/ui/styles";
 export interface RecordsEngine {
   judge(records: OperationRecord[]): Promise<Record<string, SeatJudgement>>;
   dismiss(): Promise<DismissOutcome>;
+  /** Carries an open record on with its own flow and says in plain words how it ended. */
+  resume(attention: Attention, report: (line: string) => void): Promise<string>;
 }
 
 const RELOAD_MS = 20_000;
@@ -42,16 +45,20 @@ const KIND_COPY: Record<Attention["kind"], string> = {
  * what happened to it and what may be done. It reads the journal alone, so
  * a build with transfers off still shows a record left by an earlier one;
  * only with an `engine` is a record judged against the network and a
- * dismissal possible. No row ever offers to send anything again.
+ * dismissal or resuming possible. Resuming runs the record's own flow, which
+ * judges every earlier send first; no row ever offers to send one again.
  */
 export function TransferRecords({
   owner,
   engine,
   refreshKey = 0,
+  onBlocked,
 }: {
   owner: string | null;
   engine: RecordsEngine | null;
   refreshKey?: number;
+  /** Told whether a new transfer must wait: a record is open, or the records cannot be read. */
+  onBlocked?: (blocked: boolean) => void;
 }) {
   const [items, setItems] = useState<Attention[]>([]);
   const [unreadable, setUnreadable] = useState(false);
@@ -72,8 +79,11 @@ export function TransferRecords({
         if (!active) return;
         setItems(records.map((record) => attentionOf(record, judged[record.id] ?? null)));
         setUnreadable(false);
+        onBlocked?.(newTransferBlocked(records.length, false));
       } catch {
-        if (active) setUnreadable(true);
+        if (!active) return;
+        setUnreadable(true);
+        onBlocked?.(newTransferBlocked(0, true));
       }
     };
     void load();
@@ -82,7 +92,7 @@ export function TransferRecords({
       active = false;
       clearInterval(timer);
     };
-  }, [owner, engine, refreshKey, reload]);
+  }, [owner, engine, refreshKey, reload, onBlocked]);
 
   const dismiss = useCallback(async () => {
     if (!engine) return;
@@ -101,6 +111,24 @@ export function TransferRecords({
       setReload((count) => count + 1);
     }
   }, [engine]);
+
+  const resume = useCallback(
+    async (item: Attention) => {
+      if (!engine) return;
+      setBusy(true);
+      setNote(null);
+      try {
+        setNote(await engine.resume(item, setNote));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "something went wrong";
+        setNote(`The transfer stopped: ${reason.replace(/\.?$/, ".")} Nothing is sent again.`);
+      } finally {
+        setBusy(false);
+        setReload((count) => count + 1);
+      }
+    },
+    [engine],
+  );
 
   const copy = (signature: string) => {
     try {
@@ -151,7 +179,17 @@ export function TransferRecords({
                 >
                   Copy signature
                 </button>
-              ) : engine ? (
+              ) : !engine ? null : action === "resume" ? (
+                <button
+                  key={action}
+                  type="button"
+                  className={`${btnGhost} h-7 px-2 text-[11px]`}
+                  disabled={busy}
+                  onClick={() => void resume(item)}
+                >
+                  {busy ? "Working..." : "Resume"}
+                </button>
+              ) : (
                 <button
                   key={action}
                   type="button"
@@ -161,7 +199,7 @@ export function TransferRecords({
                 >
                   {busy ? "Dismissing..." : "Dismiss"}
                 </button>
-              ) : null,
+              ),
             )}
           </div>
         </div>

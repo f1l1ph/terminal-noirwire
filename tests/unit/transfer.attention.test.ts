@@ -88,8 +88,8 @@ describe("which records offer Dismiss", () => {
     expect(kindOf("not-seen", landed)).toBe("waiting");
   });
 
-  it("offers nothing at all for a record with no signature", () => {
-    expect(actionsOf(attentionOf(record(), null))).toEqual([]);
+  it("offers only Resume for a record with no signature yet", () => {
+    expect(actionsOf(attentionOf(record(), null))).toEqual(["resume"]);
   });
 
   it("names a return to the wallet as such", () => {
@@ -111,8 +111,11 @@ describe("no path offers a resend", () => {
         operation: "deposit",
         atoms: "1",
         signature: "s",
+        resumable: true,
       });
-      for (const action of actions) expect(["copy-signature", "dismiss"]).toContain(action);
+      for (const action of actions) {
+        expect(["copy-signature", "dismiss", "resume"]).toContain(action);
+      }
     }
   });
 
@@ -140,6 +143,7 @@ describe("no path offers a resend", () => {
         "operation",
         "outcomeCopy",
         "progress",
+        "resume",
         "solanaRpc",
         "tokenAccounts",
         "withdraw",

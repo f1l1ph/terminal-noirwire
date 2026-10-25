@@ -18,6 +18,7 @@ import {
 } from "@/lib/transfer/operation";
 import { failureLine, outcomeLine, solText, type OutcomeLine } from "@/lib/transfer/outcomeCopy";
 import { PHASE_LINES, withProgress, type Phase } from "@/lib/transfer/progress";
+import { resumeRecord } from "@/lib/transfer/resume";
 import { readTokenBalance } from "@/lib/transfer/solanaRpc";
 import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
 import { withdraw } from "@/lib/transfer/withdraw";
@@ -91,6 +92,16 @@ export default function FundsSection({
     });
   }, [signer, rollupReader, solana]);
 
+  const freeCollateral =
+    collateral && !isAvailableUnknown(collateral)
+      ? balanceAtoms(transferableAmount(collateral), QUOTE_DECIMALS)
+      : null;
+
+  const latest = useRef({ freeCollateral, onSettled });
+  useEffect(() => {
+    latest.current = { freeCollateral, onSettled };
+  }, [freeCollateral, onSettled]);
+
   const engine = useMemo<RecordsEngine | null>(
     () =>
       signer && rollupReader
@@ -107,10 +118,29 @@ export default function FundsSection({
               return judged;
             },
             dismiss: async () => dismissRollupSend(await makeEnv()),
+            resume: async (attention, report) => {
+              const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
+              const outcome = await resumeRecord(
+                transfer,
+                attention,
+                latest.current.freeCollateral ?? 0n,
+                { deposit, withdraw },
+                QUOTE_DECIMALS,
+              );
+              if (outcome.status === "done") latest.current.onSettled();
+              const resumed = attention.operation === "deposit" ? "deposit" : "withdraw";
+              return outcomeLine(
+                resumed,
+                outcome,
+                QUOTE_DECIMALS,
+                resumed === "deposit" ? ROUND_TRIP_LAMPORTS : SOLANA_EXIT_LAMPORTS,
+              ).text;
+            },
           }
         : null,
     [signer, rollupReader, makeEnv],
   );
+  const [blocked, setBlocked] = useState(true);
 
   const [refreshKey, setRefreshKey] = useState(0);
   const [open, setOpen] = useState(false);
@@ -148,10 +178,6 @@ export default function FundsSection({
 
   if (!owner || !signer) return null;
 
-  const freeCollateral =
-    collateral && !isAvailableUnknown(collateral)
-      ? balanceAtoms(transferableAmount(collateral), QUOTE_DECIMALS)
-      : null;
   const limit = kind === "deposit" ? funds.usdc : freeCollateral;
   const check = checkAmount(text, QUOTE_DECIMALS, limit);
   const busy = phase !== null;
@@ -184,7 +210,12 @@ export default function FundsSection({
 
   return (
     <div>
-      <TransferRecords owner={owner} engine={engine} refreshKey={refreshKey} />
+      <TransferRecords
+        owner={owner}
+        engine={engine}
+        refreshKey={refreshKey}
+        onBlocked={setBlocked}
+      />
       <div className="border-line-subtle border-b p-3">
         {!open ? (
           <button
@@ -232,6 +263,12 @@ export default function FundsSection({
                 </>
               )}
             </p>
+            {blocked && (
+              <p role="status" className="text-dim mt-1 text-[12px]">
+                A transfer is open or its record is still loading. Finish it or wait for it first; a
+                new one cannot start until then.
+              </p>
+            )}
             {!accountOpen && (
               <p className="text-dim mt-1 text-[12px]">Open your account before moving USDC.</p>
             )}
@@ -273,7 +310,7 @@ export default function FundsSection({
               <button
                 type="button"
                 className={`${btnPrimary} h-8 flex-1 text-[12px]`}
-                disabled={busy || !check.ok || !accountOpen}
+                disabled={busy || blocked || !check.ok || !accountOpen}
                 onClick={() => void submit()}
               >
                 {kind === "deposit" ? "Deposit" : "Withdraw"}
