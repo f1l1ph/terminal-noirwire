@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { describeOpenOutcome, keysMayNotPersist, keysNotice } from "@/lib/trading/openCopy";
+import {
+  describeOpenOutcome,
+  keysMayNotPersist,
+  keysNotice,
+  recheckOffer,
+} from "@/lib/trading/openCopy";
 import type { OpenRefusal } from "@/lib/rollup/openClient";
 import type { OpenAccountOutcome } from "@/lib/trading/types";
 
@@ -68,6 +73,27 @@ describe("keysNotice", () => {
     });
     expect(keysNotice({ stage: "ready", seedPersisted: true }, 0)).toBeNull();
     expect(keysNotice(null, 0)).toBeNull();
+  });
+});
+
+describe("recheckOffer and the failed key stage", () => {
+  const failed = { stage: "failed", reason: "x", seedPersisted: true } as const;
+  const ready = { stage: "ready", seedPersisted: true } as const;
+
+  it("offers a check for an unread account and a retry for failed keys", () => {
+    expect(recheckOffer("unknown", null)).toBe("check");
+    expect(recheckOffer("unknown", ready)).toBe("check");
+    expect(recheckOffer("open", failed)).toBe("retry");
+    expect(recheckOffer("unknown", failed)).toBe("retry");
+  });
+
+  it("offers nothing when there is nothing to retry", () => {
+    expect(recheckOffer("open", ready)).toBeNull();
+    expect(recheckOffer("absent", null)).toBeNull();
+  });
+
+  it("carries the reason of a failed setup", () => {
+    expect(keysNotice(failed, 0)).toEqual({ kind: "failed", reason: "x" });
   });
 });
 

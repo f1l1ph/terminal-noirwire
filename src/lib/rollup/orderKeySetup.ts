@@ -14,7 +14,21 @@ const QUICK_KEY_SEARCH = 1_024;
 
 /** Where the order keys stand while a session is built, for the UI to show. */
 export type OrderKeyStatus =
-  { stage: "settling"; readyAtMs: number } | { stage: "installing" } | { stage: "ready" };
+  | { stage: "settling"; readyAtMs: number }
+  | { stage: "installing" }
+  | { stage: "ready" }
+  /** Setting up the keys did not finish; `reason` is plain text for the trader. Building the session again retries. */
+  | { stage: "failed"; reason: string };
+
+const REFUSED = /reject|declin|denied|cancel|refus/i;
+
+/** A plain, token-free reason for a failed key setup. */
+export function keySetupFailureReason(error: unknown): string {
+  if (error instanceof Error && REFUSED.test(`${error.name} ${error.message}`)) {
+    return "The wallet request was declined.";
+  }
+  return "Trading keys could not be set up on this device.";
+}
 
 /** The per-device seed store the keys come from; `orderSeedStore` is the real one. */
 export interface DeviceSeeds {
@@ -58,6 +72,15 @@ export interface DeviceKeyDeps {
  * trade rather than use one that would be lost on reload.
  */
 export async function deviceOrderKeys(deps: DeviceKeyDeps): Promise<OrderKeyManager> {
+  try {
+    return await setUpDeviceOrderKeys(deps);
+  } catch (error) {
+    deps.report({ stage: "failed", reason: keySetupFailureReason(error) });
+    throw error;
+  }
+}
+
+async function setUpDeviceOrderKeys(deps: DeviceKeyDeps): Promise<OrderKeyManager> {
   const existing = await deps.seeds.load(deps.ownerAddress);
   const seed = existing ?? (await deps.seeds.create(deps.ownerAddress));
   const fresh = freshOrderKeys(seed);

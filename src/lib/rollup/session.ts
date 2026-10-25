@@ -3,7 +3,8 @@ import { PublicKey } from "@solana/web3.js";
 import { isMainnetBuild } from "../network";
 import type { WalletIdentity } from "../trading/types";
 import { browserLocalStorage } from "../wallet/index";
-import type { OwnerSigner } from "../wallet/ownerSigner";
+import { StaleSigner, type OwnerSigner } from "../wallet/ownerSigner";
+import { NetworkRefused } from "./networkCheck";
 import { secretOwner, type DerivedOrderSeeds } from "../wallet/secretSigner";
 import { loadCheckpoint, saveCheckpoint } from "./checkpointStore";
 import { assertRollupIdentity } from "./identity";
@@ -138,6 +139,23 @@ export class SessionAuthError extends Error {
     super(cause instanceof Error ? redactToken(cause.message) : "Sign-in to the rollup failed");
     this.name = "SessionAuthError";
   }
+}
+
+const USER_REFUSAL = /reject|declin|denied|cancel|refus/i;
+
+/**
+ * Whether building the session again is worth doing automatically after a
+ * failed sign-in. It is not when the owner refused the wallet prompt, the
+ * network check refused to ask the wallet, or the wallet's account changed
+ * under the request: repeating any of those would prompt the owner again, or
+ * fail the same way, without anyone having asked. The next user action may try.
+ */
+export function retriesSignIn(cause: unknown): boolean {
+  if (cause instanceof NetworkRefused || cause instanceof StaleSigner) return false;
+  if (typeof cause === "object" && cause !== null && (cause as { code?: unknown }).code === 4001) {
+    return false;
+  }
+  return !(cause instanceof Error && USER_REFUSAL.test(`${cause.name} ${cause.message}`));
 }
 
 interface ExchangeTokens {

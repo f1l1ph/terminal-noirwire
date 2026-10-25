@@ -32,6 +32,7 @@ import {
 import { trackSecret, untrackSecret } from "../rollup/secretStore";
 import {
   buildRealSession,
+  retriesSignIn,
   SessionAuthError,
   trustedProgramId,
   type RollupSession,
@@ -165,6 +166,10 @@ interface OpenSession {
   /** The signer the session was built for; a wallet that comes back with another is not served by this session. */
   signer: WalletIdentity["signer"];
   stopWatching: Promise<() => void>;
+  /** The build has finished, one way or the other. */
+  settled: boolean;
+  /** The wallet was closed while this was still being built: close it as soon as it lands. */
+  closeWhenSettled: boolean;
 }
 
 function closeSession({ session, stopWatching }: OpenSession): void {
@@ -306,33 +311,64 @@ export class RollupTradingClient implements TradingClient {
   }
 
   /** The wallet's session, or a new one when the signer it was built for is no longer the wallet's. */
-  private ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
+  private ensureOpen(wallet: WalletIdentity): OpenSession {
     const existing = this.sessions.get(wallet.address);
-    if (existing && existing.signer !== wallet.signer) return this.refreshSession(wallet);
-    return (existing ?? this.openSession(wallet)).session;
+    if (existing && existing.signer !== wallet.signer) return this.replaceSession(wallet, existing);
+    if (existing) {
+      existing.closeWhenSettled = false;
+      return existing;
+    }
+    return this.openSession(wallet);
+  }
+
+  private ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
+    return this.ensureOpen(wallet).session;
+  }
+
+  /**
+   * Replaces `stale` with a new session, unless this wallet already has a
+   * different one: every caller that found the same session unusable shares
+   * the one replacement, so a wallet is never asked to sign in twice at once
+   * and one new session never closes another.
+   */
+  private replaceSession(wallet: WalletIdentity, stale: OpenSession | undefined): OpenSession {
+    const current = this.sessions.get(wallet.address);
+    if (current && current !== stale) return current;
+    const next = this.openSession(wallet);
+    if (stale) closeSession(stale);
+    return next;
   }
 
   private refreshSession(wallet: WalletIdentity): Promise<RollupSession> {
-    const previous = this.sessions.get(wallet.address);
-    const { session } = this.openSession(wallet);
-    if (previous) closeSession(previous);
-    return session;
+    return this.replaceSession(wallet, this.sessions.get(wallet.address)).session;
   }
 
   private openSession(wallet: WalletIdentity): OpenSession {
     const session = this.buildSession(wallet, this.sessionDeps(wallet));
-    const opened = {
+    const opened: OpenSession = {
       session,
       signer: wallet.signer,
       stopWatching: session.then((built) => this.watchView(built)),
+      settled: false,
+      closeWhenSettled: false,
     };
     opened.stopWatching.catch(() => {});
     this.sessions.set(wallet.address, opened);
-    // A build that failed is not kept as this wallet's session: the next
-    // call builds again rather than rejecting until the wallet is closed.
-    session.catch(() => {
-      if (this.sessions.get(wallet.address) === opened) this.sessions.delete(wallet.address);
-    });
+    session.then(
+      () => {
+        opened.settled = true;
+        if (opened.closeWhenSettled && this.sessions.get(wallet.address) === opened) {
+          this.sessions.delete(wallet.address);
+          closeSession(opened);
+        }
+      },
+      () => {
+        // A build that failed is not kept as this wallet's session: the next
+        // call builds again rather than rejecting until the wallet is closed.
+        opened.settled = true;
+        if (this.sessions.get(wallet.address) === opened) this.sessions.delete(wallet.address);
+      },
+    );
     return opened;
   }
 
@@ -399,6 +435,13 @@ export class RollupTradingClient implements TradingClient {
     this.lastOrderKeys.delete(wallet.address);
     const existing = this.sessions.get(wallet.address);
     if (!existing) return;
+    if (!existing.settled) {
+      // Still signing in: dropping it here would make the next caller start a
+      // second sign-in (a second wallet prompt). It is closed when it lands,
+      // unless the wallet asks for it again before then.
+      existing.closeWhenSettled = true;
+      return;
+    }
     this.sessions.delete(wallet.address);
     closeSession(existing);
   }
@@ -414,15 +457,18 @@ export class RollupTradingClient implements TradingClient {
     wallet: WalletIdentity,
     fn: (session: RollupSession) => Promise<T>,
   ): Promise<T> {
+    let open = this.ensureOpen(wallet);
     let session: RollupSession;
     try {
-      session = await this.ensureSession(wallet);
+      session = await open.session;
     } catch (error) {
-      if (!(error instanceof SessionAuthError)) throw error;
-      session = await this.refreshSession(wallet);
+      if (!(error instanceof SessionAuthError) || !retriesSignIn(error.cause)) throw error;
+      open = this.replaceSession(wallet, open);
+      session = await open.session;
     }
     if (session.tokenExpiresAtMs - this.now() < TOKEN_REFRESH_MARGIN_MS) {
-      session = await this.refreshSession(wallet);
+      open = this.replaceSession(wallet, open);
+      session = await open.session;
     }
     return fn(session);
   }

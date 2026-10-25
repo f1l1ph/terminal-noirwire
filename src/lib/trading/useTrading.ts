@@ -233,6 +233,17 @@ export function useTrading(
     };
   }, [client, wallet, patchFlow]);
 
+  /** Runs the account check again, and with it the sign-in and key setup a failed attempt left undone. */
+  const recheckAccount = useCallback(async (): Promise<void> => {
+    if (!wallet || !client.accountStatus) return;
+    const status = await client.accountStatus(wallet).catch((): AccountStatus => "unknown");
+    patchFlow(wallet.address, { status });
+    client.makersListedMarkets?.(wallet).then(
+      (makersListed) => patchFlow(wallet.address, { makersListed }),
+      () => {},
+    );
+  }, [client, wallet, patchFlow]);
+
   // The page itself unloading (close, refresh, navigate away) does not
   // always run the effect cleanup above in time; this ends the same
   // subscription from the one event guaranteed to fire first.
@@ -421,12 +432,17 @@ export function useTrading(
     noFaucet,
     /** Mainnet: the connected owner has no account yet and needs the invite NoirWire issued for this address. */
     needsInvite: isMainnetBuild() && flow.status === "absent",
-    accountStatus: flow.status,
+    // The check runs once per wallet; account state arriving on the venue's
+    // own stream proves the account is readable, so it settles an earlier
+    // failed check.
+    accountStatus:
+      flow.status === "unknown" && currentRead?.state ? ("open" as const) : flow.status,
     /** True from the moment the open request starts until it is settled. */
     opening: flow.opening,
     /** What the last attempt to open the account came to; null before any. */
     openOutcome: flow.outcome,
     openAccount,
+    recheckAccount,
     /** Reads the rollup as the owner; null in dev mode and with no wallet. */
     rollupReader,
     /** Where the order keys stand on this device (waiting to replace old keys, installing, ready); null until known. */

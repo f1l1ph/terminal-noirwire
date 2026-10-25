@@ -43,7 +43,7 @@ export const walletlessDockText = (mainnet: boolean): string =>
 export const placeLabel = (actionWord: string, mainnet: boolean): string =>
   mainnet || !TEST_ONLY_COPY ? `Place ${actionWord}` : `${TEST_ONLY_COPY.placeVerb} ${actionWord}`;
 
-export type TradeGate = "needsAccount" | "accountUnknown" | "keysNotReady";
+export type TradeGate = "needsAccount" | "accountUnknown" | "keysNotReady" | "keysFailed";
 
 /**
  * Why an order cannot be placed yet on a mainnet build. Fails closed: null
@@ -58,11 +58,13 @@ export function tradeGate(
   if (!mainnet) return null;
   if (status === "absent") return "needsAccount";
   if (status !== "open") return "accountUnknown";
+  if (keys?.stage === "failed") return "keysFailed";
   if (!keys || keys.stage !== "ready") return "keysNotReady";
   return null;
 }
 
 const GATE_LABELS: Record<TradeGate, string> = {
+  keysFailed: "Trading keys not set up",
   needsAccount: "Open your account to trade",
   accountUnknown: "Checking your account…",
   keysNotReady: "Setting up trading keys…",

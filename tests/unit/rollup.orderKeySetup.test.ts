@@ -60,6 +60,27 @@ describe("order keys on a new device", () => {
     expect(keys.publicKeys.map((key) => key.toBase58())).toEqual(installed[0]);
   });
 
+  it("reports a plain failed stage, and still rejects, when the wallet declines set_order_keys", async () => {
+    const { deps } = setup({ view: viewOf(strangersKeys()) });
+    deps.install = async () => {
+      throw new Error("User rejected the request");
+    };
+    await expect(deviceOrderKeys(deps)).rejects.toThrow(/rejected/);
+    const last = (deps.report as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(last).toEqual({ stage: "failed", reason: "The wallet request was declined." });
+  });
+
+  it("reports a failed stage when the view cannot be read, without leaking the error text", async () => {
+    const { deps } = setup({ view: null });
+    deps.readView = async () => {
+      throw new Error("fetch failed for https://x/?token=secret");
+    };
+    await expect(deviceOrderKeys(deps)).rejects.toThrow();
+    const last = (deps.report as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(last.stage).toBe("failed");
+    expect(last.reason).not.toMatch(/secret|fetch/);
+  });
+
   it("still waits the full 60 seconds when a resting order expires in 5", async () => {
     const view = viewOf(strangersKeys(), [NOW + 5_000]);
     const { deps, sleeps } = setup({ view });

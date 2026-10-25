@@ -89,7 +89,10 @@ export function describeOpenOutcome(
   }
 }
 
-export type KeysNotice = { kind: "settling"; secondsLeft: number } | { kind: "installing" };
+export type KeysNotice =
+  | { kind: "settling"; secondsLeft: number }
+  | { kind: "installing" }
+  | { kind: "failed"; reason: string };
 
 /** What to show while this device's order keys are set up, or null once they are ready (or not yet known). */
 export function keysNotice(keys: OrderKeyState | null, nowMs: number): KeysNotice | null {
@@ -101,7 +104,17 @@ export function keysNotice(keys: OrderKeyState | null, nowMs: number): KeysNotic
     };
   }
   if (keys.stage === "installing") return { kind: "installing" };
+  if (keys.stage === "failed") return { kind: "failed", reason: keys.reason };
   return null;
+}
+
+/** What the single retry button is for, or null when there is nothing to retry: an unread account, or key setup that failed. */
+export function recheckOffer(
+  status: AccountStatus,
+  keys: OrderKeyState | null,
+): "check" | "retry" | null {
+  if (keys?.stage === "failed") return "retry";
+  return status === "unknown" ? "check" : null;
 }
 
 /** True when this browser said it may not keep the device's trading keys, so trading from it is not recommended. */

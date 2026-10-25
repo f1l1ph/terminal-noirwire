@@ -42,7 +42,7 @@ describe("what a mainnet build leaves out", () => {
   });
 });
 
-const keys = (stage: OrderKeyState["stage"]): OrderKeyState =>
+const keys = (stage: "settling" | "installing" | "ready"): OrderKeyState =>
   stage === "settling"
     ? { stage, readyAtMs: 1, seedPersisted: true }
     : { stage, seedPersisted: true };
@@ -59,6 +59,12 @@ describe("tradeGate", () => {
     expect(tradeGate(true, "unknown", null)).toBe("accountUnknown");
     expect(tradeGate(true, "unknown", keys("ready"))).toBe("accountUnknown");
     expect(tradeGate(true, "open", null)).toBe("keysNotReady");
+  });
+
+  it("keeps Place closed when key setup failed", () => {
+    expect(tradeGate(true, "open", { stage: "failed", reason: "x", seedPersisted: true })).toBe(
+      "keysFailed",
+    );
   });
 
   it("opens the gate for exactly one combination: open account, ready keys", () => {

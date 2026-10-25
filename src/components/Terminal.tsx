@@ -658,6 +658,7 @@ export function Terminal() {
             opening={trading.opening}
             outcome={trading.openOutcome}
             onOpen={(invite) => void trading.openAccount(invite)}
+            onRecheck={trading.recheckAccount}
             keys={trading.orderKeys}
             now={now}
           />
