@@ -7,6 +7,15 @@ import { MAINNET_PINS } from "./rollup/pins";
  */
 const NO_DOCUMENT_POLICY = "default-src 'none'; frame-ancestors 'none'";
 
+/** The origin of `url`, or an empty string for a missing or malformed one (the policy then opens nothing for it). */
+function originOf(url: string | undefined): string {
+  try {
+    return url ? new URL(url).origin : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * `connect-src` is the simulation service's own HTTP and websocket origins
  * (read directly from the environment, not the validated schema in
@@ -37,7 +46,10 @@ export function contentSecurityPolicy(nonce?: string): string {
   const rollupWsUrl = isMainnet
     ? MAINNET_PINS.rollupWsUrl
     : (process.env.NEXT_PUBLIC_ROLLUP_WS_URL ?? "");
-  const connectSources = ["'self'", simUrl, simWsUrl, rollupUrl, rollupWsUrl]
+  // The Solana RPC the owner's network check reads the genesis hash from:
+  // exactly its origin, from the build environment alone.
+  const solanaOrigin = originOf(process.env.NEXT_PUBLIC_SOLANA_RPC_URL);
+  const connectSources = ["'self'", simUrl, simWsUrl, rollupUrl, rollupWsUrl, solanaOrigin]
     .filter(Boolean)
     .join(" ");
   const isDev = process.env.NODE_ENV === "development";

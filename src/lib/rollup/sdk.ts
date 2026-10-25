@@ -8,7 +8,11 @@
  * order-key call itself, read from the Exchange account, so no caller passes
  * a risk market list any more.
  */
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
+import type { OwnerSigner } from "../wallet/ownerSigner";
+import { sendOwnerSigned } from "./ownerSend";
+import { scrubError } from "./redact";
 import {
   ACCESS_ERROR as SDK_ACCESS_ERROR,
   Addresses,
@@ -28,8 +32,6 @@ import {
   decodeMarket,
   randomSecret,
   receipt as sdkReceipt,
-  sendAndConfirm,
-  signIn as sdkSignIn,
   websocketUrl,
   type CustodyToken,
   type OrderKeyCheckpoint,
@@ -81,17 +83,18 @@ export function decodeMarketAccount(data: Uint8Array) {
 }
 
 /**
- * Replaces the four order keys a view holds, signed by the owner key: the
- * one way back for an account whose keys this device cannot derive.
+ * Replaces the four order keys a view holds, signed by the owner through the
+ * signer port and sent only when the signed transaction is the one built
+ * here: the one way back for an account whose keys this device cannot use.
  */
 export async function installOrderKeys(
   connection: Connection,
-  owner: Keypair,
+  owner: OwnerSigner,
   keys: OrderKeyManager,
   programId: PublicKey,
 ): Promise<void> {
   const instruction = new Instructions(programId).setOrderKeys(owner.publicKey, keys.publicKeys);
-  await sendAndConfirm(connection, [instruction], owner);
+  await sendOwnerSigned(connection, [instruction], owner);
 }
 
 const UNSUPPORTED_MEDIA_TYPE = 415;
@@ -107,12 +110,17 @@ let plainTextBodiesAccepted = true;
  * gets the original headers from then on.
  */
 const preflightFreeFetch: typeof fetch = async (input, init) => {
-  if (plainTextBodiesAccepted) {
-    const response = await fetch(input, { ...init, headers: { "content-type": "text/plain" } });
-    if (response.status !== UNSUPPORTED_MEDIA_TYPE) return response;
-    plainTextBodiesAccepted = false;
+  try {
+    if (plainTextBodiesAccepted) {
+      const response = await fetch(input, { ...init, headers: { "content-type": "text/plain" } });
+      if (response.status !== UNSUPPORTED_MEDIA_TYPE) return response;
+      plainTextBodiesAccepted = false;
+    }
+    return await fetch(input, init);
+  } catch (error) {
+    // The connection's URL carries the sign-in token; a failed request must not repeat it.
+    throw scrubError(error);
   }
-  return fetch(input, init);
 };
 
 export function connectionTo(rpcUrl: string, wsUrl: string): Connection {
@@ -123,12 +131,25 @@ export function connectionTo(rpcUrl: string, wsUrl: string): Connection {
   });
 }
 
-export async function signInAndConnect(
+const MILLISECOND_EPOCH = 1e12;
+
+/**
+ * Signs in to the private endpoint: `signMessage` signs the endpoint's
+ * challenge, and the token comes back with the time it lapses (the endpoint's
+ * own `expiresAt`, in milliseconds, or seconds from an endpoint that sends
+ * those).
+ */
+export async function signInWithExpiry(
   privateUrl: string,
   reader: PublicKey,
   signMessage: SignMessage,
-): Promise<Connection> {
-  const token = await sdkSignIn(privateUrl, reader, signMessage);
+): Promise<{ token: string; expiresAtMs: number }> {
+  const { token, expiresAt } = await getAuthToken(privateUrl, reader, signMessage);
+  return { token, expiresAtMs: expiresAt < MILLISECOND_EPOCH ? expiresAt * 1000 : expiresAt };
+}
+
+/** A connection to the private endpoint that reads as the owner `token` was signed for. */
+export function connectWithToken(privateUrl: string, token: string): Connection {
   return connectionTo(`${privateUrl}?token=${token}`, `${websocketUrl(privateUrl)}?token=${token}`);
 }
 

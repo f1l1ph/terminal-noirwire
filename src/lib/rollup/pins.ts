@@ -12,6 +12,8 @@ export interface NetworkPins {
   rollupWsUrl: string;
   /** The identity the rollup itself must report; never read from the deployment answer. */
   validator: string;
+  /** The Solana cluster's genesis hash, which the Solana RPC must report before the owner signs. */
+  solanaGenesis: string;
   /** The collateral and quote token. */
   usdcMint: string;
   /** The only markets launched on this network. */
@@ -24,6 +26,7 @@ export const MAINNET_PINS: Readonly<NetworkPins> = Object.freeze({
   rollupRpcUrl: "https://mainnet-tee.magicblock.app",
   rollupWsUrl: "wss://mainnet-tee.magicblock.app",
   validator: "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo",
+  solanaGenesis: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
   usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   marketIds: Object.freeze([0]),
 });

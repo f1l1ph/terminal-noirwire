@@ -25,10 +25,12 @@ const wsUrl = (name: string) =>
  * (a container, a hosted deployment with a different public endpoint). On
  * `NEXT_PUBLIC_NETWORK=mainnet` they are pinned in code instead
  * (src/lib/rollup/pins.ts): each must be unset or exactly the pin, and the
- * pin is what the build uses either way. There
- * is no NEXT_PUBLIC_SOLANA_RPC_URL: nothing in the trading path ever talks
- * to base-layer Solana directly (open+fund and every trading instruction
- * are rollup-only), so it would be configuration with no reader.
+ * pin is what the build uses either way.
+ *
+ * NEXT_PUBLIC_SOLANA_RPC_URL is read only to confirm the Solana cluster
+ * (its genesis hash) before the owner signs. A mainnet build requires it,
+ * and it comes from this environment alone, never from the service's
+ * deployment answer.
  */
 const envSchema = z.object({
   simUrl: z.string().url("NEXT_PUBLIC_SIM_URL must be an absolute http(s) URL"),
@@ -42,6 +44,10 @@ const envSchema = z.object({
     .optional(),
   rollupWsUrlOverride: wsUrl("NEXT_PUBLIC_ROLLUP_WS_URL").optional(),
   orderbookProgramIdOverride: z.string().min(32).max(44).optional(),
+  solanaRpcUrl: z
+    .string()
+    .url("NEXT_PUBLIC_SOLANA_RPC_URL must be an absolute https URL")
+    .optional(),
 });
 
 type Env = z.infer<typeof envSchema>;
@@ -58,6 +64,7 @@ export function readEnv(): Env {
     rollupRpcUrlOverride: process.env.NEXT_PUBLIC_ROLLUP_RPC_URL || undefined,
     rollupWsUrlOverride: process.env.NEXT_PUBLIC_ROLLUP_WS_URL || undefined,
     orderbookProgramIdOverride: process.env.NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID || undefined,
+    solanaRpcUrl: process.env.NEXT_PUBLIC_SOLANA_RPC_URL || undefined,
   });
   if (!result.success) {
     const reasons = result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
@@ -78,6 +85,7 @@ export function readEnv(): Env {
       programIdOverride: result.data.orderbookProgramIdOverride,
       rollupRpcUrlOverride: result.data.rollupRpcUrlOverride,
       rollupWsUrlOverride: result.data.rollupWsUrlOverride,
+      solanaRpcUrl: result.data.solanaRpcUrl,
     },
     MAINNET_PINS,
   );

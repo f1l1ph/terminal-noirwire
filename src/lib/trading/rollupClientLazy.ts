@@ -1,10 +1,13 @@
 import type { UnknownHold } from "../rollup/accountMemory";
 import type { DeploymentOverrides } from "../rollup/deployment";
 import type {
+  AccountStatus,
   CancelResult,
   FundOutcome,
   MarketSettingsLookup,
   NewOrderInput,
+  OpenAccountOutcome,
+  OrderKeyState,
   PlaceOrderResult,
   PrivacyCheck,
   TraderState,
@@ -51,8 +54,24 @@ export class LazyRollupTradingClient implements TradingClient {
     return this.loaded;
   }
 
-  async openAccount(wallet: WalletIdentity): Promise<void> {
-    return (await this.load()).openAccount(wallet);
+  async openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome> {
+    return (await this.load()).openAccount(wallet, invite);
+  }
+
+  async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
+    return (await (await this.load()).accountStatus?.(wallet)) ?? "unknown";
+  }
+
+  subscribeOrderKeys(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void this.load().then((client) => {
+      if (!cancelled) unsubscribe = client.subscribeOrderKeys?.(wallet, listener) ?? null;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }
 
   async fund(wallet: WalletIdentity): Promise<FundOutcome> {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
+import { isMainnetBuild, refuseOnMainnet } from "../network";
 import {
   browserLocalStorage,
   clearWallet,
@@ -64,6 +65,12 @@ function subscribe(listener: () => void): () => void {
 
 function getSnapshot(): WalletSnapshot {
   if (snapshot === undefined) {
+    if (isMainnetBuild()) {
+      // A mainnet build holds no wallet secret: whatever a test build left
+      // in this browser's storage is never read.
+      snapshot = SERVER_SNAPSHOT;
+      return snapshot;
+    }
     const storage = browserLocalStorage();
     const lockedAddress = lockedWalletAddress(storage);
     snapshot = lockedAddress
@@ -90,12 +97,14 @@ export function useWallet(): WalletHookResult {
   );
 
   const create = useCallback((): WalletAccount => {
+    refuseOnMainnet("Creating a wallet in the page");
     const next = createWallet(browserLocalStorage());
     setSnapshot({ account: next, lockedAddress: null, saved: false });
     return next;
   }, []);
 
   const unlock = useCallback(async (passphrase: string): Promise<boolean> => {
+    refuseOnMainnet("Unlocking a wallet in the page");
     const unlocked = await unlockWallet(browserLocalStorage(), passphrase);
     if (!unlocked) return false;
     setSnapshot({ account: unlocked, lockedAddress: null, saved: true });
@@ -103,6 +112,7 @@ export function useWallet(): WalletHookResult {
   }, []);
 
   const protect = useCallback(async (passphrase: string): Promise<void> => {
+    refuseOnMainnet("Keeping a wallet secret in the page");
     const current = getSnapshot().account;
     if (!current) throw new Error("There is no wallet to protect");
     await protectWallet(browserLocalStorage(), current, passphrase);
@@ -111,6 +121,7 @@ export function useWallet(): WalletHookResult {
 
   const importSecret = useCallback(
     (secretHex: string, options?: { replace?: boolean }): WalletAccount => {
+      refuseOnMainnet("Importing a wallet secret into the page");
       const storage = browserLocalStorage();
       const next = importWallet(storage, secretHex, {
         ...options,

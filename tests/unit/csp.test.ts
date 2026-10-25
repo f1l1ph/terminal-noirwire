@@ -26,6 +26,31 @@ describe("connect-src", () => {
     ]);
   });
 
+  it("on mainnet adds exactly the Solana RPC origin, never its path or key", () => {
+    vi.stubEnv("NEXT_PUBLIC_NETWORK", "mainnet");
+    vi.stubEnv("NEXT_PUBLIC_SIM_URL", "https://book.noirwire.com");
+    vi.stubEnv("NEXT_PUBLIC_SIM_WS_URL", "wss://book.noirwire.com/v1/stream");
+    vi.stubEnv("NEXT_PUBLIC_ROLLUP_RPC_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_ROLLUP_WS_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_SOLANA_RPC_URL", "https://rpc.example.com/v1?api-key=abc123");
+    expect(connectSources()).toEqual([
+      "'self'",
+      "https://book.noirwire.com",
+      "wss://book.noirwire.com/v1/stream",
+      "https://mainnet-tee.magicblock.app",
+      "wss://mainnet-tee.magicblock.app",
+      "https://rpc.example.com",
+    ]);
+  });
+
+  it("opens nothing for a Solana RPC URL that does not parse", () => {
+    vi.stubEnv("NEXT_PUBLIC_NETWORK", "mainnet");
+    vi.stubEnv("NEXT_PUBLIC_SIM_URL", "https://book.noirwire.com");
+    vi.stubEnv("NEXT_PUBLIC_SIM_WS_URL", "wss://book.noirwire.com/v1/stream");
+    vi.stubEnv("NEXT_PUBLIC_SOLANA_RPC_URL", "not a url");
+    expect(connectSources()).toHaveLength(5);
+  });
+
   it("pins the rollup origins for a near-miss network name too", () => {
     vi.stubEnv("NEXT_PUBLIC_NETWORK", "Mainnet");
     vi.stubEnv("NEXT_PUBLIC_SIM_URL", "https://book.noirwire.com");

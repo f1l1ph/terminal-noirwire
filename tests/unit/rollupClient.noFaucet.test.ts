@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
+import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
@@ -43,13 +44,14 @@ function unopenedSession(): RollupSession {
     subscribeView: () => async () => {},
   } as unknown as TraderClientLike;
   return {
-    owner: Keypair.generate(),
+    owner: keypairOwnerSigner(Keypair.generate()),
     orderKeyPublicKeys: [],
     client,
     deployment: DEPLOYMENT,
     tokenIndexBySymbol: new Map(),
     collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
-    createdAtMs: Date.now(),
+    gate: Keypair.generate().publicKey,
+    tokenExpiresAtMs: Number.MAX_SAFE_INTEGER,
     saveKeyCheckpoint: () => {},
     close: () => {},
   };

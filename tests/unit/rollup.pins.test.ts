@@ -110,6 +110,12 @@ describe("a mainnet build checking /v1/deployment", () => {
   });
 });
 
+describe("the pinned Solana cluster", () => {
+  it("is the mainnet genesis hash", () => {
+    expect(MAINNET_PINS.solanaGenesis).toBe("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+  });
+});
+
 describe("a test build checking /v1/deployment", () => {
   it("accepts whatever test network, program and mint the service names", async () => {
     const accepted = await fetchOf(

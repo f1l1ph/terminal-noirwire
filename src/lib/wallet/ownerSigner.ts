@@ -1,5 +1,6 @@
 import { Transaction, type Keypair, type PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
+import { refuseOnMainnet } from "../network";
 
 /** The one chain id a wallet is told about; a rollup transaction is signed with no chain at all. */
 export type MainnetChain = "solana:mainnet";
@@ -29,8 +30,9 @@ export class StaleSigner extends Error {
   }
 }
 
-/** An owner signer over a keypair held in this browser. */
+/** An owner signer over a keypair held in this browser. Test builds only: a mainnet build refuses to make one. */
 export function keypairOwnerSigner(keypair: Keypair): OwnerSigner {
+  refuseOnMainnet("An owner signer over a key held in the page");
   return {
     publicKey: keypair.publicKey,
     async signMessage(message) {

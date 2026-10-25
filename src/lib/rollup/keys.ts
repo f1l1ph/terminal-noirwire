@@ -1,18 +1,9 @@
-import { Keypair, type PublicKey } from "@solana/web3.js";
+import type { Keypair, PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
-import { hexToBytes } from "../wallet/index";
-import type { WalletAccount } from "../wallet/index";
+import { refuseOnMainnet } from "../network";
+import type { OwnerSigner } from "../wallet/ownerSigner";
 import type { SignMessage } from "./sdk";
-
-/**
- * The browser wallet's keypair IS the owner key (DESIGN.md section 4): this
- * terminal never uses a separate wallet-adapter flow, so the owner's full
- * secret key is already in hand, exactly as the SDK's own tests hold it.
- */
-export function ownerKeypairFrom(wallet: WalletAccount): Keypair {
-  return Keypair.fromSecretKey(hexToBytes(wallet.secretKeyHex));
-}
 
 const ORDER_SEED_DOMAIN = new TextEncoder().encode("noirwire-terminal/order-key-seed/v2");
 const ED25519_SEED_BYTES = 32;
@@ -29,6 +20,7 @@ const ED25519_SEED_BYTES = 32;
  * got the owner key to sign that message. The seed itself is never sent.
  */
 export function deriveOrderSeed(owner: Keypair): Uint8Array {
+  refuseOnMainnet("Deriving the order seed from the owner secret");
   const input = new Uint8Array(ORDER_SEED_DOMAIN.length + ED25519_SEED_BYTES);
   input.set(ORDER_SEED_DOMAIN);
   input.set(owner.secretKey.slice(0, ED25519_SEED_BYTES), ORDER_SEED_DOMAIN.length);
@@ -45,6 +37,7 @@ const LEGACY_ORDER_SEED_DOMAIN = new TextEncoder().encode("noirwire-terminal/ord
  * rollup sign-in once could, may hold this seed.
  */
 export function deriveLegacyOrderSeed(owner: Keypair): Uint8Array {
+  refuseOnMainnet("Deriving the earlier order seed from the owner secret");
   return sha256(nacl.sign.detached(LEGACY_ORDER_SEED_DOMAIN, owner.secretKey));
 }
 
@@ -74,12 +67,15 @@ export function isSignInChallenge(message: Uint8Array, owner: PublicKey): boolea
   return match !== null && match[2] === owner.toBase58();
 }
 
-/** The owner key's signer for the rollup sign-in, refusing anything that is not a sign-in challenge. */
-export function signInSigner(owner: Keypair): SignMessage {
+/**
+ * The owner's signer for the rollup sign-in, refusing anything that is not a
+ * sign-in challenge for this owner. The only use of `signMessage` anywhere.
+ */
+export function signInSigner(owner: OwnerSigner): SignMessage {
   return async (message) => {
     if (!isSignInChallenge(message, owner.publicKey)) {
       throw new Error("the rollup asked this wallet to sign something that is not a sign-in");
     }
-    return nacl.sign.detached(message, owner.secretKey);
+    return owner.signMessage(message);
   };
 }

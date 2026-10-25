@@ -3,7 +3,7 @@ import { Keypair } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
 import { deriveOrderSeed } from "@/lib/rollup/keys";
-import { freshOrderKeys, signInAndConnect } from "@/lib/rollup/sdk";
+import { freshOrderKeys, signInWithExpiry } from "@/lib/rollup/sdk";
 
 /**
  * The rollup sign-in signs whatever challenge string the rollup endpoint
@@ -42,7 +42,7 @@ describe("audit: rollup sign-in as a signing oracle for the order-key seed", () 
       signatureSentToEndpoint = nacl.sign.detached(message, owner.secretKey);
       return signatureSentToEndpoint;
     };
-    await signInAndConnect("https://rollup.example", owner.publicKey, signMessage);
+    await signInWithExpiry("https://rollup.example", owner.publicKey, signMessage);
 
     expect(signatureSentToEndpoint).not.toBeNull();
     const recoveredSeed = sha256(signatureSentToEndpoint!);

@@ -5,6 +5,8 @@ import { bytesToHex } from "@/lib/wallet/index";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { deriveLegacyOrderSeed, deriveOrderSeed } from "@/lib/rollup/keys";
 import type { DeploymentOverrides, PublicDeployment } from "@/lib/rollup/deployment";
+import type { WalletIdentity } from "@/lib/trading/types";
+import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import {
   freshOrderKeys,
   MARKET_KIND_CODE,
@@ -83,7 +85,21 @@ interface Stage {
   identityAnswer?: () => Response;
   overrides?: DeploymentOverrides;
   view?: () => Promise<{ orderKeys: PublicKey[] }>;
+  /** Trade as a mainnet session does: the network-checked wallet signer, and no wallet secret. */
+  mainnetSigner?: boolean;
 }
+
+const memorySeeds = () => {
+  const seeds = new Map<string, Uint8Array>();
+  return {
+    load: async (owner: string) => seeds.get(owner) ?? null,
+    create: async (owner: string) => {
+      const seed = crypto.getRandomValues(new Uint8Array(32));
+      seeds.set(owner, seed);
+      return seed;
+    },
+  };
+};
 
 async function build(owner: Keypair, stage: Stage = {}) {
   const store = new Map<string, string>();
@@ -113,16 +129,17 @@ async function build(owner: Keypair, stage: Stage = {}) {
     );
     return {
       ...real,
-      signInAndConnect: async (_url: string, _reader: PublicKey, signMessage: SignMessage) => {
+      signInWithExpiry: async (_url: string, _reader: PublicKey, signMessage: SignMessage) => {
         signer = signMessage;
-        return {
-          getMultipleAccountsInfo: async (addresses: PublicKey[]) =>
-            addresses.map((address) => {
-              const id = marketAddresses.get(address.toBase58());
-              return id === undefined ? null : { data: Uint8Array.of(id) };
-            }),
-        };
+        return { token: "session-token-0001", expiresAtMs: Date.now() + 30 * 24 * 60 * 60 * 1000 };
       },
+      connectWithToken: () => ({
+        getMultipleAccountsInfo: async (addresses: PublicKey[]) =>
+          addresses.map((address) => {
+            const id = marketAddresses.get(address.toBase58());
+            return id === undefined ? null : { data: Uint8Array.of(id) };
+          }),
+      }),
       connectionTo: () => ({ getAccountInfo: async () => ({ data: new Uint8Array() }) }),
       decodeExchangeAccount: () => ({
         collateralToken: 0,
@@ -145,10 +162,24 @@ async function build(owner: Keypair, stage: Stage = {}) {
       ? (stage.identityAnswer?.() ??
         new Response(JSON.stringify({ result: { identity: MAINNET_PINS.validator } })))
       : new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
-  const session = buildRealSession(
-    { publicKey: owner.publicKey.toBase58(), secretKeyHex: bytesToHex(owner.secretKey) },
-    { simUrl: "https://sim-session.example", fetchFn, overrides: stage.overrides },
-  );
+  const address = owner.publicKey.toBase58();
+  let wallet: WalletIdentity = { address, secretKeyHex: bytesToHex(owner.secretKey) };
+  if (stage.mainnetSigner) {
+    const { mainnetOwnerSigner } = await import("@/lib/rollup/mainnetOwner");
+    wallet = {
+      address,
+      signer: mainnetOwnerSigner(keypairOwnerSigner(owner), "https://solana-rpc.example", {
+        solana: { getGenesisHash: async () => MAINNET_PINS.solanaGenesis },
+        rollupIdentity: async () => MAINNET_PINS.validator,
+      }),
+    };
+  }
+  const session = buildRealSession(wallet, {
+    simUrl: "https://sim-session.example",
+    fetchFn,
+    overrides: stage.overrides,
+    seeds: memorySeeds(),
+  });
   return { session, installed, signer: () => signer };
 }
 
@@ -177,6 +208,7 @@ describe("buildRealSession: a mainnet build trusts only the pinned collateral", 
       network: "mainnet",
       programId: MAINNET_PINS.programId,
       overrides: { pins: MAINNET_PINS },
+      mainnetSigner: true,
     });
     await expect((await built).session).rejects.toThrow(/collateral/);
   });
@@ -192,6 +224,7 @@ describe("buildRealSession: a mainnet build trusts only the pinned collateral", 
       network: "mainnet",
       programId: MAINNET_PINS.programId,
       overrides: { pins: MAINNET_PINS },
+      mainnetSigner: true,
       identityAnswer: () =>
         new Response(JSON.stringify({ result: { identity: owner.publicKey.toBase58() } })),
     });
@@ -302,6 +335,17 @@ describe("buildRealSession: order keys", () => {
     });
     expect((await session).orderKeyPublicKeys).toEqual(inView.map((key) => key.toBase58()));
     expect(installed).toEqual([]);
+  });
+
+  it("keeps the sign-in token out of the error of a build that fails after signing in", async () => {
+    const owner = Keypair.generate();
+    const { session } = await build(owner, {
+      view: async () => {
+        throw new TypeError("fetch failed for https://rollup.example/?token=session-token-0001");
+      },
+    });
+    const failure = await session.catch((error: Error) => error);
+    expect((failure as Error).message).not.toContain("session-token-0001");
   });
 
   it("fails the build, rather than using fresh keys, when the view read itself fails", async () => {

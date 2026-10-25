@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Figtree } from "next/font/google";
 import { connection } from "next/server";
+import { StandardWalletProvider } from "@/lib/wallet/standardWallet";
 import "./globals.css";
 
 const figtree = Figtree({
@@ -25,7 +26,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   await connection();
   return (
     <html lang="en" className={`${figtree.variable} h-full antialiased`}>
-      <body className="bg-base text-ink min-h-full">{children}</body>
+      <body className="bg-base text-ink min-h-full">
+        <StandardWalletProvider>{children}</StandardWalletProvider>
+      </body>
     </html>
   );
 }

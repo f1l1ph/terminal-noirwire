@@ -5,12 +5,33 @@ export interface MainnetConfig {
   programIdOverride: string | undefined;
   rollupRpcUrlOverride: string | undefined;
   rollupWsUrlOverride: string | undefined;
+  solanaRpcUrl: string | undefined;
+}
+
+/**
+ * Why `url` cannot be the Solana RPC a mainnet build reads the cluster's
+ * genesis hash from, or null when it can: an https URL with no credentials
+ * and no trailing slash, so the one origin it names is the one the page's
+ * content security policy opens.
+ */
+function solanaRpcUrlRefusal(url: string | undefined): string | null {
+  if (!url) return "NEXT_PUBLIC_NETWORK=mainnet requires NEXT_PUBLIC_SOLANA_RPC_URL.";
+  const problem =
+    "NEXT_PUBLIC_SOLANA_RPC_URL must be an https URL with no credentials and no trailing slash.";
+  if (!url.startsWith("https://") || url.endsWith("/")) return problem;
+  try {
+    const parsed = new URL(url);
+    return parsed.username || parsed.password ? problem : null;
+  } catch {
+    return problem;
+  }
 }
 
 /**
  * Everything a mainnet build refuses to start with: unsigned dev mode, a
- * label other than MAINNET, and any program or rollup address
- * other than the pinned one. An unset override is fine; the pin applies.
+ * label other than MAINNET, any program or rollup address other than the
+ * pinned one, and a missing or unsafe Solana RPC URL. An unset override is
+ * fine; the pin applies.
  */
 export function mainnetRefusals(
   config: MainnetConfig,
@@ -38,6 +59,8 @@ export function mainnetRefusals(
       refusals.push(`${name} must be unset or exactly ${pinned} on mainnet.`);
     }
   }
+  const solanaRefusal = solanaRpcUrlRefusal(config.solanaRpcUrl);
+  if (solanaRefusal) refusals.push(solanaRefusal);
   return refusals;
 }
 

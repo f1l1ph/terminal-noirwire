@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Keypair } from "@solana/web3.js";
+import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
@@ -125,13 +126,14 @@ function pageLoad(storage: ReturnType<typeof memoryStorage>) {
     transferBetweenBalances: unused,
   };
   const session = (): RollupSession => ({
-    owner: Keypair.generate(),
+    owner: keypairOwnerSigner(Keypair.generate()),
     orderKeyPublicKeys: [],
     client,
     deployment: DEPLOYMENT,
     tokenIndexBySymbol: new Map([["nUSD", 0]]),
     collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
-    createdAtMs: Date.now(),
+    gate: Keypair.generate().publicKey,
+    tokenExpiresAtMs: Number.MAX_SAFE_INTEGER,
     saveKeyCheckpoint: () => {},
     close: () => {},
   });

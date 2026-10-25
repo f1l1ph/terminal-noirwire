@@ -1,14 +1,23 @@
-import type { Connection, Keypair } from "@solana/web3.js";
+import type { Connection } from "@solana/web3.js";
 import { PublicKey } from "@solana/web3.js";
-import { browserLocalStorage, type WalletAccount } from "../wallet/index";
+import { isMainnetBuild } from "../network";
+import type { WalletIdentity } from "../trading/types";
+import { browserLocalStorage } from "../wallet/index";
+import type { OwnerSigner } from "../wallet/ownerSigner";
+import { secretOwner, type DerivedOrderSeeds } from "../wallet/secretSigner";
 import { loadCheckpoint, saveCheckpoint } from "./checkpointStore";
 import { assertRollupIdentity } from "./identity";
 import { fetchDeployment, type DeploymentOverrides, type PublicDeployment } from "./deployment";
-import { deriveLegacyOrderSeed, deriveOrderSeed, ownerKeypairFrom, signInSigner } from "./keys";
+import { isMainnetOwnerSigner } from "./mainnetOwner";
 import { marketMatchesChain } from "./markets";
+import { deviceOrderKeys, type DeviceSeeds, type OrderKeyStatus } from "./orderKeySetup";
+import { loadOrderSeed, createOrderSeed } from "./orderSeedStore";
+import { clearSignInToken, signedInReader, type SignedIn } from "./signInToken";
+import { redactToken, scrubError } from "./redact";
 import {
   checkpointOf,
   connectionTo,
+  connectWithToken,
   decodeExchangeAccount,
   decodeMarketAccount,
   freshOrderKeys,
@@ -18,7 +27,7 @@ import {
   orderKeysFromCheckpoint,
   PACKAGE_PROGRAM_ID,
   programAddresses,
-  signInAndConnect,
+  signInWithExpiry,
   TraderClient,
   VIEW_NOT_READABLE_MESSAGE,
   viewKeysDeriveFrom,
@@ -67,7 +76,8 @@ export interface TraderClientLike {
 }
 
 export interface RollupSession {
-  owner: Keypair;
+  /** The owner's signer port; the session never holds the owner key itself. */
+  owner: OwnerSigner;
   orderKeyPublicKeys: string[];
   client: TraderClientLike;
   deployment: PublicDeployment;
@@ -75,9 +85,12 @@ export interface RollupSession {
   tokenIndexBySymbol: Map<string, number>;
   /** The Exchange's collateral token, read from the Exchange account: every funding deposit must name exactly its custody. */
   collateralToken: CustodyToken;
+  /** The gate that pays for opening an account, read from the Exchange account and never from the service. */
+  gate: PublicKey;
   /** Market id -> the oldest mark, in seconds, its account accepts an order against (`maxPriceAge`). A test fake may omit it. */
   maxPriceAgeSeconds?: ReadonlyMap<number, number>;
-  createdAtMs: number;
+  /** When the rollup sign-in token this session reads with lapses; the session is rebuilt before then. */
+  tokenExpiresAtMs: number;
   /** Saves this session's current order-key checkpoint, for the next session to restore from. See checkpointStore.ts. */
   saveKeyCheckpoint(): void;
   /** Ends the client's background subscription and refreshes (0.5.0+); a no-op for a test fake that omits `close`. */
@@ -89,6 +102,11 @@ export interface RollupSessionDeps {
   overrides?: DeploymentOverrides;
   fetchFn?: typeof fetch;
   now?: () => number;
+  /** Where the per-device order seed is kept; this browser's own store by default. */
+  seeds?: DeviceSeeds;
+  sleep?: (ms: number) => Promise<void>;
+  /** Told how the order keys stand while the session is built (a new device waits before replacing them). */
+  onOrderKeys?: (status: OrderKeyStatus) => void;
 }
 
 /**
@@ -110,7 +128,7 @@ export function trustedProgramId(overrides: DeploymentOverrides = {}): PublicKey
  */
 export class SessionAuthError extends Error {
   constructor(readonly cause: unknown) {
-    super(cause instanceof Error ? cause.message : "Sign-in to the rollup failed");
+    super(cause instanceof Error ? redactToken(cause.message) : "Sign-in to the rollup failed");
     this.name = "SessionAuthError";
   }
 }
@@ -120,6 +138,8 @@ interface ExchangeTokens {
   mints: string[];
   /** The collateral token's mint and custody nonce, which name its custody authority and custody account. */
   collateral: CustodyToken;
+  /** The gate that is the fee payer of an account opening. */
+  gate: PublicKey;
 }
 
 /**
@@ -138,6 +158,7 @@ async function readExchangeTokens(
   return {
     mints: exchange.tokens.map((token) => token.mint.toBase58()),
     collateral: { mint: collateral.mint, custodyNonce: collateral.custodyNonce },
+    gate: exchange.gate,
   };
 }
 
@@ -216,41 +237,52 @@ const isErrorWithMessage = (error: unknown, message: string) =>
 const QUICK_KEY_SEARCH = 1_024;
 
 /**
- * The account's live order keys. No view yet (account not opened): the
- * fresh keys, exactly what `open_trader` will be asked to install. A view
- * whose keys this seed never derived (installed under the earlier,
+ * The owner's view, or null while the account is not opened. A one-shot read,
+ * thrown away right after: no benefit from a live result subscription here,
+ * so it asks for none. Any other failure is thrown, never mistaken for a
+ * missing account.
+ */
+async function readOwnerView(
+  reader: Connection,
+  owner: PublicKey,
+  keys: OrderKeyManager,
+  programId: PublicKey,
+): Promise<View | null> {
+  try {
+    return await new TraderClient(reader, reader, owner, keys, programId, { push: false }).view();
+  } catch (error) {
+    if (isErrorWithMessage(error, VIEW_NOT_READABLE_MESSAGE)) return null;
+    throw error;
+  }
+}
+
+/**
+ * The account's live order keys on a test build, whose seed comes from the
+ * built-in wallet's secret. No view yet (account not opened): the fresh
+ * keys, exactly what `open_trader` will be asked to install. A view whose
+ * keys this seed never derived (installed under the earlier,
  * signature-based seed): the owner installs the fresh keys over them with
  * `set_order_keys`, the one way back to keys only this device can derive.
- * Any other failure is thrown, never mistaken for a missing account.
  */
-async function liveOrderKeys(
+async function derivedOrderKeys(
   reader: Connection,
-  owner: Keypair,
-  seed: Uint8Array,
+  owner: OwnerSigner,
+  seeds: DerivedOrderSeeds,
   programId: PublicKey,
   checkpoint: ReturnType<typeof loadCheckpoint>,
 ): Promise<OrderKeyManager> {
-  const fresh = freshOrderKeys(seed);
+  const fresh = freshOrderKeys(seeds.seed);
   const notFromSeed = (error: unknown) => isErrorWithMessage(error, KEYS_NOT_FROM_SEED_MESSAGE);
-  let existingView: View;
+  const existingView = await readOwnerView(reader, owner.publicKey, fresh, programId);
+  if (!existingView) return fresh;
   try {
-    // A one-shot read, thrown away right after: no benefit from a live
-    // result subscription here, so it asks for none.
-    existingView = await new TraderClient(reader, reader, owner.publicKey, fresh, programId, {
-      push: false,
-    }).view();
-  } catch (error) {
-    if (isErrorWithMessage(error, VIEW_NOT_READABLE_MESSAGE)) return fresh;
-    throw error;
-  }
-  try {
-    return orderKeysFromCheckpoint(seed, existingView, checkpoint, QUICK_KEY_SEARCH);
+    return orderKeysFromCheckpoint(seeds.seed, existingView, checkpoint, QUICK_KEY_SEARCH);
   } catch (error) {
     if (!notFromSeed(error)) throw error;
   }
-  if (!viewKeysDeriveFrom(deriveLegacyOrderSeed(owner), existingView, QUICK_KEY_SEARCH)) {
+  if (!viewKeysDeriveFrom(seeds.legacySeed, existingView, QUICK_KEY_SEARCH)) {
     try {
-      return orderKeysFromCheckpoint(seed, existingView, null);
+      return orderKeysFromCheckpoint(seeds.seed, existingView, null);
     } catch (error) {
       if (!notFromSeed(error)) throw error;
     }
@@ -259,24 +291,79 @@ async function liveOrderKeys(
   return fresh;
 }
 
+/** A read the rollup refused for want of a valid token, as opposed to any other failure. */
+const looksUnauthorized = (error: unknown) =>
+  error instanceof Error &&
+  /\b401\b|unauthori[sz]ed|missing token|invalid token|token (?:expired|invalid)/i.test(
+    error.message,
+  );
+
 /**
- * Builds a real session: fetches the deployment description (`/v1/deployment`),
- * derives the owner key and the order-key seed from the browser wallet
- * (keys.ts), signs in to the rollup right away (DESIGN.md section 4; the
- * hosted rollup needs a signed-in token before it will accept a send, not
- * only before a private read, so this happens before anything else, not
- * lazily on first trade) and recovers the live order keys: from a saved
- * checkpoint when one exists (a handful of derivations), from the view's
- * own key list otherwise (a full search), or starts a fresh set when there
- * is no view yet (the keys `open_trader` will be given). Only the markets
- * whose `/v1/deployment` entry matches the rollup's own market account are
- * kept. `refresh()` (in `RollupTradingClient`) calls this again to rebuild
- * `reader` and the client.
+ * Who signs for this session. A mainnet session takes only the signer made
+ * by `mainnetOwnerSigner` (the Wallet Standard signer with the network
+ * check in front of every signature) and no secret at all; a test build
+ * takes a signer, or the built-in wallet's secret, which `secretOwner`
+ * refuses on a mainnet build.
+ */
+function ownerAccessOf(
+  wallet: WalletIdentity,
+  mainnet: boolean,
+): { signer: OwnerSigner; derivedSeeds?: DerivedOrderSeeds } {
+  if (mainnet) {
+    if (wallet.secretKeyHex !== undefined) {
+      throw new Error("A mainnet session never takes a wallet secret.");
+    }
+    if (!wallet.signer || !isMainnetOwnerSigner(wallet.signer)) {
+      throw new Error("A mainnet session signs only through the network-checked wallet signer.");
+    }
+    return { signer: wallet.signer };
+  }
+  if (wallet.signer) return { signer: wallet.signer };
+  if (wallet.secretKeyHex) return secretOwner({ secretKeyHex: wallet.secretKeyHex });
+  throw new Error("This trading client needs the wallet's signer (rollup mode signs through it)");
+}
+
+/**
+ * Builds a real session, with every error's text scrubbed of the sign-in
+ * token (see `buildSession`).
  */
 export async function buildRealSession(
-  wallet: WalletAccount,
+  wallet: WalletIdentity,
   deps: RollupSessionDeps,
 ): Promise<RollupSession> {
+  try {
+    return await buildSession(wallet, deps);
+  } catch (error) {
+    throw scrubError(error);
+  }
+}
+
+/**
+ * Fetches the deployment description (`/v1/deployment`), signs in to the
+ * rollup (the hosted rollup needs a signed-in token before it will accept a
+ * send, not only before a private read, so this happens before anything
+ * else, not lazily on first trade: the owner's wallet is asked only when
+ * this device holds no unexpired token for it) and recovers the live order
+ * keys: on mainnet from this device's random seed, on a test build from the
+ * seed the built-in wallet derives; from a saved checkpoint when one exists,
+ * from the view's own key list otherwise, or a fresh set when there is no
+ * view yet (the keys `open_trader` will be given). Only the markets whose
+ * `/v1/deployment` entry matches the rollup's own market account are kept.
+ * `refresh()` (in `RollupTradingClient`) calls this again to rebuild
+ * `reader` and the client.
+ */
+async function buildSession(
+  wallet: WalletIdentity,
+  deps: RollupSessionDeps,
+): Promise<RollupSession> {
+  const mainnet = Boolean(deps.overrides?.pins) || isMainnetBuild();
+  const { signer, derivedSeeds } = ownerAccessOf(wallet, mainnet);
+  const ownerKey = signer.publicKey;
+  const ownerAddress = ownerKey.toBase58();
+  if (wallet.address !== ownerAddress) {
+    throw new Error("The wallet's signer is not for the address this session was asked to trade.");
+  }
+  const now = deps.now ?? Date.now;
   const fetchFn = deps.fetchFn ?? fetch;
   const described = await fetchDeployment(deps.simUrl, deps.overrides, fetchFn);
   const programId = trustedProgramId(deps.overrides);
@@ -291,11 +378,41 @@ export async function buildRealSession(
     await assertRollupIdentity(described.rollupRpcUrl, pinnedValidator, fetchFn);
   }
 
-  const owner = ownerKeypairFrom(wallet);
-  const seed = deriveOrderSeed(owner);
   // A plain, unsigned connection, for reads that are genuinely public
   // (DESIGN.md section 2: "everyone" - here, only the Exchange account).
   const anonymous = connectionTo(described.rollupRpcUrl, described.rollupWsUrl);
+  const storage = browserLocalStorage();
+  const checkpoint = loadCheckpoint(storage, ownerAddress);
+  const report = deps.onOrderKeys ?? (() => {});
+  const seeds = deps.seeds ?? { load: loadOrderSeed, create: createOrderSeed };
+  const signIn = (fresh: boolean): Promise<SignedIn> =>
+    signedInReader(
+      {
+        rollupRpcUrl: described.rollupRpcUrl,
+        owner: signer,
+        storage,
+        now,
+        signIn: signInWithExpiry,
+        connect: connectWithToken,
+      },
+      { fresh },
+    ).catch((error: unknown) => {
+      throw new SessionAuthError(error);
+    });
+  const orderKeysOn = (reader: Connection): Promise<OrderKeyManager> =>
+    derivedSeeds
+      ? derivedOrderKeys(reader, signer, derivedSeeds, programId, checkpoint)
+      : deviceOrderKeys({
+          ownerAddress,
+          seeds,
+          checkpoint,
+          readView: (fresh) => readOwnerView(reader, ownerKey, fresh, programId),
+          install: (fresh) => installOrderKeys(reader, signer, fresh, programId),
+          report,
+          now,
+          sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+        });
+
   // The query filter (deployment.rollupRpcUrl) serves both the anonymous
   // read above and the signed-in connection below, at the same address:
   // sign-in is a token appended to it, not a separate endpoint. On this
@@ -303,24 +420,20 @@ export async function buildRealSession(
   // only reading privately - confirmed by hand (an unsigned send answers
   // 401 "Missing token query param") - so `reader` is used as both the
   // `TraderClient`'s sending connection and its private reader, never the
-  // plain `anonymous` one.
-  const reader = await signInAndConnect(
-    described.rollupRpcUrl,
-    owner.publicKey,
-    signInSigner(owner),
-  ).catch((error: unknown) => {
-    throw new SessionAuthError(error);
-  });
-
-  const storage = browserLocalStorage();
-  const ownerAddress = owner.publicKey.toBase58();
-  const keys = await liveOrderKeys(
-    reader,
-    owner,
-    seed,
-    programId,
-    loadCheckpoint(storage, ownerAddress),
-  );
+  // plain `anonymous` one. A cached token the rollup no longer accepts is
+  // dropped and signed for once more.
+  let signedIn = await signIn(false);
+  let keys: OrderKeyManager;
+  try {
+    keys = await orderKeysOn(signedIn.reader);
+  } catch (error) {
+    if (!signedIn.cached || !looksUnauthorized(error)) throw error;
+    clearSignInToken(storage, ownerAddress);
+    signedIn = await signIn(true);
+    keys = await orderKeysOn(signedIn.reader);
+  }
+  const reader = signedIn.reader;
+  report({ stage: "ready" });
   const saveKeyCheckpoint = () => saveCheckpoint(storage, ownerAddress, checkpointOf(keys));
   // Saved now as well as after every confirmed call, so a checkpoint the
   // keys had moved beyond is replaced rather than searched past each time.
@@ -341,18 +454,19 @@ export async function buildRealSession(
   // through, so `ready()` is awaited once here, right after sign-in - the
   // subscription is already live by the time the trader places a first
   // order, rather than that order itself paying for warming it up.
-  const client = new TraderClient(reader, reader, owner.publicKey, keys, programId);
+  const client = new TraderClient(reader, reader, ownerKey, keys, programId);
   await client.ready();
 
   return {
-    owner,
+    owner: signer,
     orderKeyPublicKeys: orderKeyPublicKeys(keys),
     client,
     deployment,
     tokenIndexBySymbol: tokenIndicesBySymbol(exchangeMints, deployment),
     collateralToken: exchangeTokens.collateral,
+    gate: exchangeTokens.gate,
     maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
-    createdAtMs: (deps.now ?? Date.now)(),
+    tokenExpiresAtMs: signedIn.expiresAtMs,
     saveKeyCheckpoint,
     close: () => client.close(),
   };

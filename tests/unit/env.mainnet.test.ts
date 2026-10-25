@@ -10,6 +10,7 @@ const PRODUCTION: Record<string, string> = {
   NEXT_PUBLIC_ROLLUP_RPC_URL: "https://mainnet-tee.magicblock.app",
   NEXT_PUBLIC_ROLLUP_WS_URL: "wss://mainnet-tee.magicblock.app",
   NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID: "BrUoDsreaeXWypVxh6LoGseqwB4TZVJZBxvhfxXprvwP",
+  NEXT_PUBLIC_SOLANA_RPC_URL: "https://api.mainnet-beta.solana.com",
 };
 
 const CONFIG_VARIABLES = [...Object.keys(PRODUCTION), "NEXT_PUBLIC_ALLOW_UNSIGNED_DEV_MODE"];
@@ -41,9 +42,32 @@ describe("mainnet configuration", () => {
       NEXT_PUBLIC_SIM_URL: PRODUCTION.NEXT_PUBLIC_SIM_URL,
       NEXT_PUBLIC_SIM_WS_URL: PRODUCTION.NEXT_PUBLIC_SIM_WS_URL,
       NEXT_PUBLIC_TRADING_MODE: "rollup",
+      NEXT_PUBLIC_SOLANA_RPC_URL: PRODUCTION.NEXT_PUBLIC_SOLANA_RPC_URL,
     });
     expect(env.networkLabel).toBe("MAINNET");
     expect(env.orderbookProgramIdOverride).toBe(MAINNET_PINS.programId);
+  });
+
+  it("carries the Solana RPC URL the genesis check reads from", async () => {
+    const env = await loadEnv(PRODUCTION);
+    expect(env.solanaRpcUrl).toBe(PRODUCTION.NEXT_PUBLIC_SOLANA_RPC_URL);
+  });
+
+  it("refuses a build with no Solana RPC URL", async () => {
+    await expect(loadEnv({ ...PRODUCTION, NEXT_PUBLIC_SOLANA_RPC_URL: "" })).rejects.toThrow(
+      /requires NEXT_PUBLIC_SOLANA_RPC_URL/,
+    );
+  });
+
+  it.each([
+    "http://api.mainnet-beta.solana.com",
+    "https://api.mainnet-beta.solana.com/",
+    "https://user:secret@api.mainnet-beta.solana.com",
+    "ftp://api.mainnet-beta.solana.com",
+  ])("refuses the Solana RPC URL %s", async (url) => {
+    await expect(loadEnv({ ...PRODUCTION, NEXT_PUBLIC_SOLANA_RPC_URL: url })).rejects.toThrow(
+      /NEXT_PUBLIC_SOLANA_RPC_URL/,
+    );
   });
 
   it("refuses dev mode", async () => {

@@ -17,6 +17,8 @@ import {
   useSharedMarketDataStore,
 } from "@/lib/market-data/hooks";
 import { candlesLoadingKey, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
+import { isMainnetBuild } from "@/lib/network";
+import { useOwnerIdentity } from "@/lib/wallet/useOwnerIdentity";
 import { useWallet } from "@/lib/wallet/useWallet";
 import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import { deploymentOverrides } from "@/lib/trading";
@@ -89,7 +91,8 @@ export function Terminal() {
   const [dockTab, setDockTab] = useState<Tab>("positions");
 
   const wallet = useWallet();
-  const owner = wallet.account?.publicKey ?? "";
+  const ownerIdentity = useOwnerIdentity(wallet);
+  const owner = ownerIdentity?.address ?? "";
   const marketSettings = useCallback(
     (id: string) => data.markets.find((item) => item.id === id),
     [data.markets],
@@ -102,7 +105,7 @@ export function Terminal() {
     [store],
   );
   const marketsLoaded = data.markets.length > 0;
-  const trading = useTrading(marketsLoaded ? wallet.account : null, marketSettingsFromStore);
+  const trading = useTrading(marketsLoaded ? ownerIdentity : null, marketSettingsFromStore);
 
   // Dev mode is always an in-memory, same-process engine - "localnet" in
   // spirit regardless of label. Rollup mode reads the real value from
@@ -597,7 +600,7 @@ export function Terminal() {
     (positionsArray.some((p) => Number(p.size) !== 0) || ownFillsForMarket.length > 0);
 
   const statusBarText = market
-    ? `${market.id} · ${env.networkLabel} · last data ${mark ? formatClockTime(new Date(mark.time)) : "unavailable"} · account ${wallet.account ? (trading.lastSyncedAtMs ? `synced at ${formatClockTime(new Date(trading.lastSyncedAtMs))}` : "not yet synced") : "no wallet"}`
+    ? `${market.id} · ${env.networkLabel} · last data ${mark ? formatClockTime(new Date(mark.time)) : "unavailable"} · account ${ownerIdentity ? (trading.lastSyncedAtMs ? `synced at ${formatClockTime(new Date(trading.lastSyncedAtMs))}` : "not yet synced") : "no wallet"}`
     : env.networkLabel;
 
   const orderEntry = market && (
@@ -606,7 +609,7 @@ export function Terminal() {
       market={market}
       mark={mark}
       now={now}
-      hasWallet={!!wallet.account}
+      hasWallet={!!ownerIdentity}
       walletReady={wallet.ready}
       walletLocked={!!wallet.lockedAddress}
       balances={trading.state.balances}
@@ -621,7 +624,9 @@ export function Terminal() {
       }
       onClearUnknownHold={() => clearUnknownHold(market.id)}
       position={position}
-      onCreateWallet={() => wallet.create()}
+      onCreateWallet={() => {
+        if (!isMainnetBuild()) wallet.create();
+      }}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
       noFaucet={trading.noFaucet}
@@ -688,7 +693,7 @@ export function Terminal() {
       marketSettings={marketSettings}
       marksByMarket={data.marksByMarket}
       now={now}
-      hasWallet={!!wallet.account}
+      hasWallet={!!ownerIdentity}
       quoteSymbol={quoteSymbol}
       onTransfer={transferBetweenBalances}
       onClosePosition={requestClose}

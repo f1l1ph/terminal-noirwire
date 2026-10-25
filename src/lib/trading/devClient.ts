@@ -10,6 +10,7 @@ import type {
   CancelResult,
   FundOutcome,
   NewOrderInput,
+  OpenAccountOutcome,
   PlaceOrderResult,
   Position,
   TraderState,
@@ -80,7 +81,7 @@ export class DevTradingClient implements TradingClient {
     this.clearIntervalFn = options.clearIntervalFn ?? ((handle) => clearInterval(handle as number));
   }
 
-  async openAccount(wallet: WalletIdentity): Promise<void> {
+  async openAccount(wallet: WalletIdentity): Promise<OpenAccountOutcome> {
     // There is no open-account route; GET /v1/dev/trader for an address the
     // venue has not seen yet still answers 200 with empty balances (the
     // venue opens a trader lazily), so this is a best-effort warm-up, not a
@@ -90,6 +91,7 @@ export class DevTradingClient implements TradingClient {
     } catch {
       // Ignored; fund() or placeOrder() will still work.
     }
+    return { kind: "notAvailable" };
   }
 
   async fund(wallet: WalletIdentity): Promise<FundOutcome> {

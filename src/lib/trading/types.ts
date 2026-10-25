@@ -1,5 +1,8 @@
 import type { MarketInfo } from "../market-data/types";
 import type { UnknownHold } from "../rollup/accountMemory";
+import type { OpenRefusal } from "../rollup/openClient";
+import type { OrderKeyStatus as SetupStatus } from "../rollup/orderKeySetup";
+import type { OwnerSigner } from "../wallet/ownerSigner";
 import type { OrderStatus, OrderType, Side } from "../sim-api/schema";
 
 export type { OrderStatus, OrderType, Side };
@@ -7,14 +10,34 @@ export type { OrderStatus, OrderType, Side };
 export interface WalletIdentity {
   address: string;
   /**
-   * The owner key's secret, hex-encoded. Only `RollupTradingClient` reads
-   * this (DESIGN.md section 4: the browser wallet's keypair IS the owner
-   * key, so signing a trading instruction needs it); `DevTradingClient`
-   * never looks at it. Optional so every other caller can keep building a
-   * `WalletIdentity` from the address alone.
+   * Signs for the owner key. On mainnet this is the connected wallet's
+   * signer with the network check in front of every signature
+   * (`mainnetOwnerSigner`), and the only way a mainnet session is signed.
+   * `DevTradingClient` never looks at it.
+   */
+  signer?: OwnerSigner;
+  /**
+   * The owner key's secret, hex-encoded: the built-in browser wallet of a
+   * test build. A mainnet build refuses it (`secretOwner`). Optional so
+   * every other caller can build a `WalletIdentity` from the address alone.
    */
   secretKeyHex?: string;
 }
+
+/** Whether an owner's account exists on the rollup: read from its view, so `unknown` is a read that failed, never "absent". */
+export type AccountStatus = "unknown" | "absent" | "open";
+
+/** What opening an account came to; the UI renders each kind and never a bare success. */
+export type OpenAccountOutcome =
+  | { kind: "opened"; reference: string }
+  /** The view shows the account is open (it was already, or an answer that left that doubtful has been checked). */
+  | { kind: "alreadyOpen" }
+  /** The service turned the request away or could not be reached; `mayBeOpen` means the view could not settle it either, so read it before trying again. */
+  | { kind: "refused"; refusal: OpenRefusal }
+  /** Nothing was sent: the prepared transaction or the wallet's signature was not what was asked for, or the wallet declined. */
+  | { kind: "notSent"; reason: string }
+  /** This deployment opens accounts another way (test funds), not through the invite-gated routes. */
+  | { kind: "notAvailable" };
 
 /**
  * Every order carries a price: the venue requires one for every order type,
@@ -186,6 +209,15 @@ export type FundOutcome =
   | { kind: "noFaucet" }
   | { kind: "error"; message: string };
 
+/**
+ * Where the owner's order keys stand on this device. A new device (or cleared
+ * storage) waits for old orders to lapse before replacing the keys with one
+ * owner-signed transaction. `seedPersisted` false means the browser would not
+ * promise to keep the seed: clearing site data then costs one more such
+ * replacement (funds are not at risk); null before a seed was made here.
+ */
+export type OrderKeyState = SetupStatus & { seedPersisted: boolean | null };
+
 export type TradingMode = "dev" | "rollup";
 
 /**
@@ -196,7 +228,17 @@ export type TradingMode = "dev" | "rollup";
  */
 export interface TradingClient {
   readonly mode: TradingMode;
-  openAccount(wallet: WalletIdentity): Promise<void>;
+  /**
+   * Opens the owner's account through the invite-gated routes (mainnet).
+   * `invite` is the code NoirWire issued for this address, if the
+   * deployment asks for one. Elsewhere an account opens with its first
+   * funding, and this answers `notAvailable`.
+   */
+  openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome>;
+  /** Whether the owner's account exists, read from its view. Optional: dev mode opens accounts lazily. */
+  accountStatus?(wallet: WalletIdentity): Promise<AccountStatus>;
+  /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */
+  subscribeOrderKeys?(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void;
   fund(wallet: WalletIdentity): Promise<FundOutcome>;
   /**
    * Whether this browser already learned that the deployment hands out no

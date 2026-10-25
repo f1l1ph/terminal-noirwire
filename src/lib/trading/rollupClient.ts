@@ -1,10 +1,11 @@
 import { PublicKey, type Connection } from "@solana/web3.js";
-import {
-  browserLocalStorage,
-  bytesToHex,
-  type KeyValueStore,
-  type WalletAccount,
-} from "../wallet/index";
+import { browserLocalStorage, bytesToHex, type KeyValueStore } from "../wallet/index";
+import { signChecked } from "../rollup/ownerSend";
+import { isExpectedOpen, prepareOpen, submitOpen, type OpenRefusal } from "../rollup/openClient";
+import { orderSeedPersisted } from "../rollup/orderSeedStore";
+import type { OrderKeyStatus } from "../rollup/orderKeySetup";
+import { redactToken, scrubError } from "../rollup/redact";
+import { TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
 import {
   quoteSymbolOf,
   type DeploymentOverrides,
@@ -60,12 +61,15 @@ import { isStale, STALE_MARK_MS } from "../market-data/selectors";
 import { summarizeMargin, type PerpExposure } from "./accountMargin";
 import type {
   AccountReadOutcome,
+  AccountStatus,
   Balance,
   CancelResult,
   FundOutcome,
   MarketSettingsLookup,
   NewOrderInput,
+  OpenAccountOutcome,
   OpenOrder,
+  OrderKeyState,
   PlaceOrderResult,
   Position,
   PrivacyCheck,
@@ -101,12 +105,12 @@ async function readAccountUnsigned(
 
 /**
  * The rollup's sign-in token lasts 30 days (the endpoint's own `expiresAt`,
- * read by hand on devnet). A session is rebuilt once a day so a tab left
- * open never gets near that, and a call that throws rebuilds it at once.
+ * read by hand on devnet) and is kept per owner on this device. A session is
+ * rebuilt, and the owner asked to sign in again, only when its token is
+ * about to lapse or the rollup stops accepting it.
  */
 const GRANT_SYNC_ATTEMPTS = 8;
 const GRANT_SYNC_GAP_MS = 1_500;
-const SESSION_REFRESH_MS = 24 * 60 * 60 * 1000;
 const GOOD_FOR_SECONDS: Record<"1m" | "1h", bigint> = { "1m": 60n, "1h": 3_600n };
 /**
  * Passed explicitly on every keyed call (place/cancel/transfer/sync) so this
@@ -133,7 +137,7 @@ export interface RollupTradingClientOptions {
   fetchFn?: typeof fetch;
   now?: () => number;
   /** Testability seam: a fake session (and so a fake of the package's client) for unit tests. Builds a real one by default. */
-  buildSession?: (wallet: WalletAccount, deps: RollupSessionDeps) => Promise<RollupSession>;
+  buildSession?: (wallet: WalletIdentity, deps: RollupSessionDeps) => Promise<RollupSession>;
 }
 
 /** This terminal's string market id, bound against `/v1/deployment`'s numeric one. */
@@ -157,6 +161,8 @@ type StateListener = (state: TraderState) => void;
 
 interface OpenSession {
   session: Promise<RollupSession>;
+  /** The signer the session was built for; a wallet that comes back with another is not served by this session. */
+  signer: WalletIdentity["signer"];
   stopWatching: Promise<() => void>;
 }
 
@@ -189,15 +195,6 @@ function writeFlag(storage: KeyValueStore, key: string): void {
   } catch {
     // Best effort: without storage the next reload asks the service once more.
   }
-}
-
-function ownerSecretOf(wallet: WalletIdentity): WalletAccount {
-  if (!wallet.secretKeyHex) {
-    throw new Error(
-      "This trading client needs the wallet's secret key (rollup mode signs locally)",
-    );
-  }
-  return { publicKey: wallet.address, secretKeyHex: wallet.secretKeyHex };
 }
 
 /**
@@ -254,10 +251,12 @@ export class RollupTradingClient implements TradingClient {
   private readonly fetchFn: typeof fetch;
   private readonly now: () => number;
   private readonly buildSession: (
-    wallet: WalletAccount,
+    wallet: WalletIdentity,
     deps: RollupSessionDeps,
   ) => Promise<RollupSession>;
   private sessions = new Map<string, OpenSession>();
+  private orderKeyListeners = new Map<string, Set<(state: OrderKeyState) => void>>();
+  private lastOrderKeys = new Map<string, OrderKeyState>();
   private listeners = new Map<string, Set<StateListener>>();
   private errorListeners = new Map<string, Set<(error: Error) => void>>();
   private newestResultsWritten = new Map<string, number>();
@@ -273,17 +272,43 @@ export class RollupTradingClient implements TradingClient {
     this.buildSession = options.buildSession ?? buildRealSession;
   }
 
-  private sessionDeps(): RollupSessionDeps {
+  /** A mainnet client is the one built with the pinned network; it never faucets and opens accounts through the invite-gated routes. */
+  private get isMainnet(): boolean {
+    return this.options.overrides?.pins !== undefined;
+  }
+
+  private sessionDeps(wallet: WalletIdentity): RollupSessionDeps {
     return {
       simUrl: this.options.simUrl,
       overrides: this.options.overrides,
       fetchFn: this.fetchFn,
       now: this.now,
+      onOrderKeys: (status) => this.emitOrderKeys(wallet.address, status),
     };
   }
 
+  private emitOrderKeys(address: string, status: OrderKeyStatus): void {
+    const state: OrderKeyState = { ...status, seedPersisted: orderSeedPersisted() };
+    this.lastOrderKeys.set(address, state);
+    for (const listener of this.orderKeyListeners.get(address) ?? []) listener(state);
+  }
+
+  subscribeOrderKeys(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void {
+    const listeners = this.orderKeyListeners.get(wallet.address) ?? new Set();
+    this.orderKeyListeners.set(wallet.address, listeners);
+    listeners.add(listener);
+    const last = this.lastOrderKeys.get(wallet.address);
+    if (last) listener(last);
+    return () => {
+      listeners.delete(listener);
+    };
+  }
+
+  /** The wallet's session, or a new one when the signer it was built for is no longer the wallet's. */
   private ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
-    return (this.sessions.get(wallet.address) ?? this.openSession(wallet)).session;
+    const existing = this.sessions.get(wallet.address);
+    if (existing && existing.signer !== wallet.signer) return this.refreshSession(wallet);
+    return (existing ?? this.openSession(wallet)).session;
   }
 
   private refreshSession(wallet: WalletIdentity): Promise<RollupSession> {
@@ -294,8 +319,12 @@ export class RollupTradingClient implements TradingClient {
   }
 
   private openSession(wallet: WalletIdentity): OpenSession {
-    const session = this.buildSession(ownerSecretOf(wallet), this.sessionDeps());
-    const opened = { session, stopWatching: session.then((built) => this.watchView(built)) };
+    const session = this.buildSession(wallet, this.sessionDeps(wallet));
+    const opened = {
+      session,
+      signer: wallet.signer,
+      stopWatching: session.then((built) => this.watchView(built)),
+    };
     opened.stopWatching.catch(() => {});
     this.sessions.set(wallet.address, opened);
     // A build that failed is not kept as this wallet's session: the next
@@ -329,8 +358,8 @@ export class RollupTradingClient implements TradingClient {
         const failure = notReadable
           ? new Error("This account was opened before but cannot be read right now.")
           : error instanceof Error
-            ? error
-            : new Error(String(error));
+            ? scrubError(error)
+            : new Error(redactToken(String(error)));
         for (const onError of this.errorListeners.get(address) ?? []) onError(failure);
       }
     }
@@ -366,6 +395,7 @@ export class RollupTradingClient implements TradingClient {
 
   /** Ends this wallet's session (its live subscription and background refreshes), if one is open. */
   closeWallet(wallet: WalletIdentity): void {
+    this.lastOrderKeys.delete(wallet.address);
     const existing = this.sessions.get(wallet.address);
     if (!existing) return;
     this.sessions.delete(wallet.address);
@@ -376,7 +406,7 @@ export class RollupTradingClient implements TradingClient {
    * Runs `fn` against this wallet's session. Building the session again is
    * retried once, and only for a `SessionAuthError` (a failed sign-in, which
    * happens before any call exists); the session is also refreshed first
-   * once it is older than `SESSION_REFRESH_MS`. `fn` itself is never run
+   * once its sign-in token is about to lapse. `fn` itself is never run
    * twice: nothing it throws says whether something already went out.
    */
   private async withSession<T>(
@@ -390,7 +420,7 @@ export class RollupTradingClient implements TradingClient {
       if (!(error instanceof SessionAuthError)) throw error;
       session = await this.refreshSession(wallet);
     }
-    if (this.now() - session.createdAtMs > SESSION_REFRESH_MS) {
+    if (session.tokenExpiresAtMs - this.now() < TOKEN_REFRESH_MARGIN_MS) {
       session = await this.refreshSession(wallet);
     }
     return fn(session);
@@ -400,18 +430,124 @@ export class RollupTradingClient implements TradingClient {
     return bindMarkets(session, this.options.marketSettingsLookup);
   }
 
-  async openAccount(wallet: WalletIdentity): Promise<void> {
-    // Nothing to do ahead of funding: there is no bare "open without
-    // funding" route, and deriving the owner/order keys (ensureSession) has
-    // no network cost worth doing eagerly. See `fund()`.
+  /** Whether the owner's view exists, as the session's reader sees it: absent only on the SDK's own "not readable" answer. */
+  private async viewStatus(session: RollupSession): Promise<AccountStatus> {
     try {
-      await this.ensureSession(wallet);
-    } catch {
-      // Best effort, matching DevTradingClient.openAccount.
+      const view = await session.client.view();
+      return view ? "open" : "absent";
+    } catch (error) {
+      const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
+      return notReadable ? "absent" : "unknown";
     }
   }
 
+  async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
+    try {
+      return await this.withSession(wallet, (session) => this.viewStatus(session));
+    } catch {
+      return "unknown";
+    }
+  }
+
+  /** The view as a fresh session reads it, which sees an account opened after the earlier session was built. */
+  private async settledStatus(wallet: WalletIdentity): Promise<AccountStatus> {
+    try {
+      return await this.viewStatus(await this.refreshSession(wallet));
+    } catch {
+      return "unknown";
+    }
+  }
+
+  async openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome> {
+    if (!this.isMainnet) {
+      // Nothing to do ahead of funding: there is no bare "open without
+      // funding" route, and deriving the owner/order keys (ensureSession) has
+      // no network cost worth doing eagerly. See `fund()`.
+      try {
+        await this.ensureSession(wallet);
+      } catch {
+        // Best effort, matching DevTradingClient.openAccount.
+      }
+      return { kind: "notAvailable" };
+    }
+    try {
+      return await this.openThroughGate(wallet, invite);
+    } catch (error) {
+      scrubError(error);
+      const reason = error instanceof Error ? error.message : "the account could not be opened";
+      return { kind: "notSent", reason: redactToken(reason) };
+    }
+  }
+
+  /**
+   * Opens the account through sim-noirwire's invite-gated routes, signing
+   * only a transaction rebuilt and compared here (`isExpectedOpen`) and only
+   * accepting the wallet's answer when it is that same transaction
+   * (`signChecked`). An answer that leaves it doubtful whether the account
+   * was opened is settled by reading the view, never by guessing.
+   */
+  private async openThroughGate(
+    wallet: WalletIdentity,
+    invite?: string,
+  ): Promise<OpenAccountOutcome> {
+    const session = await this.withSession(wallet, (built) => Promise.resolve(built));
+    const before = await this.viewStatus(session);
+    if (before === "open") {
+      markAccountOpened(this.storage, wallet.address);
+      return { kind: "alreadyOpen" };
+    }
+    if (before === "unknown") {
+      throw new Error("Your account could not be read, so it was not opened. Try again shortly.");
+    }
+    const owner = session.owner.publicKey;
+    const orderKeys = session.orderKeyPublicKeys.map((key) => new PublicKey(key));
+    const prepared = await prepareOpen(
+      {
+        simUrl: this.options.simUrl,
+        owner: owner.toBase58(),
+        orderKeys: session.orderKeyPublicKeys,
+        invite,
+      },
+      this.fetchFn,
+    );
+    if (prepared.kind !== "prepared") return this.afterRefusal(wallet, prepared);
+    const refusal = isExpectedOpen(prepared.transaction, {
+      programId: trustedProgramId(this.options.overrides),
+      gate: session.gate,
+      owner,
+      orderKeys,
+      nowMs: this.now(),
+      expiresAtMs: prepared.expiresAtMs,
+    });
+    if (refusal) return { kind: "notSent", reason: refusal };
+    const signed = await signChecked(session.owner, prepared.transaction);
+    const submitted = await submitOpen(
+      { simUrl: this.options.simUrl, owner: owner.toBase58(), signedTx: signed },
+      this.fetchFn,
+    );
+    if (submitted.kind !== "submitted") return this.afterRefusal(wallet, submitted);
+    markAccountOpened(this.storage, wallet.address);
+    await this.settledStatus(wallet);
+    return { kind: "opened", reference: submitted.reference };
+  }
+
+  /** A refusal of the open service as an outcome; the two that leave the account possibly open are settled by the view first. */
+  private async afterRefusal(
+    wallet: WalletIdentity,
+    refusal: OpenRefusal,
+  ): Promise<OpenAccountOutcome> {
+    if (refusal.kind !== "mayBeOpen" && refusal.kind !== "accountOpen") {
+      return { kind: "refused", refusal };
+    }
+    if ((await this.settledStatus(wallet)) === "open") {
+      markAccountOpened(this.storage, wallet.address);
+      return { kind: "alreadyOpen" };
+    }
+    return { kind: "refused", refusal: { kind: "mayBeOpen" } };
+  }
+
   async knownNoFaucet(): Promise<boolean> {
+    if (this.isMainnet) return true;
     return readFlag(this.storage, noFaucetKey(trustedProgramId(this.options.overrides)));
   }
 

@@ -62,7 +62,11 @@ describe("audit: stale order-key checkpoint", () => {
       }
       return {
         ...real,
-        signInAndConnect: async () => ({}),
+        signInWithExpiry: async () => ({
+          token: "session-token-0001",
+          expiresAtMs: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        }),
+        connectWithToken: () => ({}),
         connectionTo: () => ({ getAccountInfo: async () => ({ data: new Uint8Array() }) }),
         decodeExchangeAccount: () => ({
           collateralToken: 0,
@@ -88,7 +92,7 @@ describe("audit: stale order-key checkpoint", () => {
       new Response(JSON.stringify(deployment), { status: 200 })) as typeof fetch;
 
     const session = await buildRealSession(
-      { publicKey: owner.publicKey.toBase58(), secretKeyHex: bytesToHex(owner.secretKey) },
+      { address: owner.publicKey.toBase58(), secretKeyHex: bytesToHex(owner.secretKey) },
       { simUrl: "https://sim-checkpoint.example", fetchFn },
     );
     expect(session.orderKeyPublicKeys).toEqual(liveKeys.map((k) => k.toBase58()));

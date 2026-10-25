@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
+import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import { SessionAuthError, type RollupSession, type TraderClientLike } from "@/lib/rollup/session";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
@@ -123,19 +124,22 @@ function fakeClient(overrides: Partial<TraderClientLike> = {}): TraderClientLike
   };
 }
 
-function fakeSession(client: TraderClientLike, createdAtMs: number): RollupSession {
+function fakeSession(client: TraderClientLike, tokenExpiresAtMs: number): RollupSession {
   return {
-    owner: Keypair.generate(),
+    owner: keypairOwnerSigner(Keypair.generate()),
     orderKeyPublicKeys: [],
     client,
     deployment: FAKE_DEPLOYMENT,
     tokenIndexBySymbol: new Map([["nUSD", 0]]),
     collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
-    createdAtMs,
+    gate: Keypair.generate().publicKey,
+    tokenExpiresAtMs,
     saveKeyCheckpoint: () => {},
     close: () => {},
   };
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 
@@ -145,7 +149,7 @@ describe("RollupTradingClient: sign-in refresh", () => {
     const buildSession = vi.fn(async () => {
       built += 1;
       if (built === 1) throw new SessionAuthError(new Error("401: token expired"));
-      return fakeSession(fakeClient(), Date.now());
+      return fakeSession(fakeClient(), Date.now() + 30 * DAY_MS);
     });
 
     const client = new RollupTradingClient({
@@ -159,12 +163,12 @@ describe("RollupTradingClient: sign-in refresh", () => {
     expect(buildSession).toHaveBeenCalledTimes(2);
   });
 
-  it("proactively rebuilds the session once it is older than the refresh window", async () => {
+  it("rebuilds the session, and so signs in again, only once its token is about to lapse", async () => {
     let now = 0;
     let built = 0;
     const buildSession = vi.fn(async () => {
       built += 1;
-      return fakeSession(fakeClient(), now);
+      return fakeSession(fakeClient(), now + 30 * DAY_MS);
     });
 
     const client = new RollupTradingClient({
@@ -175,19 +179,21 @@ describe("RollupTradingClient: sign-in refresh", () => {
     });
 
     await client.fetchState(WALLET);
+    now += 29 * DAY_MS;
+    await client.fetchState(WALLET);
     expect(built).toBe(1);
 
-    now += 25 * 60 * 60 * 1000; // past the one-day refresh window
+    now += DAY_MS - 30 * 60 * 1000; // under the hour of validity the rebuild keeps in hand
     await client.fetchState(WALLET);
     expect(built).toBe(2);
   });
 
-  it("does not rebuild on every call within the refresh window", async () => {
+  it("does not rebuild a session a day old: the token outlives it by weeks", async () => {
     let now = 0;
     let built = 0;
     const buildSession = vi.fn(async () => {
       built += 1;
-      return fakeSession(fakeClient(), now);
+      return fakeSession(fakeClient(), now + 30 * DAY_MS);
     });
 
     const client = new RollupTradingClient({
@@ -198,7 +204,7 @@ describe("RollupTradingClient: sign-in refresh", () => {
     });
 
     await client.fetchState(WALLET);
-    now += 10_000;
+    now += 2 * DAY_MS;
     await client.fetchState(WALLET);
     expect(built).toBe(1);
   });
