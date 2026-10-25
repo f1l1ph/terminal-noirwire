@@ -152,7 +152,11 @@ export function openRefusalOf(status: number, reason: string, step: Step): OpenR
     return ACCOUNT_EXISTS_409.includes(reason) ? { kind: "accountOpen" } : { kind: "mayBeOpen" };
   }
   if (status === 410) return { kind: "prepareExpired" };
-  if (status === 429) return { kind: "tooManyToday" };
+  if (status === 429) {
+    return /opened its account for today/i.test(reason)
+      ? { kind: "tooManyToday" }
+      : { kind: "tryLater" };
+  }
   if (status === 503 && (step === "prepare" || NOTHING_SENT_503.includes(reason))) {
     return { kind: "tryLater" };
   }

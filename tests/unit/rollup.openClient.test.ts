@@ -329,6 +329,11 @@ describe("refusal mapping", () => {
     expect(outcome.kind).toBe("tooManyToday");
   });
 
+  it("maps a short request throttle to tryLater, not the day's limit", async () => {
+    const outcome = await refusedWith(429, "Rate limit exceeded, retry in 1 minute", "prepare");
+    expect(outcome.kind).toBe("tryLater");
+  });
+
   it("maps an expired prepare to prepareExpired", async () => {
     const outcome = await refusedWith(
       410,
