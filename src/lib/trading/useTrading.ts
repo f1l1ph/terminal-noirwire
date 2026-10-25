@@ -6,6 +6,7 @@ import { isMainnetBuild } from "../network";
 import { redactToken } from "../rollup/redact";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
+import { createLatestReads } from "./latestRead";
 import type {
   AccountStatus,
   CancelResult,
@@ -205,6 +206,11 @@ export function useTrading(
   // The owner's account and order keys, keyed by address like `reads`, so a
   // late answer for a wallet no longer in view writes only its own entry.
   const [flows, setFlows] = useState<Record<string, OwnerFlow>>({});
+  const [statusReads] = useState(createLatestReads);
+  const currentOwnerRef = useRef<string | null>(null);
+  useEffect(() => {
+    currentOwnerRef.current = wallet?.address ?? null;
+  }, [wallet]);
   const patchFlow = useCallback((owner: string, patch: Partial<OwnerFlow>) => {
     setFlows((prev) => ({ ...prev, [owner]: { ...(prev[owner] ?? NO_FLOW), ...patch } }));
   }, []);
@@ -215,9 +221,12 @@ export function useTrading(
     const stopKeys = client.subscribeOrderKeys?.(wallet, (keys) => {
       if (active) patchFlow(wallet.address, { keys });
     });
+    const ticket = statusReads.begin(wallet.address);
     client.accountStatus?.(wallet).then(
       (status) => {
-        if (active) patchFlow(wallet.address, { status });
+        if (active && statusReads.isCurrent(wallet.address, ticket, wallet.address)) {
+          patchFlow(wallet.address, { status });
+        }
       },
       () => {},
     );
@@ -231,18 +240,26 @@ export function useTrading(
       active = false;
       stopKeys?.();
     };
-  }, [client, wallet, patchFlow]);
+  }, [client, wallet, patchFlow, statusReads]);
 
   /** Runs the account check again, and with it the sign-in and key setup a failed attempt left undone. */
   const recheckAccount = useCallback(async (): Promise<void> => {
     if (!wallet || !client.accountStatus) return;
+    const owner = wallet.address;
+    const ticket = statusReads.begin(owner);
     const status = await client.accountStatus(wallet).catch((): AccountStatus => "unknown");
-    patchFlow(wallet.address, { status });
+    if (!statusReads.isCurrent(owner, ticket, currentOwnerRef.current)) return;
+    patchFlow(owner, { status });
+    // A failed check says the session could not be built; reading the markets
+    // would build another and could prompt the wallet again unasked.
+    if (status === "unknown") return;
     client.makersListedMarkets?.(wallet).then(
-      (makersListed) => patchFlow(wallet.address, { makersListed }),
+      (makersListed) => {
+        if (currentOwnerRef.current === owner) patchFlow(owner, { makersListed });
+      },
       () => {},
     );
-  }, [client, wallet, patchFlow]);
+  }, [client, wallet, patchFlow, statusReads]);
 
   // The page itself unloading (close, refresh, navigate away) does not
   // always run the effect cleanup above in time; this ends the same
@@ -432,11 +449,9 @@ export function useTrading(
     noFaucet,
     /** Mainnet: the connected owner has no account yet and needs the invite NoirWire issued for this address. */
     needsInvite: isMainnetBuild() && flow.status === "absent",
-    // The check runs once per wallet; account state arriving on the venue's
-    // own stream proves the account is readable, so it settles an earlier
-    // failed check.
-    accountStatus:
-      flow.status === "unknown" && currentRead?.state ? ("open" as const) : flow.status,
+    // Only a successful account read for this owner moves this off "unknown":
+    // state on the stream may be a placeholder for an account never seen.
+    accountStatus: flow.status,
     /** True from the moment the open request starts until it is settled. */
     opening: flow.opening,
     /** What the last attempt to open the account came to; null before any. */
