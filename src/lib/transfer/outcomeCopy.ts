@@ -41,6 +41,8 @@ const REFUSALS: Record<Refusal, string> = {
   "rollup-short": "Your rollup balance holds less than that. Nothing was sent.",
   "nothing-to-dismiss": "No transfer is waiting to be dismissed.",
   "not-dismissable": "That transfer cannot be dismissed yet. Nothing was changed.",
+  "record-changed":
+    "This transfer already finished or changed, perhaps in another tab. Nothing was sent.",
 };
 
 /** The need for network fees in SOL as plain text, such as "0.03 SOL". */

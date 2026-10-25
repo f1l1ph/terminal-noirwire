@@ -15,6 +15,7 @@ import {
   createAssociatedTokenAccountIdempotentIx,
   delegatedTo,
   holdsSol,
+  intentRefusal,
   operationFinal,
   reconciled,
   recordOf,
@@ -27,6 +28,7 @@ import {
   waiting,
   walletAccount,
   withdrawInstruction,
+  type Intent,
   type Stopped,
   type TransferEnv,
 } from "./operation";
@@ -55,6 +57,8 @@ export interface WithdrawInput {
   freeCollateral: bigint;
   /** The operator's answer for a send that was asked about: `landed:<id>` or `lost:<id>`. */
   answer?: string;
+  /** Whether this is a new transfer or the carrying on of a shown record; checked inside the lock. */
+  intent?: Intent;
 }
 
 /** The sends of an operation that move the tokens on Solana, as opposed to a token account's setup, which moves none. */
@@ -331,6 +335,8 @@ export function withdraw(env: TransferEnv, input: WithdrawInput): Promise<Withdr
     } catch (error) {
       return refuse("invalid-amount", (error as Error).message);
     }
+    const stale = await intentRefusal(env, "withdraw", input.intent);
+    if (stale) return stale;
     const begun = await beginOperation(env, "withdraw", atoms);
     if ("status" in begun) return begun;
     const { id, record } = begun;

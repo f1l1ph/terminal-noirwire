@@ -125,7 +125,8 @@ export type Refusal =
   | "deposit-landed"
   | "rollup-short"
   | "nothing-to-dismiss"
-  | "not-dismissable";
+  | "not-dismissable"
+  | "record-changed";
 
 export interface Refused {
   status: "refused";
@@ -254,6 +255,52 @@ export function currentRecord(records: OperationRecord[]): OperationRecord | nul
       Number(b.step === "return") - Number(a.step === "return") || a.createdAt - b.createdAt,
   );
   return sorted[0] ?? null;
+}
+
+/**
+ * What the caller meant when it started a flow: a new transfer, or carrying on
+ * the one record it showed. Checked inside the owner's lock against the
+ * journal as it is now, so a screen that went stale in another tab can never
+ * turn into a transfer the user did not ask for.
+ */
+export type Intent = { kind: "new" } | { kind: "resume"; id: string; atoms: string };
+
+/**
+ * Refuses, sending nothing, when the journal no longer matches `intent`: a
+ * new transfer finds a record that appeared, a resume finds its record gone,
+ * of another kind or amount, or no longer the one to carry on. Without an
+ * intent nothing is checked.
+ */
+export async function intentRefusal(
+  env: TransferEnv,
+  method: "deposit" | "withdraw",
+  intent: Intent | undefined,
+): Promise<Refused | null> {
+  if (!intent) return null;
+  const records = await env.journal.unfinished(env.owner.toBase58());
+  if (intent.kind === "new") {
+    return records.length === 0
+      ? null
+      : refuse(
+          "unfinished-operation",
+          "Another transfer is open now, perhaps from another tab. Finish it first. Nothing was sent.",
+        );
+  }
+  const record = records.find((candidate) => candidate.id === intent.id);
+  if (!record) {
+    return refuse(
+      "record-changed",
+      "This transfer already finished, perhaps in another tab. Nothing was sent.",
+    );
+  }
+  if (
+    record.kind !== method ||
+    record.atoms !== intent.atoms ||
+    currentRecord(records)?.id !== record.id
+  ) {
+    return refuse("record-changed", "This transfer changed since it was shown. Nothing was sent.");
+  }
+  return null;
 }
 
 /**

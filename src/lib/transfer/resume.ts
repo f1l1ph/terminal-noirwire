@@ -18,7 +18,7 @@ export interface ResumeFlows {
  */
 export function resumeRecord(
   env: TransferEnv,
-  attention: Pick<Attention, "operation" | "atoms" | "resumable">,
+  attention: Pick<Attention, "id" | "operation" | "atoms" | "resumable">,
   freeCollateral: bigint,
   flows: ResumeFlows,
   decimals: number,
@@ -27,9 +27,10 @@ export function resumeRecord(
     return Promise.reject(new Error("This record cannot be carried on from here."));
   }
   const amount = atomsText(BigInt(attention.atoms), decimals);
+  const intent = { kind: "resume", id: attention.id, atoms: attention.atoms } as const;
   return attention.operation === "deposit"
-    ? flows.deposit(env, { amount })
-    : flows.withdraw(env, { amount, freeCollateral });
+    ? flows.deposit(env, { amount, intent })
+    : flows.withdraw(env, { amount, freeCollateral, intent });
 }
 
 /** A new transfer waits while any record is open, or while the records cannot be read. */

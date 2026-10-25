@@ -46,7 +46,10 @@ describe("resuming an open record", () => {
     expect(actionsOf(attention)).toContain("resume");
     const run = flows();
     await resumeRecord(env, attention, 0n, run, 6);
-    expect(run.deposit).toHaveBeenCalledWith(env, { amount: "100.000000" });
+    expect(run.deposit).toHaveBeenCalledWith(env, {
+      amount: "100.000000",
+      intent: { kind: "resume", id: "op1", atoms: HUNDRED },
+    });
     expect(run.withdraw).not.toHaveBeenCalled();
   });
 
@@ -63,7 +66,11 @@ describe("resuming an open record", () => {
     expect(actionsOf(attention)).toContain("resume");
     const run = flows();
     await resumeRecord(env, attention, 0n, run, 6);
-    expect(run.withdraw).toHaveBeenCalledWith(env, { amount: "5.000000", freeCollateral: 0n });
+    expect(run.withdraw).toHaveBeenCalledWith(env, {
+      amount: "5.000000",
+      freeCollateral: 0n,
+      intent: { kind: "resume", id: "op1", atoms: "5000000" },
+    });
     expect(run.deposit).not.toHaveBeenCalled();
   });
 

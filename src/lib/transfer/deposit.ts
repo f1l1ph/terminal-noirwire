@@ -13,6 +13,7 @@ import {
   finishWhenFinalized,
   heldInRollup,
   holdsSol,
+  intentRefusal,
   reconciled,
   recordOf,
   refuse,
@@ -23,6 +24,7 @@ import {
   underLock,
   waiting,
   walletAccount,
+  type Intent,
   type Refused,
   type Stopped,
   type TransferEnv,
@@ -55,6 +57,8 @@ export interface DepositInput {
   amount: string;
   /** The operator's `landed:<signature>` for a Solana send seen as processed and since missing. A rollup send has no answer: it is judged from the rollup. */
   answer?: string;
+  /** Whether this is a new transfer or the carrying on of a shown record; checked inside the lock. */
+  intent?: Intent;
 }
 
 /**
@@ -257,6 +261,8 @@ export function deposit(env: TransferEnv, input: DepositInput): Promise<DepositO
     } catch (error) {
       return refuse("invalid-amount", (error as Error).message);
     }
+    const stale = await intentRefusal(env, "deposit", input.intent);
+    if (stale) return stale;
     const begun = await beginOperation(env, "deposit", atoms);
     if ("status" in begun) return begun;
     if (!begun.record) {

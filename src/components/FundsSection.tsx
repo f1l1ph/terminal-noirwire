@@ -193,8 +193,12 @@ export default function FundsSection({
       const amount = atomsText(check.atoms, QUOTE_DECIMALS);
       const outcome =
         kind === "deposit"
-          ? await deposit(transfer, { amount })
-          : await withdraw(transfer, { amount, freeCollateral: freeCollateral ?? 0n });
+          ? await deposit(transfer, { amount, intent: { kind: "new" } })
+          : await withdraw(transfer, {
+              amount,
+              freeCollateral: freeCollateral ?? 0n,
+              intent: { kind: "new" },
+            });
       setResult(outcomeLine(kind, outcome, QUOTE_DECIMALS, feeLamports));
       if (outcome.status === "done") {
         setText("");
