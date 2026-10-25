@@ -84,6 +84,8 @@ export interface RollupSession {
   deployment: PublicDeployment;
   /** Token symbol -> its index in `Seat.spot[]`, resolved once from the Exchange account (not a market-by-market scan). */
   tokenIndexBySymbol: Map<string, number>;
+  /** The rollup connection signed in as the owner, which the transfers read the owner's rollup token account through. A test fake may omit it. */
+  reader?: Connection;
   /** The Exchange's collateral token, read from the Exchange account: every funding deposit must name exactly its custody. */
   collateralToken: CustodyToken;
   /** The gate that pays for opening an account, read from the Exchange account and never from the service. */
@@ -471,6 +473,7 @@ async function buildSession(
     orderKeyPublicKeys: orderKeyPublicKeys(keys),
     client,
     deployment,
+    reader,
     tokenIndexBySymbol: tokenIndicesBySymbol(exchangeMints, deployment),
     collateralToken: exchangeTokens.collateral,
     gate: exchangeTokens.gate,

@@ -1,3 +1,4 @@
+import type { Connection } from "@solana/web3.js";
 import type { UnknownHold } from "../rollup/accountMemory";
 import type { DeploymentOverrides } from "../rollup/deployment";
 import type {
@@ -56,6 +57,13 @@ export class LazyRollupTradingClient implements TradingClient {
 
   async openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome> {
     return (await this.load()).openAccount(wallet, invite);
+  }
+
+  async rollupReader(wallet: WalletIdentity): Promise<Connection> {
+    const client = await this.load();
+    if (!client.rollupReader)
+      throw new Error("This client has no rollup connection to read through");
+    return client.rollupReader(wallet);
   }
 
   async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {

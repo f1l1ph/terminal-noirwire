@@ -1,5 +1,5 @@
 import { Transaction, type Connection, type TransactionInstruction } from "@solana/web3.js";
-import type { OwnerSigner } from "../wallet/ownerSigner";
+import type { MainnetChain, OwnerSigner } from "../wallet/ownerSigner";
 import { redactToken } from "./redact";
 import { signedDiffers } from "./signedCheck";
 
@@ -17,9 +17,15 @@ export class SignedTransactionRefused extends Error {
  * is asked, and the result is compared against those bytes (`signedDiffers`).
  * Every transaction an external wallet signs goes through here.
  */
-export async function signChecked(signer: OwnerSigner, built: Transaction): Promise<Transaction> {
+export async function signChecked(
+  signer: OwnerSigner,
+  built: Transaction,
+  chain?: MainnetChain,
+): Promise<Transaction> {
   const builtMessage = built.serializeMessage();
-  const signed = await signer.signTransaction(built);
+  const signed = await (chain
+    ? signer.signTransaction(built, chain)
+    : signer.signTransaction(built));
   const reason = signedDiffers(built, builtMessage, signed, signer.publicKey);
   if (reason) throw new SignedTransactionRefused(reason);
   return signed;

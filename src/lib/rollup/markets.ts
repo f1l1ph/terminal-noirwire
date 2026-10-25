@@ -26,7 +26,7 @@ const PINNED_MARKETS: Record<string, { baseSymbols: readonly string[]; baseDecim
  * account and its deployment entry must both name the same one.
  */
 const QUOTE_SYMBOLS: readonly string[] = ["NUSD", "USDC"];
-const QUOTE_DECIMALS = 6;
+export const QUOTE_DECIMALS = 6;
 
 /** The pinned base decimals of a market this build trades, or null for one it does not. */
 export function pinnedBaseDecimals(symbol: string): number | null {

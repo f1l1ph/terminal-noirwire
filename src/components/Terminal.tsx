@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { env } from "@/lib/env";
 import { MARKET_IDS } from "@/lib/market-data/types";
 import type {
@@ -46,9 +46,20 @@ import {
 } from "@/components/WitnessRail";
 import { OrderEntry, type PrefillRequest } from "@/components/OrderEntry";
 import { AccountDock, type Tab } from "@/components/AccountDock";
+import { TransferRecords } from "@/components/TransferRecords";
 import { holdClearableAtMs, type UnknownHold } from "@/lib/rollup/accountMemory";
 import { formatClockTime, formatDecimal } from "@/lib/format";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
+
+/**
+ * The deposit and withdraw controls and everything they move money with. The
+ * literal comparison lets the build drop the import when the switch is off,
+ * so such a build ships none of the transfer code.
+ */
+const FundsSection =
+  process.env.NEXT_PUBLIC_DEPOSITS === "on"
+    ? lazy(() => import("@/components/FundsSection"))
+    : null;
 
 interface OrderSession {
   market: string;
@@ -727,6 +738,21 @@ export function Terminal() {
       onReducePosition={requestReduce}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
       cancellingOrderId={cancelling ? (trackedOpenOrder?.orderId ?? null) : null}
+      transfers={
+        FundsSection ? (
+          <Suspense fallback={null}>
+            <FundsSection
+              identity={ownerIdentity}
+              rollupReader={trading.rollupReader}
+              accountOpen={trading.accountStatus === "open"}
+              collateral={trading.state.collateral ?? null}
+              onSettled={() => void trading.syncMarket(selectedMarketId)}
+            />
+          </Suspense>
+        ) : (
+          <TransferRecords owner={ownerIdentity?.address ?? null} engine={null} />
+        )
+      }
       bordered={!isDesktop}
     />
   );

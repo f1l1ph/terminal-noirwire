@@ -1,3 +1,4 @@
+import type { Connection } from "@solana/web3.js";
 import type { MarketInfo } from "../market-data/types";
 import type { UnknownHold } from "../rollup/accountMemory";
 import type { OpenRefusal } from "../rollup/openClient";
@@ -237,6 +238,8 @@ export interface TradingClient {
   openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome>;
   /** Whether the owner's account exists, read from its view. Optional: dev mode opens accounts lazily. */
   accountStatus?(wallet: WalletIdentity): Promise<AccountStatus>;
+  /** The rollup connection signed in as the owner, which deposits and withdrawals read the rollup through. Optional: dev mode has no rollup. */
+  rollupReader?(wallet: WalletIdentity): Promise<Connection>;
   /** The symbols of the markets that currently let only listed makers rest orders, read from each market's account. Optional: dev mode has no such list. */
   makersListedMarkets?(wallet: WalletIdentity): Promise<ReadonlySet<string>>;
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */

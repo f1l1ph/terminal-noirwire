@@ -48,12 +48,27 @@ const envSchema = z.object({
     .string()
     .url("NEXT_PUBLIC_SOLANA_RPC_URL must be an absolute https URL")
     .optional(),
+  deposits: z.enum(["on", "off"], {
+    message: 'NEXT_PUBLIC_DEPOSITS must be "on" or "off" (unset means off)',
+  }),
 });
 
 type Env = z.infer<typeof envSchema>;
 
+/**
+ * The deposits and withdrawals switch: off unless the build says "on". Only
+ * a mainnet build in rollup mode can turn it on, since the transfers sign for
+ * the pinned program, token and rollup and for nothing else.
+ */
+function depositsRefusal(env: Pick<Env, "deposits" | "network" | "tradingMode">): string | null {
+  if (env.deposits === "off") return null;
+  if (env.network === "mainnet" && env.tradingMode === "rollup") return null;
+  return 'NEXT_PUBLIC_DEPOSITS="on" requires NEXT_PUBLIC_NETWORK=mainnet and NEXT_PUBLIC_TRADING_MODE=rollup.';
+}
+
 export function readEnv(): Env {
   const result = envSchema.safeParse({
+    deposits: process.env.NEXT_PUBLIC_DEPOSITS || "off",
     simUrl: process.env.NEXT_PUBLIC_SIM_URL,
     simWsUrl: process.env.NEXT_PUBLIC_SIM_WS_URL,
     tradingMode: process.env.NEXT_PUBLIC_TRADING_MODE || "dev",
@@ -76,6 +91,8 @@ export function readEnv(): Env {
     process.env.NEXT_PUBLIC_ALLOW_UNSIGNED_DEV_MODE,
   );
   if (refusal) throw new Error(`Invalid terminal configuration:\n${refusal}`);
+  const switchRefusal = depositsRefusal(result.data);
+  if (switchRefusal) throw new Error(`Invalid terminal configuration:\n${switchRefusal}`);
   if (result.data.network !== "mainnet") return result.data;
   const mainnetProblems = mainnetRefusals(
     {

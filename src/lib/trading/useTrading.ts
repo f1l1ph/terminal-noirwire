@@ -296,6 +296,11 @@ export function useTrading(
     [client, wallet, patchFlow],
   );
 
+  const rollupReader = useMemo(() => {
+    const read = client.rollupReader?.bind(client);
+    return wallet && read ? () => read(wallet) : null;
+  }, [client, wallet]);
+
   const fund = useCallback(async (): Promise<FundOutcome> => {
     if (!wallet) return { kind: "error", message: "No wallet to fund" };
     const outcome = await client.fund(wallet);
@@ -418,6 +423,8 @@ export function useTrading(
     /** What the last attempt to open the account came to; null before any. */
     openOutcome: flow.outcome,
     openAccount,
+    /** Reads the rollup as the owner; null in dev mode and with no wallet. */
+    rollupReader,
     /** Where the order keys stand on this device (waiting to replace old keys, installing, ready); null until known. */
     orderKeys: flow.keys,
     /** Symbols of the markets where only listed makers may rest orders; a Limit there is sent as immediate-or-cancel. */

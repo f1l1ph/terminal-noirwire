@@ -6,12 +6,16 @@ import { readEnv } from "./src/lib/envConfig";
  * The terminal's configuration is otherwise only validated when a page first
  * renders, which would let a bad mainnet environment deploy. A build that
  * sets NEXT_PUBLIC_NETWORK at all validates it here, so a near-miss of
- * "mainnet" fails the build too. Other builds are untouched.
+ * "mainnet" fails the build too. A build that sets NEXT_PUBLIC_DEPOSITS at
+ * all is validated the same way, so a misspelt switch never builds as off.
+ * Other builds are untouched.
  */
-if (process.env.NEXT_PUBLIC_NETWORK) readEnv();
+if (process.env.NEXT_PUBLIC_NETWORK || process.env.NEXT_PUBLIC_DEPOSITS) readEnv();
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // An unset switch is "off" in the bundle too, so the build can drop the transfer code.
+  env: { NEXT_PUBLIC_DEPOSITS: process.env.NEXT_PUBLIC_DEPOSITS || "off" },
   async headers() {
     return [
       {

@@ -442,6 +442,13 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
+  async rollupReader(wallet: WalletIdentity): Promise<Connection> {
+    return this.withSession(wallet, async (session) => {
+      if (!session.reader) throw new Error("This session has no rollup connection to read through");
+      return session.reader;
+    });
+  }
+
   async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
     try {
       return await this.withSession(wallet, (session) => this.viewStatus(session));
