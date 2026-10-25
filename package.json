@@ -19,7 +19,7 @@
   "dependencies": {
     "@magicblock-labs/ephemeral-rollups-sdk": "0.17.3",
     "@noble/hashes": "1.8.0",
-    "@noirwire/orderbook": "file:vendor/noirwire-orderbook-0.6.0.tgz",
+    "@noirwire/orderbook": "file:vendor/noirwire-orderbook-0.7.0.tgz",
     "@solana/web3.js": "1.99.0",
     "dockview-react": "8.5.1",
     "lightweight-charts": "4.2.3",
