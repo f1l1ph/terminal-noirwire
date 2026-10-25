@@ -3,6 +3,7 @@ import type { CancelResult, OrderStatus, PlaceOrderResult, TransferResult } from
 import type { MarketUnits } from "./units";
 import { lotsToSize } from "./units";
 import {
+  ACCESS_ERROR,
   ALL_KEYS_BUSY_MESSAGE,
   OrderInvalid,
   OutcomeUnknown,
@@ -32,6 +33,7 @@ function isAllKeysBusy(error: unknown): boolean {
  * A failed transaction's code below 6000 is not one of these: it is any
  * instruction's own custom error, possibly another program's.
  */
+const WIRE_ERROR_OFFSET = 6000;
 const PROGRAM_ERROR = {
   exchangePaused: 30,
   marketPaused: 31,
@@ -39,11 +41,10 @@ const PROGRAM_ERROR = {
   stalePrice: 38,
   priceTooOld: 79,
   quoteGuardTripped: 81,
-  seatBlocked: 90,
-  makerNotListed: 91,
-  takerNotListed: 92,
+  seatBlocked: ACCESS_ERROR.seatBlocked - WIRE_ERROR_OFFSET,
+  makerNotListed: ACCESS_ERROR.makerNotListed - WIRE_ERROR_OFFSET,
+  takerNotListed: ACCESS_ERROR.takerNotListed - WIRE_ERROR_OFFSET,
 } as const;
-const WIRE_ERROR_OFFSET = 6000;
 
 /** What this session knows about the order's own market, used to word a refusal. */
 export interface RefusalContext {

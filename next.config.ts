@@ -1,5 +1,14 @@
 import type { NextConfig } from "next";
 import { contentSecurityPolicy } from "./src/lib/csp";
+import { readEnv } from "./src/lib/envConfig";
+
+/**
+ * The terminal's configuration is otherwise only validated when a page first
+ * renders, which would let a bad mainnet environment deploy. A build that
+ * sets NEXT_PUBLIC_NETWORK at all validates it here, so a near-miss of
+ * "mainnet" fails the build too. Other builds are untouched.
+ */
+if (process.env.NEXT_PUBLIC_NETWORK) readEnv();
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,

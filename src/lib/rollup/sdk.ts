@@ -10,6 +10,7 @@
  */
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
+  ACCESS_ERROR as SDK_ACCESS_ERROR,
   Addresses,
   Instructions,
   MARKET_KIND,
@@ -52,6 +53,7 @@ export type {
   OrderKeyManager,
 };
 export { randomSecret };
+export const ACCESS_ERROR = SDK_ACCESS_ERROR;
 export const OrderInvalid = SdkOrderInvalid;
 export const TransactionFailed = SdkTransactionFailed;
 export const OutcomeUnknown = SdkOutcomeUnknown;

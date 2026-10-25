@@ -19,6 +19,7 @@ import {
 import { candlesLoadingKey, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { useWallet } from "@/lib/wallet/useWallet";
 import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
+import { deploymentOverrides } from "@/lib/trading";
 import type { CancelResult, Position } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
@@ -113,7 +114,7 @@ export function Terminal() {
   useEffect(() => {
     if (trading.client.mode !== "rollup") return;
     let cancelled = false;
-    fetchDeployment(env.simUrl)
+    fetchDeployment(env.simUrl, deploymentOverrides)
       .then((described) => {
         if (!cancelled) setDeployment(described);
       })

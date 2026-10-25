@@ -1,3 +1,5 @@
+import { MAINNET_PINS } from "./rollup/pins";
+
 /**
  * For anything that is not a page: static files. Loads and runs nothing.
  * `src/proxy.ts` sets the real, nonced policy on every page response; this
@@ -25,8 +27,16 @@ export function contentSecurityPolicy(nonce?: string): string {
   // README asks an operator to set to the same addresses specifically so
   // CSP can allow them (dev mode's blanket `ws://localhost:*` below covers
   // a local websocket but never an HTTP connect-src).
-  const rollupUrl = process.env.NEXT_PUBLIC_ROLLUP_RPC_URL ?? "";
-  const rollupWsUrl = process.env.NEXT_PUBLIC_ROLLUP_WS_URL ?? "";
+  // A mainnet build allows exactly the pinned rollup origins, whatever the
+  // environment says (src/lib/env refuses any other value at load).
+  const network = process.env.NEXT_PUBLIC_NETWORK;
+  const isMainnet = Boolean(network) && network !== "test";
+  const rollupUrl = isMainnet
+    ? MAINNET_PINS.rollupRpcUrl
+    : (process.env.NEXT_PUBLIC_ROLLUP_RPC_URL ?? "");
+  const rollupWsUrl = isMainnet
+    ? MAINNET_PINS.rollupWsUrl
+    : (process.env.NEXT_PUBLIC_ROLLUP_WS_URL ?? "");
   const connectSources = ["'self'", simUrl, simWsUrl, rollupUrl, rollupWsUrl]
     .filter(Boolean)
     .join(" ");

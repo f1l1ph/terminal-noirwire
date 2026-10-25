@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { deriveOrderKey } from "@noirwire/orderbook";
 import { bytesToHex } from "@/lib/wallet/index";
+import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { deriveLegacyOrderSeed, deriveOrderSeed } from "@/lib/rollup/keys";
 import type { DeploymentOverrides, PublicDeployment } from "@/lib/rollup/deployment";
 import {
@@ -58,9 +59,13 @@ function chainMarket(marketId: number, kind: number, baseToken: number) {
   };
 }
 
-function deployment(markets: DeploymentMarket[], programId = PACKAGE_PROGRAM_ID.toBase58()) {
+function deployment(
+  markets: DeploymentMarket[],
+  programId = PACKAGE_PROGRAM_ID.toBase58(),
+  network = "devnet",
+) {
   return {
-    network: "devnet",
+    network,
     programId,
     solanaRpcUrl: "https://solana.example",
     rollupRpcUrl: "https://rollup.example",
@@ -74,6 +79,8 @@ function deployment(markets: DeploymentMarket[], programId = PACKAGE_PROGRAM_ID.
 interface Stage {
   markets?: DeploymentMarket[];
   programId?: string;
+  network?: string;
+  identityAnswer?: () => Response;
   overrides?: DeploymentOverrides;
   view?: () => Promise<{ orderKeys: PublicKey[] }>;
 }
@@ -132,8 +139,12 @@ async function build(owner: Keypair, stage: Stage = {}) {
     };
   });
   const { buildRealSession } = await import("@/lib/rollup/session");
-  const body = deployment(stage.markets ?? [PERP, SPOT], stage.programId);
-  const fetchFn = (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+  const body = deployment(stage.markets ?? [PERP, SPOT], stage.programId, stage.network);
+  const fetchFn = (async (_url: unknown, init?: RequestInit) =>
+    String(init?.body).includes("getIdentity")
+      ? (stage.identityAnswer?.() ??
+        new Response(JSON.stringify({ result: { identity: MAINNET_PINS.validator } })))
+      : new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
   const session = buildRealSession(
     { publicKey: owner.publicKey.toBase58(), secretKeyHex: bytesToHex(owner.secretKey) },
     { simUrl: "https://sim-session.example", fetchFn, overrides: stage.overrides },
@@ -153,6 +164,41 @@ const notOpened = async () => {
 
 const symbolsOf = async (built: ReturnType<typeof build>) =>
   (await (await built).session).deployment.markets.map((market) => market.symbol);
+
+describe("buildRealSession: a mainnet build trusts only the pinned collateral", () => {
+  it("refuses an exchange whose collateral mint is not the USDC pin", async () => {
+    const owner = Keypair.generate();
+    const markets = [
+      { ...PERP, quoteToken: { symbol: "USDC", mint: MAINNET_PINS.usdcMint, decimals: 6 } },
+    ];
+    const built = build(owner, {
+      view: notOpened,
+      markets,
+      network: "mainnet",
+      programId: MAINNET_PINS.programId,
+      overrides: { pins: MAINNET_PINS },
+    });
+    await expect((await built).session).rejects.toThrow(/collateral/);
+  });
+
+  it("asks for no signature when the rollup is run by another validator", async () => {
+    const owner = Keypair.generate();
+    const markets = [
+      { ...PERP, quoteToken: { symbol: "USDC", mint: MAINNET_PINS.usdcMint, decimals: 6 } },
+    ];
+    const built = await build(owner, {
+      view: notOpened,
+      markets,
+      network: "mainnet",
+      programId: MAINNET_PINS.programId,
+      overrides: { pins: MAINNET_PINS },
+      identityAnswer: () =>
+        new Response(JSON.stringify({ result: { identity: owner.publicKey.toBase58() } })),
+    });
+    await expect(built.session).rejects.toThrow(/is run by/);
+    expect(built.signer()).toBeNull();
+  });
+});
 
 describe("buildRealSession: markets are bound only when the rollup's own market account agrees", () => {
   it("keeps markets whose entry matches the chain", async () => {

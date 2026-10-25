@@ -2,6 +2,7 @@ import type { Connection, Keypair } from "@solana/web3.js";
 import { PublicKey } from "@solana/web3.js";
 import { browserLocalStorage, type WalletAccount } from "../wallet/index";
 import { loadCheckpoint, saveCheckpoint } from "./checkpointStore";
+import { assertRollupIdentity } from "./identity";
 import { fetchDeployment, type DeploymentOverrides, type PublicDeployment } from "./deployment";
 import { deriveLegacyOrderSeed, deriveOrderSeed, ownerKeypairFrom, signInSigner } from "./keys";
 import { marketMatchesChain } from "./markets";
@@ -98,7 +99,8 @@ export interface RollupSessionDeps {
  * the owner signs, at a program of its choosing.
  */
 export function trustedProgramId(overrides: DeploymentOverrides = {}): PublicKey {
-  return overrides.programId ? new PublicKey(overrides.programId) : PACKAGE_PROGRAM_ID;
+  const pinned = overrides.pins?.programId ?? overrides.programId;
+  return pinned ? new PublicKey(pinned) : PACKAGE_PROGRAM_ID;
 }
 
 /**
@@ -284,6 +286,11 @@ export async function buildRealSession(
     );
   }
 
+  const pinnedValidator = deps.overrides?.pins?.validator;
+  if (pinnedValidator) {
+    await assertRollupIdentity(described.rollupRpcUrl, pinnedValidator, fetchFn);
+  }
+
   const owner = ownerKeypairFrom(wallet);
   const seed = deriveOrderSeed(owner);
   // A plain, unsigned connection, for reads that are genuinely public
@@ -320,6 +327,12 @@ export async function buildRealSession(
   saveKeyCheckpoint();
 
   const exchangeTokens = await readExchangeTokens(anonymous, programAddresses(programId).exchange);
+  const pinnedMint = deps.overrides?.pins?.usdcMint;
+  if (pinnedMint && exchangeTokens.collateral.mint.toBase58() !== pinnedMint) {
+    throw new Error(
+      `the exchange holds collateral in ${exchangeTokens.collateral.mint.toBase58()}, but this build trades only in ${pinnedMint}`,
+    );
+  }
   const exchangeMints = exchangeTokens.mints;
   const matching = await marketsMatchingChain(reader, programId, described, exchangeMints);
   const deployment: PublicDeployment = { ...described, markets: matching.markets };
