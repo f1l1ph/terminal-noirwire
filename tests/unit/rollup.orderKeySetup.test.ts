@@ -1,12 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
 import { deriveOrderKey } from "@noirwire/orderbook";
-import {
-  deviceOrderKeys,
-  settleWaitMs,
-  type DeviceKeyDeps,
-  type DeviceSeeds,
-} from "@/lib/rollup/orderKeySetup";
+import { deviceOrderKeys, type DeviceKeyDeps, type DeviceSeeds } from "@/lib/rollup/orderKeySetup";
 import { freshOrderKeys, type OrderKeyManager, type View } from "@/lib/rollup/sdk";
 
 const OWNER = "OwnerAddress111111111111111111111111111111";
@@ -65,11 +60,11 @@ describe("order keys on a new device", () => {
     expect(keys.publicKeys.map((key) => key.toBase58())).toEqual(installed[0]);
   });
 
-  it("waits only until the newest order that expires inside the window, when one is readable", async () => {
-    const view = viewOf(strangersKeys(), [NOW + 10_000, NOW + 20_000]);
+  it("still waits the full 60 seconds when a resting order expires in 5", async () => {
+    const view = viewOf(strangersKeys(), [NOW + 5_000]);
     const { deps, sleeps } = setup({ view });
     await deviceOrderKeys(deps);
-    expect(sleeps).toEqual([21_000]);
+    expect(sleeps).toEqual([60_000]);
   });
 
   it("tells the UI it is waiting, until when, and then that it is installing", async () => {
@@ -115,19 +110,5 @@ describe("a seed that cannot be stored", () => {
     const { deps, installed } = setup({ view: viewOf(strangersKeys()), createFails: true });
     await expect(deviceOrderKeys(deps)).rejects.toThrow(/storage/);
     expect(installed).toEqual([]);
-  });
-});
-
-describe("settleWaitMs", () => {
-  it("is the full 60 seconds when no order shows an expiry", () => {
-    expect(settleWaitMs(viewOf([]), NOW)).toBe(60_000);
-  });
-
-  it("ignores an expiry already past, which says nothing about an order in flight", () => {
-    expect(settleWaitMs(viewOf([], [NOW - 5_000]), NOW)).toBe(60_000);
-  });
-
-  it("ignores an expiry hours away, which no order-key instruction can have", () => {
-    expect(settleWaitMs(viewOf([], [NOW + 3_600_000]), NOW)).toBe(60_000);
   });
 });

@@ -33,8 +33,26 @@ describe("scrubError", () => {
   it("removes the token from the message and the stack and keeps the class", () => {
     const error = new TypeError(`fetch failed for https://rollup.example?token=${TOKEN}`);
     const scrubbed = scrubError(error);
-    expect(scrubbed).toBeInstanceOf(TypeError);
+    expect(scrubbed.name).toBe("TypeError");
     expect(`${scrubbed.message}\n${scrubbed.stack}`).not.toContain(TOKEN);
+  });
+
+  it("does not mutate the original error", () => {
+    const error = new Error(`failed ?token=${TOKEN}`);
+    scrubError(error);
+    expect(error.message).toContain(TOKEN);
+  });
+
+  it("returns an error without a token as the very same error", () => {
+    const error = new TypeError("offline");
+    expect(scrubError(error)).toBe(error);
+  });
+
+  it("scrubs a DOMException, whose message cannot be written, without replacing it with a failure", () => {
+    const error = new DOMException(`blocked ?token=${TOKEN}`, "NetworkError");
+    const scrubbed = scrubError(error);
+    expect(scrubbed.name).toBe("NetworkError");
+    expect(scrubbed.message).not.toContain(TOKEN);
   });
 
   it("removes the token from a wrapped cause", () => {

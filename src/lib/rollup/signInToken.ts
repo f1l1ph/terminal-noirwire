@@ -1,6 +1,6 @@
 import type { Connection, PublicKey } from "@solana/web3.js";
 import { ownerDataKeys, type KeyValueStore } from "../wallet/index";
-import type { OwnerSigner } from "../wallet/ownerSigner";
+import { StaleSigner, type OwnerSigner } from "../wallet/ownerSigner";
 import { signInSigner } from "./keys";
 import { forgetToken, rememberToken } from "./redact";
 
@@ -69,8 +69,39 @@ export function saveSignInToken(
   }
 }
 
+/** How many times each owner's token was wiped in this page; a sign-in that began before a wipe must not save its token after it. */
+const wipes = new Map<string, number>();
+
+/** A store that can list its keys, as `localStorage` can. */
+export type ListableStore = KeyValueStore & {
+  readonly length: number;
+  key(index: number): string | null;
+};
+
+/**
+ * Wipes the stored token of every owner but `keep`: a token left by an owner
+ * who disconnected on an earlier visit lives no longer than the next
+ * connection of anyone else.
+ */
+export function clearOtherSignInTokens(storage: ListableStore, keep: string): void {
+  try {
+    const prefix = ownerDataKeys.signInToken("");
+    const owners: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(prefix) && key.length > prefix.length) {
+        owners.push(key.slice(prefix.length));
+      }
+    }
+    for (const owner of owners) if (owner !== keep) clearSignInToken(storage, owner);
+  } catch {
+    // Storage that cannot be listed has nothing this can wipe.
+  }
+}
+
 /** Forgets the owner's token: on disconnect, on an account change, and when the rollup stops accepting it. */
 export function clearSignInToken(storage: KeyValueStore, owner: string): void {
+  wipes.set(owner, (wipes.get(owner) ?? 0) + 1);
   const stored = readStored(storage, owner);
   if (stored) forgetToken(stored.token);
   try {
@@ -86,10 +117,15 @@ export function clearSignInToken(storage: KeyValueStore, owner: string): void {
  * owner already connected, or a reconnect to the same address, forgets
  * nothing.
  */
-export function trackConnectedOwner(forget: (address: string) => void) {
+export function trackConnectedOwner(
+  forget: (address: string) => void,
+  /** Called with each address that becomes the connected owner, so tokens left by any other owner can go. */
+  onConnect: (address: string) => void = () => {},
+) {
   let current: string | null = null;
   return (next: string | null) => {
     if (current && current !== next) forget(current);
+    if (next && next !== current) onConnect(next);
     current = next;
   };
 }
@@ -136,11 +172,15 @@ export async function signedInReader(
       };
     }
   }
+  const startedAt = wipes.get(address) ?? 0;
   const { token, expiresAtMs } = await deps.signIn(
     deps.rollupRpcUrl,
     deps.owner.publicKey,
     signInSigner(deps.owner),
   );
+  // The owner was disconnected or switched while the endpoint was logging in:
+  // the token belongs to a connection that is gone, so it is dropped unsaved.
+  if ((wipes.get(address) ?? 0) !== startedAt) throw new StaleSigner();
   saveSignInToken(deps.storage, address, token, expiresAtMs);
   return { reader: deps.connect(deps.rollupRpcUrl, token), expiresAtMs, cached: false };
 }

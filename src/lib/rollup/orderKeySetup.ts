@@ -23,23 +23,13 @@ export interface DeviceSeeds {
 }
 
 /**
- * How long to wait before replacing the account's order keys, so that an
- * order signed by the old keys has lapsed by then. The program caps an
- * instruction's expiry at 60 s, so 60 s is always enough; when the view shows
- * an order that expires within that window, the newest such expiry (plus one
- * second) is the shorter, sufficient wait. An expiry already past, or beyond
- * the window, says nothing about an order in flight, so it is ignored.
+ * How long to wait, from the moment this device decides to replace the
+ * account's order keys, so that an instruction signed by the old keys has
+ * lapsed. The program caps an instruction's expiry at 60 s. Nothing in the
+ * view bounds an instruction in flight (a resting order's good-till time is
+ * a different thing), so the wait is always the full cap.
  */
-export function settleWaitMs(view: Pick<View, "snapshot">, nowMs: number): number {
-  let newest = 0;
-  for (const order of view.snapshot.orders) {
-    const expiryMs = Number(order.expiry) * 1000;
-    if (expiryMs > nowMs && expiryMs <= nowMs + MAX_EXPIRY_AHEAD_MS) {
-      newest = Math.max(newest, expiryMs);
-    }
-  }
-  return newest > 0 ? newest - nowMs + 1_000 : MAX_EXPIRY_AHEAD_MS;
-}
+export const SETTLE_WAIT_MS = MAX_EXPIRY_AHEAD_MS;
 
 const isNotFromSeed = (error: unknown) =>
   error instanceof Error && error.message === KEYS_NOT_FROM_SEED_MESSAGE;
@@ -91,9 +81,8 @@ export async function deviceOrderKeys(deps: DeviceKeyDeps): Promise<OrderKeyMana
     }
   }
 
-  const waitMs = settleWaitMs(view, deps.now());
-  deps.report({ stage: "settling", readyAtMs: deps.now() + waitMs });
-  await deps.sleep(waitMs);
+  deps.report({ stage: "settling", readyAtMs: deps.now() + SETTLE_WAIT_MS });
+  await deps.sleep(SETTLE_WAIT_MS);
   deps.report({ stage: "installing" });
   await deps.install(fresh);
   return fresh;

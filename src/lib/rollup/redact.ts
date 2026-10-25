@@ -29,14 +29,19 @@ export function redactToken(text: string): string {
 }
 
 /**
- * Rewrites the message, stack and cause of `error` in place and returns it,
- * so its class (and every `instanceof` check on it) survives while its text
- * no longer carries a token.
+ * `error` itself when nothing in it carries a token. Otherwise a new error
+ * with the redacted message and stack and the same name; the original is
+ * never mutated (some errors, a DOMException among them, refuse writes to
+ * their message). A cause is kept only in its own scrubbed form.
  */
 export function scrubError<T>(error: T): T {
   if (!(error instanceof Error)) return error;
-  error.message = redactToken(error.message);
-  if (error.stack) error.stack = redactToken(error.stack);
-  if (error.cause instanceof Error) scrubError(error.cause);
-  return error;
+  const message = redactToken(error.message);
+  const stack = error.stack === undefined ? undefined : redactToken(error.stack);
+  const cause = error.cause instanceof Error ? scrubError(error.cause) : undefined;
+  if (message === error.message && stack === error.stack && cause === error.cause) return error;
+  const clean = new Error(message, cause === undefined ? undefined : { cause });
+  clean.name = error.name;
+  if (stack !== undefined) clean.stack = stack;
+  return clean as T;
 }

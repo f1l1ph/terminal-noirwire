@@ -4,7 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { env } from "../env";
 import { isMainnetBuild } from "../network";
 import { mainnetOwnerSigner } from "../rollup/mainnetOwner";
-import { clearSignInToken, trackConnectedOwner } from "../rollup/signInToken";
+import {
+  clearOtherSignInTokens,
+  clearSignInToken,
+  trackConnectedOwner,
+} from "../rollup/signInToken";
 import type { WalletIdentity } from "../trading/types";
 import { browserLocalStorage } from "./index";
 import { useStandardWallet } from "./standardWallet";
@@ -34,7 +38,12 @@ export function useOwnerIdentity(builtIn: WalletHookResult): WalletIdentity | nu
   }, [connected, account]);
 
   const [trackOwner] = useState(() =>
-    trackConnectedOwner((address) => clearSignInToken(browserLocalStorage(), address)),
+    trackConnectedOwner(
+      (address) => clearSignInToken(browserLocalStorage(), address),
+      (address) => {
+        if (typeof window !== "undefined") clearOtherSignInTokens(window.localStorage, address);
+      },
+    ),
   );
   const address = identity?.address ?? null;
   useEffect(() => {
