@@ -15,6 +15,8 @@ import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/t
 import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
+import { isMainnetBuild } from "@/lib/network";
+import { walletlessDockText } from "@/lib/trading/uiRules";
 
 export type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
 
@@ -101,7 +103,7 @@ export function AccountDock({
       <div className="min-h-0 flex-1 overflow-y-auto p-3" role="tabpanel">
         {!hasWallet && (
           <div className="flex h-full min-h-[96px] flex-col items-center justify-center gap-1 text-center">
-            <p className="text-dim text-[13px]">Create a test wallet to see your account.</p>
+            <p className="text-dim text-[13px]">{walletlessDockText(isMainnetBuild())}</p>
           </div>
         )}
         {hasWallet && tab === "positions" && (

@@ -62,6 +62,10 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await (await this.load()).accountStatus?.(wallet)) ?? "unknown";
   }
 
+  async makersListedMarkets(wallet: WalletIdentity): Promise<ReadonlySet<string>> {
+    return (await (await this.load()).makersListedMarkets?.(wallet)) ?? new Set();
+  }
+
   subscribeOrderKeys(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { env } from "@/lib/env";
 import { MARKET_IDS } from "@/lib/market-data/types";
 import type {
@@ -27,6 +27,8 @@ import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { fetchDeployment, quoteSymbolOf, type PublicDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
+import { offersSpotTrading, tradeGate } from "@/lib/trading/uiRules";
+import { AccountSetup } from "@/components/AccountSetup";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { TerminalShell } from "@/components/TerminalShell";
@@ -76,7 +78,15 @@ export function Terminal() {
   const [chosenMarketId, setChosenMarketId] = useState<string>(MARKET_IDS[0]);
   const [interval, setInterval] = useState<CandleInterval>("1m");
   const [retryToken, setRetryToken] = useState(0);
-  const data = useMarketDataState(store);
+  const allData = useMarketDataState(store);
+  // Only the perpetual is launched on mainnet: spot markets are not listed at all.
+  const data = useMemo(
+    () =>
+      offersSpotTrading(isMainnetBuild())
+        ? allData
+        : { ...allData, markets: allData.markets.filter((item) => item.kind === "perp") },
+    [allData],
+  );
   // A deployment may list fewer markets than this build knows: once the
   // list has loaded, a choice it does not hold falls back to its first.
   const selectedMarketId =
@@ -627,6 +637,23 @@ export function Terminal() {
       onCreateWallet={() => {
         if (!isMainnetBuild()) wallet.create();
       }}
+      ownerAddress={owner}
+      setup={
+        isMainnetBuild() && ownerIdentity ? (
+          <AccountSetup
+            address={ownerIdentity.address}
+            status={trading.accountStatus}
+            needsInvite={trading.needsInvite}
+            opening={trading.opening}
+            outcome={trading.openOutcome}
+            onOpen={(invite) => void trading.openAccount(invite)}
+            keys={trading.orderKeys}
+            now={now}
+          />
+        ) : null
+      }
+      gate={tradeGate(isMainnetBuild(), trading.accountStatus, trading.orderKeys)}
+      makersListed={trading.makersListed.has(market.id)}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
       noFaucet={trading.noFaucet}

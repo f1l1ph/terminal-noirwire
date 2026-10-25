@@ -39,9 +39,17 @@ interface OwnerFlow {
   opening: boolean;
   outcome: OpenAccountOutcome | null;
   keys: OrderKeyState | null;
+  makersListed: ReadonlySet<string>;
 }
 
-const NO_FLOW: OwnerFlow = { status: "unknown", opening: false, outcome: null, keys: null };
+const NO_MARKETS: ReadonlySet<string> = new Set();
+const NO_FLOW: OwnerFlow = {
+  status: "unknown",
+  opening: false,
+  outcome: null,
+  keys: null,
+  makersListed: NO_MARKETS,
+};
 
 interface AccountRead {
   state: TraderState | null;
@@ -210,6 +218,12 @@ export function useTrading(
     client.accountStatus?.(wallet).then(
       (status) => {
         if (active) patchFlow(wallet.address, { status });
+      },
+      () => {},
+    );
+    client.makersListedMarkets?.(wallet).then(
+      (makersListed) => {
+        if (active) patchFlow(wallet.address, { makersListed });
       },
       () => {},
     );
@@ -406,6 +420,8 @@ export function useTrading(
     openAccount,
     /** Where the order keys stand on this device (waiting to replace old keys, installing, ready); null until known. */
     orderKeys: flow.keys,
+    /** Symbols of the markets where only listed makers may rest orders; a Limit there is sent as immediate-or-cancel. */
+    makersListed: flow.makersListed,
     fund,
     placeOrder,
     releaseUnknownOutcome,

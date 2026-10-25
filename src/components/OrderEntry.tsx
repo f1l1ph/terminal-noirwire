@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   formatDecimal,
@@ -12,6 +12,22 @@ import {
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import type { MarketInfo } from "@/lib/market-data/types";
+import { isMainnetBuild } from "@/lib/network";
+import { browserLocalStorage } from "@/lib/wallet";
+import { limitSentAsIoc } from "@/lib/trading/orderType";
+import {
+  hasAcknowledged,
+  REAL_MONEY_STATEMENTS,
+  recordAcknowledgement,
+} from "@/lib/trading/realMoneyAck";
+import {
+  offersTestFunds,
+  placeLabel,
+  TEST_ONLY_COPY,
+  tradeGateLabel,
+  walletlessAction,
+  type TradeGate,
+} from "@/lib/trading/uiRules";
 import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import { maxOrderSize, orderFunds } from "@/lib/trading/sizing";
@@ -109,6 +125,10 @@ export function OrderEntry({
   prefillRequest,
   spotAssets,
   compact,
+  ownerAddress,
+  setup,
+  gate,
+  makersListed,
 }: {
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
@@ -168,7 +188,17 @@ export function OrderEntry({
    * review, item 10) - nothing is removed, it is one tap away.
    */
   compact?: boolean;
+  /** The connected owner's address; the real-money acknowledgement is remembered under it. Empty with no wallet. */
+  ownerAddress: string;
+  /** Mainnet: the account and trading-keys setup, shown above the form. */
+  setup?: ReactNode;
+  /** Mainnet: why no order can be placed yet (account not open, keys not ready). */
+  gate: TradeGate | null;
+  /** This market lets only listed makers rest orders: a Limit is sent as immediate-or-cancel. */
+  makersListed: boolean;
 }) {
+  const mainnet = isMainnetBuild();
+  const testCopy = mainnet ? null : TEST_ONLY_COPY;
   const isPerp = market?.kind === "perp";
   const [side, setSide] = useState<Side>("buy");
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
@@ -194,6 +224,8 @@ export function OrderEntry({
   const [showDetails, setShowDetails] = useState(!compact);
   const [frozen, setFrozen] = useState<FrozenOrder | null>(null);
   const [openAfterPrefill, setOpenAfterPrefill] = useState(false);
+  const [showAck, setShowAck] = useState(false);
+  const [ackedThisVisit, setAckedThisVisit] = useState(false);
   const submittingRef = useRef(false);
   const quantityInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
@@ -303,6 +335,7 @@ export function OrderEntry({
     });
   }, [market, side, priceText, mark, availableQuote, availableBase, reduceOnlyMax]);
 
+  const sentAsIoc = limitSentAsIoc(orderType, makersListed, isPerp && reduceOnly);
   const draft: NewOrderInput | null = market
     ? {
         market: market.id,
@@ -311,7 +344,7 @@ export function OrderEntry({
         price: priceText,
         size: quantityText,
         reduceOnly: isPerp && reduceOnly ? true : undefined,
-        goodFor: supportsGoodFor && orderType === "limit" ? goodFor : undefined,
+        goodFor: supportsGoodFor && orderType === "limit" && !sentAsIoc ? goodFor : undefined,
       }
     : null;
 
@@ -395,6 +428,7 @@ export function OrderEntry({
 
   const canSubmit =
     hasWallet &&
+    !gate &&
     !accountUnknown &&
     !availableUnknown &&
     !noFunds &&
@@ -408,6 +442,7 @@ export function OrderEntry({
 
   const confirmBlocker = (() => {
     if (!market) return null;
+    if (gate) return tradeGateLabel(gate);
     if (unknownHold) return "An earlier order may have reached the venue. Check it first.";
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
     if (availableUnknown) return "Available collateral is unavailable until the price updates.";
@@ -456,6 +491,10 @@ export function OrderEntry({
   function openConfirm() {
     if (!canSubmit) {
       setSubmitError(confirmBlocker);
+      return;
+    }
+    if (mainnet && !ackedThisVisit && !hasAcknowledged(browserLocalStorage(), ownerAddress)) {
+      setShowAck(true);
       return;
     }
     const order = freezeOrder();
@@ -549,14 +588,14 @@ export function OrderEntry({
   function handlePrimaryClick() {
     if (!walletReady || accountUnknown) return;
     if (!hasWallet) {
-      if (!walletLocked) onCreateWallet();
+      if (!walletLocked && !walletlessAction(mainnet).disabled) onCreateWallet();
       return;
     }
     if (needsTransfer) {
       setShowTransfer(true);
       return;
     }
-    if (noFunds && !grantAlreadyUsed && !noFaucet) {
+    if (noFunds && !grantAlreadyUsed && !noFaucet && offersTestFunds(mainnet)) {
       setFunding(true);
       setFundMessage(null);
       onFund()
@@ -618,7 +657,7 @@ export function OrderEntry({
   }
 
   const actionWord = isPerp ? (side === "buy" ? "long" : "short") : side === "buy" ? "buy" : "sell";
-  const submitLabel = `Place test ${actionWord}`;
+  const submitLabel = placeLabel(actionWord, mainnet);
 
   let primaryLabel = submitLabel;
   let primaryClass = side === "buy" ? btnSafe : btnDanger;
@@ -632,9 +671,14 @@ export function OrderEntry({
     primaryClass = btnGhost;
     primaryDisabled = true;
   } else if (!hasWallet) {
-    primaryLabel = "Create test wallet";
-    primaryClass = btnPrimary;
-    primaryDisabled = false;
+    const action = walletlessAction(mainnet);
+    primaryLabel = action.label;
+    primaryClass = action.disabled ? btnGhost : btnPrimary;
+    primaryDisabled = action.disabled;
+  } else if (gate) {
+    primaryLabel = tradeGateLabel(gate);
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (accountUnknown) {
     primaryLabel = accountError ? "Account unavailable" : "Loading account…";
     primaryClass = btnGhost;
@@ -666,14 +710,18 @@ export function OrderEntry({
     primaryLabel = "Enter quantity";
     primaryClass = btnGhost;
     primaryDisabled = true;
-  } else if (noFunds && noFaucet) {
-    primaryLabel = "No test funds on this deployment";
+  } else if (noFunds && !testCopy) {
+    primaryLabel = "No collateral to trade with";
     primaryClass = btnGhost;
     primaryDisabled = true;
-  } else if (noFunds) {
+  } else if (noFunds && testCopy && noFaucet) {
+    primaryLabel = testCopy.noFaucetLabel;
+    primaryClass = btnGhost;
+    primaryDisabled = true;
+  } else if (noFunds && testCopy) {
     // The size of a grant, and whether one exists at all, is the service's
     // to say: it is only known once asked, so the offer names no amount.
-    primaryLabel = "Get test funds";
+    primaryLabel = testCopy.getFundsLabel;
     primaryClass = btnPrimary;
     primaryDisabled = funding;
   } else if (!quantityText.trim()) {
@@ -700,6 +748,7 @@ export function OrderEntry({
           : "min-h-0 flex-1 overflow-y-auto"
       }`}
     >
+      {setup}
       <p className="text-ink-strong text-[13px] font-medium">
         Trade {market.id} · {market.kind === "perp" ? "Perpetual, cross margin" : "Spot"}
       </p>
@@ -740,6 +789,12 @@ export function OrderEntry({
           </button>
         ))}
       </div>
+      {sentAsIoc && (
+        <p className="text-faint text-[11px]">
+          Limit (fills now or cancels): resting orders are not open to every account yet, so any
+          part that cannot fill at once is cancelled.
+        </p>
+      )}
 
       <div>
         <div className="flex items-baseline justify-between">
@@ -838,7 +893,7 @@ export function OrderEntry({
         )}
       </div>
 
-      {supportsGoodFor && orderType === "limit" && (
+      {supportsGoodFor && orderType === "limit" && !sentAsIoc && (
         <div>
           <label className="text-faint text-[12px]" htmlFor="order-good-for">
             Good for
@@ -910,8 +965,9 @@ export function OrderEntry({
 
       {accountUnknown && accountError && (
         <p role="alert" className="text-danger text-[12px]">
-          Could not read your account, so your balance is unknown (not zero). Trading and test funds
-          are off until it loads. Reload the page to try again.
+          Could not read your account, so your balance is unknown (not zero). Trading
+          {testCopy ? testCopy.accountErrorLead : " is"} off until it loads. Reload the page to try
+          again.
         </p>
       )}
       {unknownHold && (
@@ -982,11 +1038,8 @@ export function OrderEntry({
           landed) retires it instead of leaving it under the button
           alongside a working order form (third design review, must-fix 2). */}
       {fundMessage && noFunds && <p className="text-warning text-[12px]">{fundMessage}</p>}
-      {noFaucet && noFunds && (
-        <p className="text-dim text-[12px]">
-          This deployment has no faucet, so it hands out no test funds. You can still follow the
-          market, its chart and its public fills here.
-        </p>
+      {noFaucet && noFunds && testCopy && (
+        <p className="text-dim text-[12px]">{testCopy.noFaucetNotice}</p>
       )}
 
       {showTransfer && onTransferToSpot && collateral && (
@@ -1007,6 +1060,47 @@ export function OrderEntry({
         </p>
       )}
 
+      {showAck &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Real money"
+            className="bg-base/80 fixed inset-0 z-20 flex items-center justify-center p-4"
+          >
+            <div className="bg-surface border-line-strong rounded-panel w-full max-w-sm border p-5">
+              <p className="text-ink-strong text-[14px] font-medium">This is real money</p>
+              <ul className="text-dim mt-2 flex list-disc flex-col gap-1 pl-4 text-[12px]">
+                {REAL_MONEY_STATEMENTS.map((statement) => (
+                  <li key={statement}>{statement}</li>
+                ))}
+              </ul>
+              <div className="mt-4 flex gap-3">
+                <button
+                  type="button"
+                  className={`${btnGhost} h-11 flex-1`}
+                  onClick={() => setShowAck(false)}
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  className={`${btnPrimary} h-11 flex-1`}
+                  onClick={() => {
+                    recordAcknowledgement(browserLocalStorage(), ownerAddress);
+                    setAckedThisVisit(true);
+                    setShowAck(false);
+                    setOpenAfterPrefill(true);
+                  }}
+                >
+                  I understand
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
       {showConfirm &&
         frozen &&
         // A portal to `document.body`, not an in-place `fixed inset-0`: nested
@@ -1025,7 +1119,13 @@ export function OrderEntry({
           >
             <div className="bg-surface border-line-strong rounded-panel w-full max-w-sm border p-5">
               <p className="text-ink-strong text-[14px] font-medium">
-                {frozen.draft.market} · {frozen.draft.type === "market" ? "Market" : "Limit"} ·{" "}
+                {frozen.draft.market} ·{" "}
+                {frozen.draft.type === "market"
+                  ? "Market"
+                  : limitSentAsIoc(frozen.draft.type, makersListed, frozen.draft.reduceOnly)
+                    ? "Limit (fills now or cancels)"
+                    : "Limit"}{" "}
+                ·{" "}
                 {isPerp
                   ? frozen.draft.side === "buy"
                     ? "Long"

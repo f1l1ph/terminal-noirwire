@@ -1,4 +1,5 @@
 import { formatClockTime, formatDecimal, formatDuration, isLocalNetwork } from "@/lib/format";
+import { isMainnetBuild } from "@/lib/network";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type { OpenOrder, Side } from "@/lib/trading/types";
 import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
@@ -145,9 +146,11 @@ export function WitnessRail({
   // Review 3, must-fix 5: a reused wallet that already has funds or a
   // position before this session's first order must be named as such, not
   // narrated as the result of the next order.
-  const existingAccountLabel = isLocalNetwork(network)
-    ? "Existing test account"
-    : `Existing ${network} test account`;
+  const existingAccountLabel = isMainnetBuild()
+    ? "Existing account"
+    : isLocalNetwork(network)
+      ? "Existing test account"
+      : `Existing ${network} test account`;
 
   if (!order || steps.length === 0) {
     return (

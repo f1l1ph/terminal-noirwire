@@ -59,6 +59,7 @@ import {
 import { priceDecimalsOf, sizeDecimalsOf } from "../market-data/precision";
 import { isStale, STALE_MARK_MS } from "../market-data/selectors";
 import { summarizeMargin, type PerpExposure } from "./accountMargin";
+import { wireOrderType } from "./orderType";
 import type {
   AccountReadOutcome,
   AccountStatus,
@@ -449,6 +450,16 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
+  async makersListedMarkets(wallet: WalletIdentity): Promise<ReadonlySet<string>> {
+    return this.withSession(wallet, async (session) => {
+      const listed = new Set<string>();
+      for (const [symbol, binding] of this.bindings(session)) {
+        if (this.isMainnet && session.makersListed?.has(binding.numericId)) listed.add(symbol);
+      }
+      return listed;
+    });
+  }
+
   /** The view as a fresh session reads it, which sees an account opened after the earlier session was built. */
   private async settledStatus(wallet: WalletIdentity): Promise<AccountStatus> {
     try {
@@ -647,7 +658,14 @@ export class RollupTradingClient implements TradingClient {
           binding.numericId,
           {
             side: SIDE_CODE[order.side],
-            orderType: ORDER_TYPE_CODE[order.type],
+            orderType:
+              ORDER_TYPE_CODE[
+                wireOrderType(
+                  order.type,
+                  this.isMainnet && !!session.makersListed?.has(binding.numericId),
+                  order.reduceOnly,
+                )
+              ],
             price,
             size,
             reduceOnly: !!order.reduceOnly,

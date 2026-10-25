@@ -17,6 +17,7 @@ import {
   ACCESS_ERROR as SDK_ACCESS_ERROR,
   Addresses,
   Instructions,
+  MARKET_ACCESS,
   MARKET_KIND,
   OrderInvalid as SdkOrderInvalid,
   OrderKeyManager,
@@ -291,7 +292,15 @@ export class TraderClient {
 
 /** The program's numeric codes this module's callers need, named for what they mean here. */
 export const SIDE_CODE = { buy: SIDE.bid, sell: SIDE.ask } as const;
-export const ORDER_TYPE_CODE = { market: ORDER_TYPE.market, limit: ORDER_TYPE.limit } as const;
+export const ORDER_TYPE_CODE = {
+  market: ORDER_TYPE.market,
+  limit: ORDER_TYPE.limit,
+  immediateOrCancel: ORDER_TYPE.immediateOrCancel,
+} as const;
+
+/** Whether a market's `params.access` has the maker list switched on: only listed seats may rest orders. */
+export const isMakersListed = (access: number): boolean =>
+  (access & MARKET_ACCESS.makersListed) !== 0;
 export const RESULT_STATUS_CODE = RESULT_STATUS;
 
 export function decodeExchangeAccount(data: Uint8Array) {

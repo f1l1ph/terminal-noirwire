@@ -22,6 +22,7 @@ import {
   decodeMarketAccount,
   freshOrderKeys,
   installOrderKeys,
+  isMakersListed,
   KEYS_NOT_FROM_SEED_MESSAGE,
   orderKeyPublicKeys,
   orderKeysFromCheckpoint,
@@ -89,6 +90,8 @@ export interface RollupSession {
   gate: PublicKey;
   /** Market id -> the oldest mark, in seconds, its account accepts an order against (`maxPriceAge`). A test fake may omit it. */
   maxPriceAgeSeconds?: ReadonlyMap<number, number>;
+  /** Ids of the markets whose account had the maker list switched on when this session was built. A test fake may omit it. */
+  makersListed?: ReadonlySet<number>;
   /** When the rollup sign-in token this session reads with lapses; the session is rebuilt before then. */
   tokenExpiresAtMs: number;
   /** Saves this session's current order-key checkpoint, for the next session to restore from. See checkpointStore.ts. */
@@ -189,6 +192,7 @@ function tokenIndicesBySymbol(
 interface MatchingMarkets {
   markets: PublicDeployment["markets"];
   maxPriceAgeSeconds: Map<number, number>;
+  makersListed: Set<number>;
 }
 
 /**
@@ -203,7 +207,11 @@ async function marketsMatchingChain(
   deployment: PublicDeployment,
   exchangeMints: readonly string[],
 ): Promise<MatchingMarkets> {
-  const matching: MatchingMarkets = { markets: [], maxPriceAgeSeconds: new Map() };
+  const matching: MatchingMarkets = {
+    markets: [],
+    maxPriceAgeSeconds: new Map(),
+    makersListed: new Set(),
+  };
   if (deployment.markets.length === 0) return matching;
   const addresses = programAddresses(programId);
   const accounts = await connection.getMultipleAccountsInfo(
@@ -221,6 +229,7 @@ async function marketsMatchingChain(
     if (!marketMatchesChain(market, chain, exchangeMints)) return;
     matching.markets.push(market);
     matching.maxPriceAgeSeconds.set(market.marketId, Number(chain.params.maxPriceAge));
+    if (isMakersListed(chain.params.access)) matching.makersListed.add(market.marketId);
   });
   return matching;
 }
@@ -466,6 +475,7 @@ async function buildSession(
     collateralToken: exchangeTokens.collateral,
     gate: exchangeTokens.gate,
     maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
+    makersListed: matching.makersListed,
     tokenExpiresAtMs: signedIn.expiresAtMs,
     saveKeyCheckpoint,
     close: () => client.close(),

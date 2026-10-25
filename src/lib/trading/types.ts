@@ -237,6 +237,8 @@ export interface TradingClient {
   openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome>;
   /** Whether the owner's account exists, read from its view. Optional: dev mode opens accounts lazily. */
   accountStatus?(wallet: WalletIdentity): Promise<AccountStatus>;
+  /** The symbols of the markets that currently let only listed makers rest orders, read from each market's account. Optional: dev mode has no such list. */
+  makersListedMarkets?(wallet: WalletIdentity): Promise<ReadonlySet<string>>;
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */
   subscribeOrderKeys?(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void;
   fund(wallet: WalletIdentity): Promise<FundOutcome>;

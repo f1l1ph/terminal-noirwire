@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Figtree } from "next/font/google";
 import { connection } from "next/server";
+import { isMainnetBuild } from "@/lib/network";
 import { StandardWalletProvider } from "@/lib/wallet/standardWallet";
 import "./globals.css";
 
@@ -12,7 +13,9 @@ const figtree = Figtree({
 
 export const metadata: Metadata = {
   title: "NoirWire terminal",
-  description: "A trading terminal for the NoirWire order book, on a test network.",
+  description: isMainnetBuild()
+    ? "A trading terminal for the NoirWire order book."
+    : "A trading terminal for the NoirWire order book, on a test network.",
   robots: { index: false, follow: false },
 };
 
