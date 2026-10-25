@@ -94,6 +94,8 @@ export interface RollupSession {
   maxPriceAgeSeconds?: ReadonlyMap<number, number>;
   /** Ids of the markets whose account had the maker list switched on when this session was built. A test fake may omit it. */
   makersListed?: ReadonlySet<number>;
+  /** Reads the market account now and says whether its maker list is on; throws when it cannot be read. A test fake may omit it. */
+  readMakersListed?: (marketId: number) => Promise<boolean>;
   /** When the rollup sign-in token this session reads with lapses; the session is rebuilt before then. */
   tokenExpiresAtMs: number;
   /** Saves this session's current order-key checkpoint, for the next session to restore from. See checkpointStore.ts. */
@@ -479,6 +481,11 @@ async function buildSession(
     gate: exchangeTokens.gate,
     maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
     makersListed: matching.makersListed,
+    readMakersListed: async (marketId) => {
+      const account = await reader.getAccountInfo(programAddresses(programId).market(marketId));
+      if (!account) throw new Error("the market account could not be read");
+      return isMakersListed(decodeMarketAccount(account.data).params.access);
+    },
     tokenExpiresAtMs: signedIn.expiresAtMs,
     saveKeyCheckpoint,
     close: () => client.close(),

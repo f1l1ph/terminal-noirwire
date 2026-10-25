@@ -85,7 +85,10 @@ const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".re
 
 async function sentOrderType(
   input: Partial<NewOrderInput>,
-  { mainnet, makersListed }: { mainnet: boolean; makersListed: boolean },
+  {
+    mainnet,
+    makersListed,
+  }: { mainnet: boolean; makersListed: boolean | "unreadable" | "switchedAfterBuild" },
 ): Promise<number> {
   const map = new Map<string, string>();
   const storage = {
@@ -117,7 +120,11 @@ async function sentOrderType(
     tokenIndexBySymbol: new Map(),
     collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
     gate: Keypair.generate().publicKey,
-    makersListed: new Set(makersListed ? [0] : []),
+    makersListed: new Set(makersListed === true ? [0] : []),
+    readMakersListed: async () => {
+      if (makersListed === "unreadable") throw new Error("account read failed");
+      return makersListed !== false;
+    },
     tokenExpiresAtMs: Number.MAX_SAFE_INTEGER,
     saveKeyCheckpoint: () => {},
     close: () => {},
@@ -156,6 +163,18 @@ describe("the order type that reaches the program", () => {
   it("sends a plain limit once the maker list is off", async () => {
     expect(await sentOrderType({}, { mainnet: true, makersListed: false })).toBe(
       ORDER_TYPE_CODE.limit,
+    );
+  });
+
+  it("forces immediate-or-cancel when the market switched after the session was built", async () => {
+    expect(await sentOrderType({}, { mainnet: true, makersListed: "switchedAfterBuild" })).toBe(
+      ORDER_TYPE_CODE.immediateOrCancel,
+    );
+  });
+
+  it("forces immediate-or-cancel when the market account cannot be read", async () => {
+    expect(await sentOrderType({}, { mainnet: true, makersListed: "unreadable" })).toBe(
+      ORDER_TYPE_CODE.immediateOrCancel,
     );
   });
 

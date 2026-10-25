@@ -457,11 +457,27 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
+  /**
+   * Whether the market's maker list is on right now, read from its account.
+   * On mainnet an order is sent as immediate-or-cancel whenever this is true
+   * or cannot be read, so a switch made after the session was built can
+   * never let a limit rest. Test builds do not ask.
+   */
+  private async makersListedNow(session: RollupSession, numericId: number): Promise<boolean> {
+    if (!this.isMainnet) return false;
+    try {
+      if (!session.readMakersListed) return true;
+      return await session.readMakersListed(numericId);
+    } catch {
+      return true;
+    }
+  }
+
   async makersListedMarkets(wallet: WalletIdentity): Promise<ReadonlySet<string>> {
     return this.withSession(wallet, async (session) => {
       const listed = new Set<string>();
       for (const [symbol, binding] of this.bindings(session)) {
-        if (this.isMainnet && session.makersListed?.has(binding.numericId)) listed.add(symbol);
+        if (await this.makersListedNow(session, binding.numericId)) listed.add(symbol);
       }
       return listed;
     });
@@ -633,6 +649,7 @@ export class RollupTradingClient implements TradingClient {
       if (!binding) throw new Error(`${order.market} was not found on chain`);
       const price = priceToChainAtoms(binding.units, order.price);
       const size = sizeToLots(binding.units, order.size);
+      const makersListedNow = await this.makersListedNow(session, binding.numericId);
       const secret = randomSecret();
       const expiry = expiryFor(order.goodFor, this.now);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
@@ -666,13 +683,7 @@ export class RollupTradingClient implements TradingClient {
           {
             side: SIDE_CODE[order.side],
             orderType:
-              ORDER_TYPE_CODE[
-                wireOrderType(
-                  order.type,
-                  this.isMainnet && !!session.makersListed?.has(binding.numericId),
-                  order.reduceOnly,
-                )
-              ],
+              ORDER_TYPE_CODE[wireOrderType(order.type, makersListedNow, order.reduceOnly)],
             price,
             size,
             reduceOnly: !!order.reduceOnly,

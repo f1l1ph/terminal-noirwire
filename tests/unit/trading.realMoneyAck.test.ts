@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acknowledgementKey,
   hasAcknowledged,
+  needsAcknowledgement,
   recordAcknowledgement,
 } from "@/lib/trading/realMoneyAck";
 import type { KeyValueStore } from "@/lib/wallet";
@@ -35,6 +36,20 @@ describe("real-money acknowledgement", () => {
     expect(hasAcknowledged(storage, "owner-a")).toBe(true);
     expect(hasAcknowledged(storage, "owner-b")).toBe(false);
     expect(acknowledgementKey("owner-a")).not.toBe(acknowledgementKey("owner-b"));
+  });
+
+  it("asks the next owner after another one accepted, even when storage keeps nothing", () => {
+    const forgetful: KeyValueStore = { ...memoryStore(), setItem: () => {} };
+    expect(needsAcknowledgement(forgetful, "owner-a", null)).toBe(true);
+    expect(needsAcknowledgement(forgetful, "owner-a", "owner-a")).toBe(false);
+    expect(needsAcknowledgement(forgetful, "owner-b", "owner-a")).toBe(true);
+  });
+
+  it("asks an owner who never accepted although another did in storage", () => {
+    const storage = memoryStore();
+    recordAcknowledgement(storage, "owner-a");
+    expect(needsAcknowledgement(storage, "owner-a", null)).toBe(false);
+    expect(needsAcknowledgement(storage, "owner-b", "owner-a")).toBe(true);
   });
 
   it("is shown again when storage throws", () => {

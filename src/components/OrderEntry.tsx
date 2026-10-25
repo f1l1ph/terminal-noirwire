@@ -16,7 +16,7 @@ import { isMainnetBuild } from "@/lib/network";
 import { browserLocalStorage } from "@/lib/wallet";
 import { limitSentAsIoc } from "@/lib/trading/orderType";
 import {
-  hasAcknowledged,
+  needsAcknowledgement,
   REAL_MONEY_STATEMENTS,
   recordAcknowledgement,
 } from "@/lib/trading/realMoneyAck";
@@ -225,7 +225,7 @@ export function OrderEntry({
   const [frozen, setFrozen] = useState<FrozenOrder | null>(null);
   const [openAfterPrefill, setOpenAfterPrefill] = useState(false);
   const [showAck, setShowAck] = useState(false);
-  const [ackedThisVisit, setAckedThisVisit] = useState(false);
+  const [ackedBy, setAckedBy] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const quantityInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
@@ -493,7 +493,7 @@ export function OrderEntry({
       setSubmitError(confirmBlocker);
       return;
     }
-    if (mainnet && !ackedThisVisit && !hasAcknowledged(browserLocalStorage(), ownerAddress)) {
+    if (mainnet && needsAcknowledgement(browserLocalStorage(), ownerAddress, ackedBy)) {
       setShowAck(true);
       return;
     }
@@ -1088,7 +1088,7 @@ export function OrderEntry({
                   className={`${btnPrimary} h-11 flex-1`}
                   onClick={() => {
                     recordAcknowledgement(browserLocalStorage(), ownerAddress);
-                    setAckedThisVisit(true);
+                    setAckedBy(ownerAddress);
                     setShowAck(false);
                     setOpenAfterPrefill(true);
                   }}

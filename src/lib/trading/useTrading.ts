@@ -327,6 +327,10 @@ export function useTrading(
           : performance.now() - clickedAt;
       addOwnTag(result.tag);
       setRollupSecrets(readRollupSecrets());
+      void client.makersListedMarkets?.(wallet).then(
+        (makersListed) => patchFlow(wallet.address, { makersListed }),
+        () => {},
+      );
       // Rollup mode pushes the state an order leaves behind with the result
       // itself; dev mode only polls, so it is asked once, without waiting.
       if (client.mode === "dev") {
@@ -338,7 +342,7 @@ export function useTrading(
       return { result, clientDurationMs };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- readRollupSecrets closes over wallet/client, already deps
-    [client, wallet, addOwnTag, setStateSynced],
+    [client, wallet, addOwnTag, setStateSynced, patchFlow],
   );
 
   const releaseUnknownOutcome = useCallback(

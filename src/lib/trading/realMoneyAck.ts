@@ -21,6 +21,20 @@ export function hasAcknowledged(storage: KeyValueStore | null, owner: string): b
   }
 }
 
+/**
+ * Whether this owner must be shown the notice before an order. `acceptedBy` is
+ * the owner who accepted during this visit; it counts for that owner only, so
+ * switching to another owner asks again.
+ */
+export function needsAcknowledgement(
+  storage: KeyValueStore | null,
+  owner: string,
+  acceptedBy: string | null,
+): boolean {
+  if (acceptedBy !== null && acceptedBy === owner) return false;
+  return !hasAcknowledged(storage, owner);
+}
+
 /** Remembers the acceptance for this owner. False when the browser would not keep it, in which case the notice returns on the next visit. */
 export function recordAcknowledgement(storage: KeyValueStore | null, owner: string): boolean {
   if (!storage || !owner) return false;

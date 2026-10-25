@@ -55,9 +55,19 @@ describe("tradeGate", () => {
     expect(tradeGate(true, "open", keys("ready"))).toBeNull();
   });
 
-  it("does not guess when the account or the keys are not known", () => {
-    expect(tradeGate(true, "unknown", null)).toBeNull();
-    expect(tradeGate(true, "open", null)).toBeNull();
+  it("fails closed when the account or the keys are not known", () => {
+    expect(tradeGate(true, "unknown", null)).toBe("accountUnknown");
+    expect(tradeGate(true, "unknown", keys("ready"))).toBe("accountUnknown");
+    expect(tradeGate(true, "open", null)).toBe("keysNotReady");
+  });
+
+  it("opens the gate for exactly one combination: open account, ready keys", () => {
+    const statuses = ["unknown", "absent", "open"] as const;
+    const states = [null, keys("settling"), keys("installing"), keys("ready")];
+    const open = statuses.flatMap((status) =>
+      states.filter((state) => tradeGate(true, status, state) === null).map(() => status),
+    );
+    expect(open).toEqual(["open"]);
   });
 
   it("never gates a test build", () => {

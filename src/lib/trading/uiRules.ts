@@ -43,13 +43,12 @@ export const walletlessDockText = (mainnet: boolean): string =>
 export const placeLabel = (actionWord: string, mainnet: boolean): string =>
   mainnet || !TEST_ONLY_COPY ? `Place ${actionWord}` : `${TEST_ONLY_COPY.placeVerb} ${actionWord}`;
 
-export type TradeGate = "needsAccount" | "keysNotReady";
+export type TradeGate = "needsAccount" | "accountUnknown" | "keysNotReady";
 
 /**
- * Why an order cannot be placed yet on a mainnet build: the account is not
- * open, or this device's order keys are still being set up. Null when
- * neither is known to be in the way (an unreadable account is a separate,
- * existing block).
+ * Why an order cannot be placed yet on a mainnet build. Fails closed: null
+ * only when the account is positively open and the order keys are ready;
+ * an unknown or unread state of either is a gate. Test builds are never gated.
  */
 export function tradeGate(
   mainnet: boolean,
@@ -58,9 +57,15 @@ export function tradeGate(
 ): TradeGate | null {
   if (!mainnet) return null;
   if (status === "absent") return "needsAccount";
-  if (keys && keys.stage !== "ready") return "keysNotReady";
+  if (status !== "open") return "accountUnknown";
+  if (!keys || keys.stage !== "ready") return "keysNotReady";
   return null;
 }
 
-export const tradeGateLabel = (gate: TradeGate): string =>
-  gate === "needsAccount" ? "Open your account to trade" : "Setting up trading keys…";
+const GATE_LABELS: Record<TradeGate, string> = {
+  needsAccount: "Open your account to trade",
+  accountUnknown: "Checking your account…",
+  keysNotReady: "Setting up trading keys…",
+};
+
+export const tradeGateLabel = (gate: TradeGate): string => GATE_LABELS[gate];
