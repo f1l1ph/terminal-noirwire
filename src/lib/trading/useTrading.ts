@@ -314,6 +314,7 @@ export function useTrading(
         outcome = { kind: "notSent", reason: redactToken(reason) };
       }
       const nowOpen = outcome.kind === "opened" || outcome.kind === "alreadyOpen";
+      if (nowOpen) statusReads.begin(wallet.address);
       patchFlow(wallet.address, {
         opening: false,
         outcome,
@@ -321,7 +322,7 @@ export function useTrading(
       });
       return outcome;
     },
-    [client, wallet, patchFlow],
+    [client, wallet, patchFlow, statusReads],
   );
 
   const rollupReader = useMemo(() => {
