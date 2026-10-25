@@ -18,7 +18,8 @@ import {
 } from "@/lib/transfer/operation";
 import { failureLine, outcomeLine, solText, type OutcomeLine } from "@/lib/transfer/outcomeCopy";
 import { PHASE_LINES, withProgress, type Phase } from "@/lib/transfer/progress";
-import { resumeRecord } from "@/lib/transfer/resume";
+import { returnToWallet } from "@/lib/transfer/returnToWallet";
+import { giveBack, resumeRecord } from "@/lib/transfer/resume";
 import { readTokenBalance } from "@/lib/transfer/solanaRpc";
 import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
 import { withdraw } from "@/lib/transfer/withdraw";
@@ -124,7 +125,7 @@ export default function FundsSection({
                 transfer,
                 attention,
                 latest.current.freeCollateral ?? 0n,
-                { deposit, withdraw },
+                { deposit, withdraw, returnToWallet },
                 QUOTE_DECIMALS,
               );
               if (outcome.status === "done") latest.current.onSettled();
@@ -135,6 +136,12 @@ export default function FundsSection({
                 QUOTE_DECIMALS,
                 resumed === "deposit" ? ROUND_TRIP_LAMPORTS : SOLANA_EXIT_LAMPORTS,
               ).text;
+            },
+            giveBack: async (attention, report) => {
+              const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
+              const outcome = await giveBack(transfer, attention, { returnToWallet });
+              if (outcome.status === "done") latest.current.onSettled();
+              return outcomeLine("withdraw", outcome, QUOTE_DECIMALS, SOLANA_EXIT_LAMPORTS).text;
             },
           }
         : null,

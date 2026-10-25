@@ -30,6 +30,7 @@ const record = (overrides: Partial<OperationRecord>): OperationRecord => ({
 const flows = () => ({
   deposit: vi.fn(async () => ({ status: "busy" as const })),
   withdraw: vi.fn(async () => ({ status: "busy" as const })),
+  returnToWallet: vi.fn(async () => ({ status: "busy" as const })),
 });
 
 describe("resuming an open record", () => {
@@ -87,8 +88,10 @@ describe("resuming an open record", () => {
     },
   );
 
-  it("offers no Resume for a return to the wallet", () => {
-    expect(actionsOf(attentionOf(record({ step: "return" }), null))).not.toContain("resume");
+  it("offers Resume, but not Return to wallet, for a return already begun", () => {
+    const actions = actionsOf(attentionOf(record({ step: "return" }), null));
+    expect(actions).toContain("resume");
+    expect(actions).not.toContain("return");
   });
 
   it("refuses to run a record that is not resumable", async () => {

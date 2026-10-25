@@ -17,6 +17,8 @@ export type ReturnOutcome = WithdrawOutcome;
 export interface ReturnInput {
   /** The operator's answer for a send that was asked about: `landed:<id>` or `lost:<id>`. */
   answer?: string;
+  /** The record this return is for, checked inside the lock: a screen gone stale in another tab sends nothing. */
+  intent?: { id: string; atoms: string };
 }
 
 const returnIdOf = (depositId: string) => `${depositId}.return`;
@@ -33,6 +35,12 @@ export function returnToWallet(env: TransferEnv, input: ReturnInput = {}): Promi
   return underLock(env, async () => {
     const owner = env.owner.toBase58();
     const current = currentRecord(await env.journal.unfinished(owner));
+    if (input.intent && (current?.id !== input.intent.id || current.atoms !== input.intent.atoms)) {
+      return refuse(
+        "record-changed",
+        "This transfer already finished or changed, perhaps in another tab. Nothing was sent.",
+      );
+    }
     if (current?.step === "return") {
       return shuttleToWallet(
         env,

@@ -17,10 +17,12 @@ export interface Attention {
   signature?: string;
   /** Whether the flow can carry this record on: not one that did not land, cannot be placed, is still settling on the rollup, or is a return. */
   resumable: boolean;
+  /** Whether the deposit's tokens may be taken back to the wallet: a deposit record with no rollup send still settling. */
+  returnable: boolean;
 }
 
 /** The actions a record may offer. A resend is never one of them: resuming runs the flow, which judges every earlier send first. */
-export type RecordAction = "copy-signature" | "dismiss" | "resume";
+export type RecordAction = "copy-signature" | "dismiss" | "resume" | "return";
 
 const operationOf = (record: OperationRecord): Attention["operation"] =>
   record.step === "return" ? "return" : record.kind;
@@ -41,17 +43,30 @@ export function attentionOf(record: OperationRecord, seat: SeatJudgement | null)
   const base = { id: record.id, operation, atoms: record.atoms };
   const pending = record.seat?.state === "pending" ? record.seat : undefined;
   if (pending && seat === "not-seen") {
-    return { ...base, kind: "not-landed", signature: pending.signature, resumable: false };
+    return {
+      ...base,
+      kind: "not-landed",
+      signature: pending.signature,
+      resumable: false,
+      returnable: false,
+    };
   }
   if (pending && seat === "unknown") {
-    return { ...base, kind: "unknown", signature: pending.signature, resumable: false };
+    return {
+      ...base,
+      kind: "unknown",
+      signature: pending.signature,
+      resumable: false,
+      returnable: false,
+    };
   }
   const settled = !pending || seat === "landed" || seat === "failed";
   return {
     ...base,
     kind: "waiting",
     signature: pending?.signature ?? lastSignature(record),
-    resumable: settled && operation !== "return",
+    resumable: settled,
+    returnable: settled && operation === "deposit",
   };
 }
 
@@ -60,6 +75,7 @@ export function actionsOf(attention: Attention): RecordAction[] {
   const actions: RecordAction[] = attention.signature ? ["copy-signature"] : [];
   if (attention.kind === "not-landed") actions.push("dismiss");
   if (attention.resumable) actions.push("resume");
+  if (attention.returnable) actions.push("return");
   return actions;
 }
 

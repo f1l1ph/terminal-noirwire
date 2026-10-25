@@ -103,7 +103,7 @@ export function outcomeLine(
     case "stranded":
       return {
         tone: "warn",
-        text: `Your USDC moved into the rollup but the deposit into your account was refused. It is safe in your rollup balance. Start the deposit again with the same amount to finish it.`,
+        text: `Your USDC moved into the rollup but the deposit into your account was refused. It is safe in your rollup balance. Under transfers that need attention, "Try the deposit again" puts it in your account, and "Return to wallet" sends it back to your wallet.`,
       };
   }
 }

@@ -21,6 +21,8 @@ export interface RecordsEngine {
   dismiss(): Promise<DismissOutcome>;
   /** Carries an open record on with its own flow and says in plain words how it ended. */
   resume(attention: Attention, report: (line: string) => void): Promise<string>;
+  /** Takes a deposit's tokens, or a return already begun, back to the wallet and says in plain words how it ended. */
+  giveBack(attention: Attention, report: (line: string) => void): Promise<string>;
 }
 
 const RELOAD_MS = 20_000;
@@ -113,12 +115,14 @@ export function TransferRecords({
   }, [engine]);
 
   const resume = useCallback(
-    async (item: Attention) => {
+    async (item: Attention, how: "resume" | "return") => {
       if (!engine) return;
       setBusy(true);
       setNote(null);
       try {
-        setNote(await engine.resume(item, setNote));
+        setNote(
+          await (how === "return" ? engine.giveBack(item, setNote) : engine.resume(item, setNote)),
+        );
       } catch (error) {
         const reason = error instanceof Error ? error.message : "something went wrong";
         setNote(`The transfer stopped: ${reason.replace(/\.?$/, ".")} Nothing is sent again.`);
@@ -158,6 +162,13 @@ export function TransferRecords({
             USDC
           </p>
           <p className="text-dim mt-1 text-[12px]">{KIND_COPY[item.kind]}</p>
+          {engine && item.returnable && (
+            <p className="text-dim mt-1 text-[12px]">
+              If your USDC already moved into the rollup, &quot;Try the deposit again&quot; puts it
+              in your account, and &quot;Return to wallet&quot; sends it back to your wallet. Either
+              one sends nothing that was already sent.
+            </p>
+          )}
           {!engine && (
             <p className="text-faint mt-1 text-[11px]">
               Transfers are switched off in this build, so nothing more can be done here.
@@ -179,15 +190,21 @@ export function TransferRecords({
                 >
                   Copy signature
                 </button>
-              ) : !engine ? null : action === "resume" ? (
+              ) : !engine ? null : action === "resume" || action === "return" ? (
                 <button
                   key={action}
                   type="button"
                   className={`${btnGhost} h-7 px-2 text-[11px]`}
                   disabled={busy}
-                  onClick={() => void resume(item)}
+                  onClick={() => void resume(item, action)}
                 >
-                  {busy ? "Working..." : "Resume"}
+                  {busy
+                    ? "Working..."
+                    : action === "return"
+                      ? "Return to wallet"
+                      : item.operation === "deposit"
+                        ? "Try the deposit again"
+                        : "Resume"}
                 </button>
               ) : (
                 <button

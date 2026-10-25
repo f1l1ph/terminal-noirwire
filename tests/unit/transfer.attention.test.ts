@@ -100,6 +100,58 @@ describe("which records offer Dismiss", () => {
   });
 });
 
+describe("no record is left without a way forward", () => {
+  const sends = [
+    {
+      signature: "sig",
+      lastValidBlockHeight: 10,
+      at: 1,
+      before: "0",
+      moved: "5000000",
+    },
+  ];
+  const judgements: Array<SeatJudgement | null> = [
+    null,
+    "landed",
+    "failed",
+    "pending",
+    "not-seen",
+    "unknown",
+  ];
+  const shapes: Array<[string, Partial<OperationRecord>]> = [
+    ["deposit, nothing sent", { kind: "deposit", step: "deposit" }],
+    ["deposit, move sent", { kind: "deposit", step: "deposit", sends }],
+    ["deposit, seat send pending", { kind: "deposit", step: "deposit", sends, seat: pendingSeat }],
+    ["withdraw, nothing sent", { kind: "withdraw" }],
+    ["withdraw, seat send pending", { kind: "withdraw", seat: pendingSeat }],
+    ["withdraw, exit sent", { kind: "withdraw", sends }],
+    ["return, exit sent", { kind: "withdraw", step: "return", sends }],
+  ];
+  const forward = ["resume", "return", "dismiss"];
+
+  it.each(shapes.flatMap(([name, shape]) => judgements.map((j) => [name, shape, j] as const)))(
+    "%s judged %s has a way forward, or only time or support can settle it",
+    (_name, shape, judgement) => {
+      const attention = attentionOf(record(shape), judgement);
+      const actions = actionsOf(attention);
+      const settlesByTime = attention.kind === "waiting" && record(shape).seat?.state === "pending";
+      const needsSupport = attention.kind === "unknown";
+      expect(
+        actions.some((action) => forward.includes(action)) || settlesByTime || needsSupport,
+      ).toBe(true);
+    },
+  );
+
+  it("offers Return to wallet only for a deposit that is not still settling", () => {
+    const returnable = shapes.flatMap(([name, shape]) =>
+      judgements
+        .filter((j) => attentionOf(record(shape), j).returnable)
+        .map(() => name.split(",")[0]),
+    );
+    expect(new Set(returnable)).toEqual(new Set(["deposit"]));
+  });
+});
+
 describe("no path offers a resend", () => {
   const everyKind: AttentionKind[] = ["waiting", "not-landed", "unknown"];
 
@@ -112,9 +164,10 @@ describe("no path offers a resend", () => {
         atoms: "1",
         signature: "s",
         resumable: true,
+        returnable: true,
       });
       for (const action of actions) {
-        expect(["copy-signature", "dismiss", "resume"]).toContain(action);
+        expect(["copy-signature", "dismiss", "resume", "return"]).toContain(action);
       }
     }
   });
@@ -124,10 +177,11 @@ describe("no path offers a resend", () => {
 
   it("keeps every UI file away from the calls that send a transaction", () => {
     const forbidden =
-      /sendRawTransaction|sendJournaled|sentOnRollup|signedAndRecordedOnRollup|recordThenBroadcast|returnToWallet|shuttleToWallet/;
+      /sendRawTransaction|sendJournaled|sentOnRollup|signedAndRecordedOnRollup|recordThenBroadcast|shuttleToWallet/;
     for (const file of ["TransferRecords.tsx", "FundsSection.tsx"]) {
       expect(read("components", file)).not.toMatch(forbidden);
     }
+    expect(read("components", "TransferRecords.tsx")).not.toMatch(/returnToWallet/);
     expect(read("lib", "transfer", "attention.ts")).not.toMatch(forbidden);
   });
 
@@ -144,6 +198,7 @@ describe("no path offers a resend", () => {
         "outcomeCopy",
         "progress",
         "resume",
+        "returnToWallet",
         "solanaRpc",
         "tokenAccounts",
         "withdraw",
