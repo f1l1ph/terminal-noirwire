@@ -26,7 +26,12 @@ export interface SentRecord {
 }
 
 /** The seat's withdrawal into the rollup, with the owner's rollup balance before it, in atoms as decimal text. */
-export type SeatSend = SentRecord & { before: string };
+export type SeatSend = SentRecord & {
+  before: string;
+  /** The rollup transaction's signature and the last block height of its blockhash, written before it was sent, so a later read can prove it can no longer land. */
+  signature?: string;
+  lastValidBlockHeight?: number;
+};
 
 export interface ExitOperation {
   id: string;
