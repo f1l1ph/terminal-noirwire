@@ -38,8 +38,13 @@ const lastSignature = (record: OperationRecord): string | undefined =>
  * send, or null when none was made (no pending send, or transfers are off in
  * this build, where nothing can be judged).
  */
-export function attentionOf(record: OperationRecord, seat: SeatJudgement | null): Attention {
+export function attentionOf(
+  record: OperationRecord,
+  seat: SeatJudgement | null,
+  all: readonly OperationRecord[] = [],
+): Attention {
   const operation = operationOf(record);
+  const behindReturn = all.some((other) => other.id === `${record.id}.return`);
   const base = { id: record.id, operation, atoms: record.atoms };
   const pending = record.seat?.state === "pending" ? record.seat : undefined;
   if (pending && seat === "not-seen") {
@@ -65,8 +70,9 @@ export function attentionOf(record: OperationRecord, seat: SeatJudgement | null)
     ...base,
     kind: "waiting",
     signature: pending?.signature ?? lastSignature(record),
-    resumable: settled,
-    returnable: settled && operation === "deposit",
+    resumable: settled && !behindReturn,
+    returnable:
+      settled && operation === "deposit" && !behindReturn && record.seat?.state !== "landed",
   };
 }
 

@@ -122,6 +122,10 @@ describe("no record is left without a way forward", () => {
     ["deposit, nothing sent", { kind: "deposit", step: "deposit" }],
     ["deposit, move sent", { kind: "deposit", step: "deposit", sends }],
     ["deposit, seat send pending", { kind: "deposit", step: "deposit", sends, seat: pendingSeat }],
+    [
+      "deposit, seat landed",
+      { kind: "deposit", step: "deposit", sends, seat: { ...pendingSeat, state: "landed" } },
+    ],
     ["withdraw, nothing sent", { kind: "withdraw" }],
     ["withdraw, seat send pending", { kind: "withdraw", seat: pendingSeat }],
     ["withdraw, exit sent", { kind: "withdraw", sends }],
@@ -141,6 +145,27 @@ describe("no record is left without a way forward", () => {
       ).toBe(true);
     },
   );
+
+  it("offers a deposit that already landed in the seat only to finish, never to return", () => {
+    const landed = record({
+      kind: "deposit",
+      step: "deposit",
+      sends,
+      seat: { ...pendingSeat, state: "landed" },
+    });
+    expect(actionsOf(attentionOf(landed, null, [landed]))).toContain("resume");
+    expect(actionsOf(attentionOf(landed, null, [landed]))).not.toContain("return");
+  });
+
+  it("offers a deposit behind a return in progress nothing but its signature; the return carries on", () => {
+    const deposited = record({ id: "d1", kind: "deposit", step: "deposit", sends });
+    const returning = record({ id: "d1.return", kind: "withdraw", step: "return", sends });
+    const all = [deposited, returning];
+    const behind = actionsOf(attentionOf(deposited, null, all));
+    expect(behind).not.toContain("resume");
+    expect(behind).not.toContain("return");
+    expect(actionsOf(attentionOf(returning, null, all))).toContain("resume");
+  });
 
   it("offers Return to wallet only for a deposit that is not still settling", () => {
     const returnable = shapes.flatMap(([name, shape]) =>

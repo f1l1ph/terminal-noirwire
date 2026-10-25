@@ -79,7 +79,7 @@ export function TransferRecords({
             ? await engine.judge(records).catch(() => ({}) as Record<string, SeatJudgement>)
             : {};
         if (!active) return;
-        setItems(records.map((record) => attentionOf(record, judged[record.id] ?? null)));
+        setItems(records.map((record) => attentionOf(record, judged[record.id] ?? null, records)));
         setUnreadable(false);
         onBlocked?.(newTransferBlocked(records.length, false));
       } catch {
