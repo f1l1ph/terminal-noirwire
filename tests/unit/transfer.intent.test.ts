@@ -96,6 +96,60 @@ describe("a stale resume", () => {
   });
 });
 
+describe("a resume whose record is cleaned up on the way", () => {
+  /** A deposit that is done and confirmed, whose record stays until its send is finalized. */
+  async function confirmedDeposit() {
+    const world = makeWorld();
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.rollup.script({ fate: "swallow" });
+    await deposit(world.env, { amount: AMOUNT });
+    const signature = world.rollup.sent[0];
+    world.rollup.statuses.set(signature, { err: null, confirmationStatus: "confirmed" });
+    await deposit(world.env, { amount: AMOUNT });
+    expect(world.rows.size).toBe(1);
+    return { world, signature };
+  }
+
+  it("sends nothing when a deposit finalized between render and click", async () => {
+    const { world, signature } = await confirmedDeposit();
+    world.rollup.statuses.set(signature, { err: null, confirmationStatus: "finalized" });
+    const sentBefore = [world.solana.sent.length, world.rollup.sent.length];
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    const outcome = await deposit(world.env, {
+      amount: AMOUNT,
+      intent: { kind: "resume", id: [...world.rows.values()][0].id, atoms: ATOMS.toString() },
+    });
+    expect(outcome).toMatchObject({ status: "refused", reason: "record-changed" });
+    expect([world.solana.sent.length, world.rollup.sent.length]).toEqual(sentBefore);
+    expect(world.rows.size).toBe(0);
+  });
+
+  it("sends nothing when a withdrawal was closed between render and click", async () => {
+    const world = readyToWithdraw();
+    await openRecord(world, true);
+    await world.env.journal.finish(world.owner, "old");
+    const outcome = await withdraw(world.env, {
+      amount: AMOUNT,
+      freeCollateral: 10n * USDC,
+      intent: resume,
+    });
+    expect(outcome).toMatchObject({ status: "refused", reason: "record-changed" });
+    expect(world.solana.sent).toEqual([]);
+    expect(world.rollup.sent).toEqual([]);
+    expect(world.rows.size).toBe(0);
+  });
+
+  it("still lets a transfer with no resume intent start after the cleanup", async () => {
+    const { world, signature } = await confirmedDeposit();
+    world.rollup.statuses.set(signature, { err: null, confirmationStatus: "finalized" });
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
+    const outcome = await deposit(world.env, { amount: AMOUNT });
+    expect(outcome).toMatchObject({ status: "done" });
+    expect(world.solana.sent).toHaveLength(2);
+  });
+});
+
 describe("a new transfer after a record appeared", () => {
   it("is refused, sending nothing, when a record appeared since the form was shown", async () => {
     const world = readyToWithdraw();

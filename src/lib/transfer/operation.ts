@@ -313,6 +313,7 @@ export async function beginOperation(
   env: TransferEnv,
   method: "deposit" | "withdraw",
   atoms: bigint,
+  resumeId?: string,
 ): Promise<{ id: string; record: OperationRecord | null } | Refused> {
   const owner = env.owner.toBase58();
   for (const done of await env.journal.unfinished(owner)) {
@@ -321,6 +322,12 @@ export async function beginOperation(
     }
   }
   const current = currentRecord(await env.journal.unfinished(owner));
+  if (resumeId !== undefined && current?.id !== resumeId) {
+    return refuse(
+      "record-changed",
+      "This transfer already finished, perhaps in another tab. Nothing was sent.",
+    );
+  }
   let operation: ExitOperation;
   try {
     operation = exitOperation(current ? asExitOperation(owner, current) : null, {

@@ -337,7 +337,12 @@ export function withdraw(env: TransferEnv, input: WithdrawInput): Promise<Withdr
     }
     const stale = await intentRefusal(env, "withdraw", input.intent);
     if (stale) return stale;
-    const begun = await beginOperation(env, "withdraw", atoms);
+    const begun = await beginOperation(
+      env,
+      "withdraw",
+      atoms,
+      input.intent?.kind === "resume" ? input.intent.id : undefined,
+    );
     if ("status" in begun) return begun;
     const { id, record } = begun;
     const solanaStepSent = movingSends(record ?? undefined).length > 0;

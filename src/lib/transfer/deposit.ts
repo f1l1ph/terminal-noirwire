@@ -263,7 +263,12 @@ export function deposit(env: TransferEnv, input: DepositInput): Promise<DepositO
     }
     const stale = await intentRefusal(env, "deposit", input.intent);
     if (stale) return stale;
-    const begun = await beginOperation(env, "deposit", atoms);
+    const begun = await beginOperation(
+      env,
+      "deposit",
+      atoms,
+      input.intent?.kind === "resume" ? input.intent.id : undefined,
+    );
     if ("status" in begun) return begun;
     if (!begun.record) {
       const gate = await depositRefusal(env, atoms);
