@@ -1,14 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import {
-  formatDecimal,
-  formatMoney,
-  formatPercent,
-  formatRelativeAge,
-  UNAVAILABLE,
-} from "@/lib/format";
+import { formatDecimal, formatMoney, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import type { MarketInfo } from "@/lib/market-data/types";
@@ -30,7 +24,18 @@ import {
 } from "@/lib/trading/uiRules";
 import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
-import { maxOrderSize, orderFunds } from "@/lib/trading/sizing";
+import { orderFunds } from "@/lib/trading/sizing";
+import {
+  amountForPercent,
+  displayBase,
+  estimateLiquidation,
+  LEVERAGE_STEP,
+  leverageLabel,
+  maxAmount,
+  maxSpotSellAmount,
+  parseAmount,
+  sizeFromAmount,
+} from "@/lib/trading/ticketSizing";
 import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
@@ -50,7 +55,7 @@ import type {
   SpotAssets,
 } from "@/lib/trading/types";
 import type { OrderDescriptor } from "@/components/WitnessRail";
-import { OrderSummary } from "@/components/OrderSummary";
+import { OrderSummary, type SummaryRow } from "@/components/OrderSummary";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 import {
   btnDanger,
@@ -61,12 +66,28 @@ import {
   rangeBrand,
 } from "@/components/ui/styles";
 
-const PERCENT_SHORTCUTS = [25, 50, 75, 100];
+const PERCENT_SHORTCUTS = [25, 50, 100];
 const GOOD_FOR_OPTIONS = [
   { value: "untilCancelled", label: "Until cancelled" },
   { value: "1m", label: "1 minute" },
   { value: "1h", label: "1 hour" },
 ] as const;
+
+type ReasonTone = "neutral" | "warning" | "error";
+
+const REASON_TONE_CLASS: Record<ReasonTone, string> = {
+  neutral: "text-dim",
+  warning: "text-warning",
+  error: "text-danger",
+};
+
+function fixedPointOrZero(text: string): bigint {
+  try {
+    return toFixedPoint(text);
+  } catch {
+    return 0n;
+  }
+}
 
 /**
  * A dock row's "Close" (reduce-only, full size, submits through the usual
@@ -92,9 +113,8 @@ interface FrozenOrder {
   leverage: number;
   /** The price field held a typed price, not the default that follows the mark. */
   priceTyped: boolean;
-  /** The figures the dialog's summary shows, fixed with the order so they cannot drift from the reviewed cost. */
-  estimateDisplay: ComponentProps<typeof OrderSummary>["display"];
-  remainingAvailable: string | null;
+  /** The rows the dialog's summary shows, fixed with the order so they cannot drift from the reviewed cost. */
+  summaryRows: SummaryRow[] | null;
 }
 
 export function OrderEntry({
@@ -181,12 +201,7 @@ export function OrderEntry({
   prefillRequest?: PrefillRequest | null;
   /** The balance names of this spot market's two tokens, as the venue's own deployment description gives them. Absent for a perp and in dev mode, where the market's own base and quote names are the balance names. */
   spotAssets?: SpotAssets;
-  /**
-   * Phone only: leverage and the full cost breakdown collapse behind a
-   * disclosure, off by default, so the primary action lands in the first
-   * viewport alongside side, quantity and available balance (second design
-   * review, item 10) - nothing is removed, it is one tap away.
-   */
+  /** Phone only: the ticket sits in the page flow in a card instead of filling a scrolling panel. */
   compact?: boolean;
   /** The connected owner's address; the real-money acknowledgement is remembered under it. Empty with no wallet. */
   ownerAddress: string;
@@ -202,10 +217,11 @@ export function OrderEntry({
   const isPerp = market?.kind === "perp";
   const [side, setSide] = useState<Side>("buy");
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
-  const [quantityText, setQuantityText] = useState("");
+  const [amountText, setAmountText] = useState("");
+  // A size typed (or prefilled by a dock Close/Reduce) in the market's own
+  // units; while set, it replaces the size derived from amount and leverage.
+  const [quantityOverride, setQuantityOverride] = useState<string | null>(null);
   const [priceOverride, setPriceOverride] = useState<string | null>(null);
-  const [quantityTouched, setQuantityTouched] = useState(false);
-  const [priceTouched, setPriceTouched] = useState(false);
   const [leverage, setLeverage] = useState(1);
   const [reduceOnly, setReduceOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -221,13 +237,12 @@ export function OrderEntry({
   const confirmingFundTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
-  const [showDetails, setShowDetails] = useState(!compact);
   const [frozen, setFrozen] = useState<FrozenOrder | null>(null);
   const [openAfterPrefill, setOpenAfterPrefill] = useState(false);
   const [showAck, setShowAck] = useState(false);
   const [ackedBy, setAckedBy] = useState<string | null>(null);
   const submittingRef = useRef(false);
-  const quantityInputRef = useRef<HTMLInputElement>(null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
   const appliedPrefillIdRef = useRef<number | null>(null);
 
@@ -245,10 +260,9 @@ export function OrderEntry({
     appliedPrefillIdRef.current = prefillRequest.requestId;
     setOrderType("market");
     setSide(prefillRequest.side);
-    setQuantityText(prefillRequest.size);
-    setQuantityTouched(true);
+    setQuantityOverride(prefillRequest.size);
+    setAmountText("");
     setPriceOverride(null);
-    setPriceTouched(false);
     setReduceOnly(prefillRequest.reduceOnly);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (prefillRequest.submit) setOpenAfterPrefill(true);
@@ -278,6 +292,7 @@ export function OrderEntry({
   const priceText = priceOverride ?? defaultBoundPrice;
 
   const baseUnit = spotAssets?.base ?? market?.base ?? "";
+  const baseName = displayBase(baseUnit);
   const quoteUnit = spotAssets?.quote ?? quoteSymbol;
   const money = (value: string) => formatMoney(value, quoteUnit);
   const quoteBalance = balances[quoteUnit];
@@ -312,28 +327,45 @@ export function OrderEntry({
   const [showTransfer, setShowTransfer] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const reduceOnlyMax = useMemo(() => {
-    if (!isPerp || !reduceOnly || !position) return undefined;
-    const size = Number(position.size);
-    const sameSign = (side === "buy" && size < 0) || (side === "sell" && size > 0);
-    return sameSign ? String(Math.abs(size)) : "0";
-  }, [isPerp, reduceOnly, position, side]);
+  const isSpotSell = !isPerp && side === "sell";
+  const effectiveLeverage =
+    isPerp && market ? Math.min(Math.max(leverage, 1), market.maxLeverage) : 1;
+  // The price the amount is sized at: the mark for a market order, the typed
+  // price for a limit. The price field's value on a market order is only the
+  // worst-case bound the order may fill at.
+  const referencePrice = orderType === "market" ? (mark?.price ?? "") : priceText;
 
-  const maxQuantity = useMemo(() => {
-    if (!market) return "0";
-    return maxOrderSize({
-      mode: market.kind,
-      side,
-      price: priceText || mark?.price || "0",
-      lotSize: market.lotSize,
+  const derivedQuantity = market
+    ? sizeFromAmount({
+        amount: amountText,
+        leverage: effectiveLeverage,
+        price: referencePrice,
+        lotSize: market.lotSize,
+      })
+    : "";
+  const quantityText = quantityOverride ?? derivedQuantity;
+
+  const maxAmountText = useMemo(() => {
+    if (!market || !referencePrice) return "0.00";
+    if (isSpotSell) return maxSpotSellAmount(availableBase, referencePrice);
+    return maxAmount({
+      available: availableQuote,
+      leverage: effectiveLeverage,
       // The venue's margin requirement is always the market's fixed ratio
-      // (maxLeverage), never the leverage slider's value; see `orderFunds`.
-      leverage: market.maxLeverage,
-      availableQuote,
-      availableBase,
-      reduceOnlyMax,
+      // (maxLeverage); the slider only sizes the position, see `orderFunds`.
+      maxLeverage: market.maxLeverage,
+      boundPrice: priceText || referencePrice,
+      refPrice: referencePrice,
     });
-  }, [market, side, priceText, mark, availableQuote, availableBase, reduceOnlyMax]);
+  }, [
+    market,
+    referencePrice,
+    isSpotSell,
+    availableBase,
+    availableQuote,
+    effectiveLeverage,
+    priceText,
+  ]);
 
   const sentAsIoc = limitSentAsIoc(orderType, makersListed, isPerp && reduceOnly);
   const draft: NewOrderInput | null = market
@@ -349,29 +381,21 @@ export function OrderEntry({
     : null;
 
   const validation = market && draft ? validateOrder(draft, market, mark, now) : null;
-  const quantityError =
-    quantityTouched && validation?.errors.quantity
-      ? describeFieldError(validation.errors.quantity, { ...market!, base: baseUnit })
-      : null;
-  const priceError =
-    priceTouched && validation?.errors.price
-      ? describeFieldError(validation.errors.price, market!)
-      : null;
 
   const estimate = useMemo(() => {
-    if (!market || !priceText || !quantityText.trim()) return null;
+    if (!market || !referencePrice || !quantityText.trim()) return null;
     try {
       return estimateOrderCost({
         side,
         quantity: quantityText,
-        price: priceText,
-        leverage: isPerp ? leverage : 1,
+        price: referencePrice,
+        leverage: isPerp ? market.maxLeverage : 1,
         maxLeverage: market.maxLeverage,
       });
     } catch {
       return null;
     }
-  }, [market, priceText, quantityText, side, leverage, isPerp]);
+  }, [market, referencePrice, quantityText, side, isPerp]);
 
   const estimateDisplay = market && estimate ? displayOrderCost(estimate, priceDecimals) : null;
 
@@ -392,14 +416,59 @@ export function OrderEntry({
     }
   }, [market, priceText, quantityText, side, availableQuote, availableBase]);
 
-  const remainingAvailable = funds
-    ? fromFixedPoint(toFixedPoint(availableQuote) - funds.requiredQuote, 6)
-    : availableQuote;
+  const leftAvailable =
+    funds && !funds.shortfall && !isSpotSell
+      ? fromFixedPoint(toFixedPoint(availableQuote) - funds.requiredQuote, 2)
+      : null;
+
+  const summaryRows: SummaryRow[] | null = estimateDisplay
+    ? [
+        {
+          label: "Position size",
+          value: `${formatDecimal(quantityText, sizeDecimals)} ${baseName} · ${money(estimateDisplay.notional)}`,
+        },
+        ...(isPerp ? [{ label: "Margin used", value: money(estimateDisplay.initialMargin) }] : []),
+        { label: "Fee", value: money(estimateDisplay.fee) },
+        ...(orderType === "market" && priceText
+          ? [
+              {
+                label: side === "buy" ? "Fills up to" : "Fills down to",
+                value: `${formatDecimal(priceText, priceDecimals)} ${quoteUnit}`.trim(),
+              },
+            ]
+          : []),
+        ...(leftAvailable !== null
+          ? [{ label: "Left available", value: money(leftAvailable) }]
+          : []),
+      ]
+    : null;
+
+  const noOtherPosition = !position || Number(position.size) === 0;
+  const liquidation =
+    isPerp && noOtherPosition && !reduceOnly && !availableUnknown && quantityText.trim()
+      ? estimateLiquidation({
+          side,
+          quantity: quantityText,
+          entryPrice: referencePrice,
+          collateral: availableQuote,
+          priceDecimals,
+        })
+      : null;
+
   const shortfall = funds?.shortfall ?? null;
   const unaffordable = shortfall !== null;
   const staleBlock = markStale;
 
-  const isSpotSell = !isPerp && side === "sell";
+  const amountEntered = amountText.trim() !== "";
+  const amountValue = parseAmount(amountText);
+  const amountInvalid = quantityOverride === null && amountEntered && amountValue === null;
+  const amountOverAvailable =
+    quantityOverride === null &&
+    amountValue !== null &&
+    amountValue > (isSpotSell ? fixedPointOrZero(maxAmountText) : fixedPointOrZero(availableQuote));
+  const amountTooSmall =
+    quantityOverride === null && amountValue !== null && derivedQuantity === "";
+
   const accountUnknown = hasWallet && (!!accountError || !accountLoaded);
   const noFunds =
     hasWallet &&
@@ -434,6 +503,7 @@ export function OrderEntry({
     !noFunds &&
     !!market &&
     !!validation?.valid &&
+    !amountOverAvailable &&
     !unaffordable &&
     !staleBlock &&
     !submitting &&
@@ -447,20 +517,78 @@ export function OrderEntry({
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
     if (availableUnknown) return "Available collateral is unavailable until the price updates.";
     if (validation?.errors.quantity) {
-      return describeFieldError(validation.errors.quantity, { ...market, base: baseUnit });
+      return describeFieldError(validation.errors.quantity, { ...market, base: baseName });
     }
     if (validation?.errors.price) return describeFieldError(validation.errors.price, market);
     if (staleBlock) return "Market data is too old. Wait for a fresh mark.";
+    if (amountOverAvailable) return "Your amount is more than your available balance.";
     if (unaffordable) return "Your available balance no longer covers this order.";
     if (placeOrderPending) return "An order is still being checked with the venue.";
     return canSubmit ? null : "This order cannot be placed right now.";
+  })();
+
+  /** The one line that says why the order button is off, only while the form itself is what is missing. */
+  const reason: { text: string; tone: ReasonTone } | null = (() => {
+    if (!market || !validation) return null;
+    if (!hasWallet || gate || accountUnknown || availableUnknown) return null;
+    if (unknownHold || placeOrderPending || needsTransfer) return null;
+    if (noFunds) {
+      if (!testCopy) return { text: `Deposit ${quoteUnit || "funds"} to trade`, tone: "neutral" };
+      return grantAlreadyUsed ? { text: "No funds left to trade with", tone: "neutral" } : null;
+    }
+    if (staleBlock) {
+      return {
+        text: `The price is ${markAge !== null ? formatRelativeAge(markAge) : "too"} old. Waiting for a fresh one.`,
+        tone: "warning",
+      };
+    }
+    if (orderType === "market" && !priceText) {
+      return { text: "Waiting for the current price", tone: "neutral" };
+    }
+    if (quantityOverride !== null) {
+      if (validation.errors.quantity) {
+        return {
+          text: describeFieldError(validation.errors.quantity, { ...market, base: baseName }),
+          tone: "error",
+        };
+      }
+    } else if (!amountEntered) {
+      return { text: "Enter an amount", tone: "neutral" };
+    } else if (amountInvalid) {
+      return { text: "Enter an amount like 25.00", tone: "error" };
+    } else if (amountOverAvailable) {
+      return {
+        text: isSpotSell
+          ? `You hold ${formatDecimal(availableBase, sizeDecimals)} ${baseName}`
+          : `More than your available ${money(availableQuote)}`,
+        tone: "error",
+      };
+    } else if (amountTooSmall) {
+      return {
+        text: `Too small to trade. The minimum is ${market.lotSize} ${baseName}`,
+        tone: "error",
+      };
+    }
+    if (validation.errors.price) {
+      return { text: describeFieldError(validation.errors.price, market), tone: "error" };
+    }
+    if (shortfall) {
+      return {
+        text:
+          shortfall.asset === "base"
+            ? `You hold ${formatDecimal(shortfall.available, sizeDecimals)} ${baseName}; this sells ${formatDecimal(shortfall.needed, sizeDecimals)}`
+            : `Needs up to ${money(shortfall.needed)} for margin and fees, you have ${money(shortfall.available)}. Lower the amount or leverage`,
+        tone: "error",
+      };
+    }
+    return null;
   })();
 
   /** What the dialog will freeze: the exact signed fields and the worst case the order can cost. */
   function freezeOrder(): FrozenOrder | null {
     if (!draft || !market || !mark) return null;
     const worstCost = isSpotSell
-      ? `${formatDecimal(quantityText, sizeDecimals)} ${baseUnit} sold`
+      ? `${formatDecimal(quantityText, sizeDecimals)} ${baseName} sold`
       : funds
         ? `${money(fromFixedPoint(funds.requiredQuote, 6))} including fee${isPerp ? " and margin" : ""}`
         : UNAVAILABLE;
@@ -480,10 +608,9 @@ export function OrderEntry({
       },
       markPrice: mark.price,
       worstCost,
-      leverage,
+      leverage: effectiveLeverage,
       priceTyped: priceOverride !== null,
-      estimateDisplay,
-      remainingAvailable,
+      summaryRows,
     };
   }
 
@@ -558,16 +685,15 @@ export function OrderEntry({
       const outcome = await placeOrder(submitted);
       onOrderPlaced(outcome, descriptor);
       if (outcome.result.status !== "rejected") {
-        setQuantityText("");
-        setQuantityTouched(false);
+        setAmountText("");
+        setQuantityOverride(null);
         setPriceOverride(null);
-        setPriceTouched(false);
       }
       // The panel must always start at its top (the side/type buttons were
       // found scrolled out of view after a fill in the second-pass review):
       // a fill grows the summary above the button, which can leave the
       // scroll position mid-panel on the next render.
-      containerRef.current?.scrollTo({ top: 0 });
+      containerRef.current?.parentElement?.scrollTo({ top: 0 });
     } catch (error) {
       if (error instanceof OrderOutcomeUnknownError) {
         onOrderUnknown(descriptor, error.hold);
@@ -581,7 +707,7 @@ export function OrderEntry({
   }
 
   function focusFirstInvalid() {
-    if (validation?.errors.quantity) quantityInputRef.current?.focus();
+    if (!quantityText || validation?.errors.quantity) amountInputRef.current?.focus();
     else if (validation?.errors.price) priceInputRef.current?.focus();
   }
 
@@ -626,8 +752,6 @@ export function OrderEntry({
         .finally(() => setFunding(false));
       return;
     }
-    setQuantityTouched(true);
-    setPriceTouched(true);
     if (!canSubmit) {
       focusFirstInvalid();
       return;
@@ -646,6 +770,17 @@ export function OrderEntry({
     void runSubmit(frozen);
   }
 
+  function toggleReduceOnly(checked: boolean) {
+    setReduceOnly(checked);
+    if (!checked) {
+      setQuantityOverride(null);
+      return;
+    }
+    const open = Number(position?.size ?? 0);
+    const closes = (side === "buy" && open < 0) || (side === "sell" && open > 0);
+    setQuantityOverride(closes ? String(Math.abs(open)) : "");
+  }
+
   if (!market) {
     return (
       <div
@@ -656,8 +791,10 @@ export function OrderEntry({
     );
   }
 
-  const actionWord = isPerp ? (side === "buy" ? "long" : "short") : side === "buy" ? "buy" : "sell";
-  const submitLabel = placeLabel(actionWord, mainnet);
+  const sideWord = isPerp ? (side === "buy" ? "Long" : "Short") : side === "buy" ? "Buy" : "Sell";
+  const submitLabel = testCopy
+    ? placeLabel(sideWord.toLowerCase(), mainnet)
+    : `${sideWord} ${baseName}`;
 
   let primaryLabel = submitLabel;
   let primaryClass = side === "buy" ? btnSafe : btnDanger;
@@ -703,15 +840,9 @@ export function OrderEntry({
     primaryLabel = "Confirming on chain…";
     primaryClass = btnGhost;
     primaryDisabled = true;
-  } else if (noFunds && grantAlreadyUsed) {
-    // The grant is spent and there is nowhere left to ask for more: the
-    // account-details line below says "Grant used", and the primary action
-    // is the ordinary empty-form state, never a repeat grant offer.
-    primaryLabel = "Enter quantity";
-    primaryClass = btnGhost;
-    primaryDisabled = true;
-  } else if (noFunds && !testCopy) {
-    primaryLabel = "No collateral to trade with";
+  } else if (noFunds && (grantAlreadyUsed || !testCopy)) {
+    // Nowhere left to ask for funds: the reason line under the button says
+    // so, and the action stays the ordinary, disabled order button.
     primaryClass = btnGhost;
     primaryDisabled = true;
   } else if (noFunds && testCopy && noFaucet) {
@@ -724,174 +855,184 @@ export function OrderEntry({
     primaryLabel = testCopy.getFundsLabel;
     primaryClass = btnPrimary;
     primaryDisabled = funding;
-  } else if (!quantityText.trim()) {
-    primaryLabel = "Enter quantity";
+  } else if (!canSubmit) {
     primaryClass = btnGhost;
-    primaryDisabled = true;
   }
 
-  const percentOf = (pct: number) => {
-    const max = Number(maxQuantity);
-    if (!Number.isFinite(max) || max <= 0) return "0";
-    const lot = Number(market.lotSize);
-    const raw = (max * pct) / 100;
-    const steps = Math.floor(raw / lot);
-    return (steps * lot).toFixed(sizeDecimals);
-  };
+  const fundsMissing = noFunds || availableUnknown || accountUnknown || !hasWallet;
+  const percentDisabled = fundsMissing || fixedPointOrZero(maxAmountText) <= 0n;
+  const availableText = isSpotSell
+    ? `Available ${formatDecimal(availableBase, sizeDecimals)} ${baseName}`
+    : availableUnknown && collateral
+      ? availableLabel(collateral, money, now)
+      : confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
+        ? "Confirming on chain…"
+        : grantAlreadyUsed
+          ? `Grant used · ${money(availableQuote)} available`
+          : `Available ${money(availableQuote)}`;
 
   return (
     <div
       ref={containerRef}
-      className={`flex flex-col gap-0.5 p-1.5 ${
-        compact
-          ? "bg-surface border-line-subtle rounded-panel border"
-          : "min-h-0 flex-1 overflow-y-auto"
+      className={`flex flex-col gap-3 p-3 ${
+        compact ? "bg-surface border-line-subtle rounded-panel border" : "min-h-full"
       }`}
     >
       {setup}
-      <p className="text-ink-strong text-[13px] font-medium">
-        Trade {market.id} · {market.kind === "perp" ? "Perpetual, cross margin" : "Spot"}
-      </p>
 
-      <div className="flex gap-2" role="group" aria-label="Side">
-        <button
-          type="button"
-          aria-pressed={side === "buy"}
-          onClick={() => setSide("buy")}
-          className={`${side === "buy" ? btnSafe : btnGhost} h-10 flex-1 text-[13px]`}
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-ink-strong text-[14px] font-medium">
+          {isPerp ? `${baseName} Perpetual` : market.id}
+        </p>
+        <select
+          aria-label="Order type"
+          className="text-dim hover:text-ink focus-visible:outline-line-strong cursor-pointer rounded-sm bg-transparent py-1 text-[12px]"
+          value={orderType}
+          onChange={(event) => setOrderType(event.target.value as "market" | "limit")}
         >
-          {isPerp ? "Long" : "Buy"}
-        </button>
-        <button
-          type="button"
-          aria-pressed={side === "sell"}
-          onClick={() => setSide("sell")}
-          className={`${side === "sell" ? btnDanger : btnGhost} h-10 flex-1 text-[13px]`}
-        >
-          {isPerp ? "Short" : "Sell"}
-        </button>
+          <option value="market">Market</option>
+          <option value="limit">Limit</option>
+        </select>
       </div>
 
-      <div className="flex gap-2" role="group" aria-label="Order type">
-        {(["market", "limit"] as const).map((type) => (
+      <div
+        className="bg-surface-raised border-line flex gap-0.5 rounded-full border p-0.5"
+        role="group"
+        aria-label="Side"
+      >
+        {(["buy", "sell"] as const).map((value) => (
           <button
-            key={type}
+            key={value}
             type="button"
-            aria-pressed={orderType === type}
-            onClick={() => setOrderType(type)}
-            className={`rounded-tile min-h-9 flex-1 border px-3 text-[12px] capitalize ${
-              orderType === type
-                ? "border-line-strong bg-elevated text-ink"
-                : "border-line text-dim"
+            aria-pressed={side === value}
+            onClick={() => setSide(value)}
+            className={`h-9 flex-1 rounded-full text-[13px] font-medium transition-colors ${
+              side === value
+                ? value === "buy"
+                  ? "bg-safe text-(--color-base)"
+                  : "bg-danger text-(--color-base)"
+                : "text-dim hover:text-ink"
             }`}
           >
-            {type}
+            {isPerp ? (value === "buy" ? "Long" : "Short") : value === "buy" ? "Buy" : "Sell"}
           </button>
         ))}
       </div>
       {sentAsIoc && (
-        <p className="text-faint text-[11px]">
-          Limit (fills now or cancels): resting orders are not open to every account yet, so any
-          part that cannot fill at once is cancelled.
+        <p className="text-faint -mt-2 text-[11px]">
+          This limit order fills now or cancels. Resting orders are not open to every account yet.
         </p>
       )}
 
-      <div>
-        <div className="flex items-baseline justify-between">
-          <label className="text-faint text-[12px]" htmlFor="order-quantity">
-            Quantity ({baseUnit})
-          </label>
-          <span className="text-faint text-[11px]">
-            {/* "Confirming on chain" only makes sense where funding lands - the separate perpetuals collateral account, rollup mode only (`collateral` is undefined in dev mode, which has no chain to confirm against). */}
-            {isSpotSell
-              ? `Available: ${formatDecimal(availableBase, sizeDecimals)} ${baseUnit}`
-              : availableUnknown && collateral
-                ? availableLabel(collateral, money, now)
-                : confirmingFund && collateral !== undefined && Number(availableQuote) <= 0
-                  ? "Confirming on chain…"
-                  : grantAlreadyUsed
-                    ? `Grant used · ${money(availableQuote)} available`
-                    : `Available: ${money(availableQuote)}`}
-          </span>
+      {quantityOverride === null ? (
+        <div>
+          <div className="flex items-baseline justify-between gap-2">
+            <label className="text-faint text-[12px]" htmlFor="order-amount">
+              Amount{quoteUnit && ` (${quoteUnit})`}
+            </label>
+            <span className="text-faint tnum text-[11px]">{availableText}</span>
+          </div>
+          <div className="relative mt-1.5">
+            <input
+              ref={amountInputRef}
+              id="order-amount"
+              className={`${input} tnum h-12 pr-16 text-[20px]`}
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder="0.00"
+              value={amountText}
+              onChange={(event) => setAmountText(event.target.value)}
+            />
+            <span className="text-faint pointer-events-none absolute inset-y-0 right-3 flex items-center text-[12px]">
+              {quoteUnit}
+            </span>
+          </div>
+          <div className="mt-2 flex gap-1.5" role="group" aria-label="Amount shortcuts">
+            {PERCENT_SHORTCUTS.map((pct) => (
+              <button
+                key={pct}
+                type="button"
+                disabled={percentDisabled}
+                className={`${btnGhost} h-8 min-h-8 flex-1 text-[12px]`}
+                onClick={() => setAmountText(amountForPercent(maxAmountText, pct))}
+              >
+                {pct === 100 ? "Max" : `${pct}%`}
+              </button>
+            ))}
+          </div>
         </div>
-        <input
-          ref={quantityInputRef}
-          id="order-quantity"
-          className={`${input} mt-1`}
-          inputMode="decimal"
-          placeholder="0.00"
-          value={quantityText}
-          aria-describedby={quantityError ? "order-quantity-error" : "order-quantity-hint"}
-          onBlur={() => setQuantityTouched(true)}
-          onChange={(event) => {
-            setQuantityText(event.target.value);
-            setQuantityTouched(true);
-          }}
-        />
-        {quantityError ? (
-          <p id="order-quantity-error" role="alert" className="text-danger mt-0.5 text-[12px]">
-            {quantityError}
-          </p>
-        ) : (
-          <p id="order-quantity-hint" className="text-faint mt-0.5 text-[11px]">
-            Min {market.lotSize} {baseUnit} · step {market.lotSize}
-          </p>
-        )}
-        <div className="mt-0.5 flex gap-1" role="group" aria-label="Quantity shortcuts">
-          {PERCENT_SHORTCUTS.map((pct) => (
+      ) : (
+        <div>
+          <div className="flex items-baseline justify-between gap-2">
+            <label className="text-faint text-[12px]" htmlFor="order-size">
+              Size ({baseName})
+            </label>
             <button
-              key={pct}
               type="button"
-              className={`${btnGhost} h-7 flex-1 text-[11px]`}
-              onClick={() => {
-                setQuantityText(percentOf(pct));
-                setQuantityTouched(true);
-              }}
+              className="text-faint hover:text-ink text-[11px] underline"
+              onClick={() => setQuantityOverride(null)}
             >
-              {pct === 100 ? "Max" : `${pct}%`}
+              Enter an amount instead
             </button>
-          ))}
+          </div>
+          <input
+            ref={amountInputRef}
+            id="order-size"
+            className={`${input} tnum mt-1.5 h-12 text-[20px]`}
+            inputMode="decimal"
+            autoComplete="off"
+            value={quantityOverride}
+            onChange={(event) => setQuantityOverride(event.target.value)}
+          />
         </div>
-      </div>
+      )}
 
-      <div>
-        <label className="text-faint text-[12px]" htmlFor="order-price">
-          {orderType === "market"
-            ? side === "buy"
-              ? "Max buy price"
-              : "Min sell price"
-            : "Limit price"}
-          {quoteUnit && ` (${quoteUnit})`}
-        </label>
-        <input
-          ref={priceInputRef}
-          id="order-price"
-          className={`${input} mt-1`}
-          inputMode="decimal"
-          placeholder={orderType === "limit" ? "" : undefined}
-          value={priceText}
-          aria-describedby={priceError ? "order-price-error" : "order-price-hint"}
-          onBlur={() => setPriceTouched(true)}
-          onChange={(event) => {
-            setPriceOverride(event.target.value);
-            setPriceTouched(true);
-          }}
-        />
-        {priceError ? (
-          <p id="order-price-error" role="alert" className="text-danger mt-0.5 text-[12px]">
-            {priceError}
-          </p>
-        ) : orderType === "market" && mark && !markStale ? (
-          <p id="order-price-hint" className="text-faint mt-0.5 text-[11px]">
-            {formatPercent(((Number(priceText) - Number(mark.price)) / Number(mark.price)) * 100)}{" "}
-            from mark · mark age {markAge !== null ? formatRelativeAge(markAge) : UNAVAILABLE}
-          </p>
-        ) : (
-          <p id="order-price-hint" className="text-faint mt-0.5 text-[11px]">
-            Filled only at this price or better.
-          </p>
-        )}
-      </div>
+      {isPerp && quantityOverride === null && (
+        <div>
+          <div className="flex items-end justify-between">
+            <label className="text-faint text-[12px]" htmlFor="order-leverage">
+              Leverage
+            </label>
+            <span className="tnum text-ink-strong text-[26px] leading-none font-medium">
+              {leverageLabel(effectiveLeverage)}
+            </span>
+          </div>
+          <input
+            id="order-leverage"
+            type="range"
+            min={1}
+            max={market.maxLeverage}
+            step={LEVERAGE_STEP}
+            value={effectiveLeverage}
+            onChange={(event) => setLeverage(Number(event.target.value))}
+            className={`${rangeBrand} mt-3`}
+          />
+          {liquidation && (
+            <p className="text-dim tnum mt-2 text-[12px]">
+              {liquidation.kind === "price"
+                ? `Liquidates near ${formatDecimal(liquidation.price, priceDecimals)} ${quoteUnit} (est.)`
+                : "No liquidation price at this size (est.)"}
+            </p>
+          )}
+        </div>
+      )}
+
+      {orderType === "limit" && (
+        <div>
+          <label className="text-faint text-[12px]" htmlFor="order-price">
+            Limit price{quoteUnit && ` (${quoteUnit})`}
+          </label>
+          <input
+            ref={priceInputRef}
+            id="order-price"
+            className={`${input} tnum mt-1.5`}
+            inputMode="decimal"
+            value={priceText}
+            onChange={(event) => setPriceOverride(event.target.value)}
+          />
+          <p className="text-faint mt-1 text-[11px]">Fills only at this price or better.</p>
+        </div>
+      )}
 
       {supportsGoodFor && orderType === "limit" && !sentAsIoc && (
         <div>
@@ -900,7 +1041,7 @@ export function OrderEntry({
           </label>
           <select
             id="order-good-for"
-            className={`${input} mt-1`}
+            className={`${input} mt-1.5`}
             value={goodFor}
             onChange={(event) => setGoodFor(event.target.value as NewOrderInput["goodFor"])}
           >
@@ -913,54 +1054,15 @@ export function OrderEntry({
         </div>
       )}
 
-      {compact && (
-        <button
-          type="button"
-          className="text-faint self-start text-[11px] underline"
-          onClick={() => setShowDetails((value) => !value)}
-          aria-expanded={showDetails}
-        >
-          {showDetails ? "Hide" : "Show"} leverage &amp; order details
-        </button>
-      )}
-
-      {/* Reduce only stays visible even collapsed: it changes what the
-          order DOES, not just a cost estimate, so it is not "secondary
-          evidence" in the sense the phone layout collapses. */}
       {isPerp && position && Number(position.size) !== 0 && (
         <label className="text-dim flex items-center gap-2 text-[12px]">
           <input
             type="checkbox"
             checked={reduceOnly}
-            onChange={(event) => setReduceOnly(event.target.checked)}
+            onChange={(event) => toggleReduceOnly(event.target.checked)}
           />
           Reduce only
         </label>
-      )}
-
-      {isPerp && showDetails && (
-        <div>
-          <label
-            className="text-faint flex justify-between text-[12px]"
-            htmlFor="order-leverage"
-            title="Display only: the venue sets margin by its own fixed ratio, not this slider."
-          >
-            <span>Leverage</span>
-            <span className="tnum text-ink">
-              {leverage}x (1-{market.maxLeverage}x)
-            </span>
-          </label>
-          <input
-            id="order-leverage"
-            type="range"
-            min={1}
-            max={market.maxLeverage}
-            step={1}
-            value={leverage}
-            onChange={(event) => setLeverage(Number(event.target.value))}
-            className={`${rangeBrand} mt-1`}
-          />
-        </div>
       )}
 
       {accountUnknown && accountError && (
@@ -998,49 +1100,44 @@ export function OrderEntry({
           </button>
         </div>
       )}
-      {staleBlock && (
-        <p role="alert" className="text-warning text-[12px]">
-          Market data is {markAge !== null ? formatRelativeAge(markAge) : "too"} old. Wait for a
-          fresh mark.
-        </p>
-      )}
-      {shortfall && !staleBlock && (
-        <p role="alert" className="text-danger text-[12px]">
-          {shortfall.asset === "base"
-            ? `Available ${formatDecimal(shortfall.available, sizeDecimals)} ${baseUnit}; this order sells ${formatDecimal(shortfall.needed, sizeDecimals)} ${baseUnit}.`
-            : `Available ${money(shortfall.available)}; this order needs about ${money(shortfall.needed)} including fee.`}{" "}
-          Reduce quantity.
-        </p>
-      )}
 
-      {showDetails && (
-        <OrderSummary
-          side={side}
-          isPerp={isPerp}
-          display={estimateDisplay}
-          priceDecimals={priceDecimals}
-          remainingAvailable={remainingAvailable}
-          quoteSymbol={quoteUnit}
-        />
-      )}
+      <OrderSummary rows={summaryRows} />
 
-      <button
-        type="button"
-        className={`${primaryClass} h-11 w-full`}
-        disabled={primaryDisabled}
-        onClick={handlePrimaryClick}
-      >
-        {funding ? "Requesting…" : submitting ? "Submitting…" : primaryLabel}
-      </button>
+      <div className="bg-surface sticky bottom-0 z-10 -mx-3 mt-auto -mb-3 flex flex-col gap-2 px-3 pt-2 pb-3">
+        <button
+          type="button"
+          className={`${primaryClass} h-12 w-full text-[14px]`}
+          disabled={primaryDisabled}
+          onClick={handlePrimaryClick}
+        >
+          {funding ? "Requesting…" : submitting ? "Submitting…" : primaryLabel}
+        </button>
 
-      {/* Only a genuine problem (rate limit, error) ever shows here now, and
+        {reason && (
+          <p
+            role={reason.tone === "error" ? "alert" : "status"}
+            className={`${REASON_TONE_CLASS[reason.tone]} text-center text-[12px]`}
+          >
+            {reason.text}
+          </p>
+        )}
+
+        {/* Only a genuine problem (rate limit, error) ever shows here now, and
           only while it is still true: `noFunds` turning false (funds
           landed) retires it instead of leaving it under the button
           alongside a working order form (third design review, must-fix 2). */}
-      {fundMessage && noFunds && <p className="text-warning text-[12px]">{fundMessage}</p>}
-      {noFaucet && noFunds && testCopy && (
-        <p className="text-dim text-[12px]">{testCopy.noFaucetNotice}</p>
-      )}
+        {fundMessage && noFunds && (
+          <p className="text-warning text-center text-[12px]">{fundMessage}</p>
+        )}
+        {noFaucet && noFunds && testCopy && (
+          <p className="text-dim text-center text-[12px]">{testCopy.noFaucetNotice}</p>
+        )}
+        {submitError && (
+          <p role="alert" className="text-danger text-center text-[13px]">
+            {submitError}
+          </p>
+        )}
+      </div>
 
       {showTransfer && onTransferToSpot && collateral && (
         <TransferControl
@@ -1052,12 +1149,6 @@ export function OrderEntry({
           initiallyOpen
           onDone={() => setShowTransfer(false)}
         />
-      )}
-
-      {submitError && (
-        <p role="alert" className="text-danger text-[13px]">
-          {submitError}
-        </p>
       )}
 
       {showAck &&
@@ -1133,26 +1224,16 @@ export function OrderEntry({
                   : frozen.draft.side === "buy"
                     ? "Buy"
                     : "Sell"}{" "}
-                {formatDecimal(frozen.draft.size, sizeDecimals)} {baseUnit}
-                {isPerp ? ` · ${frozen.leverage}x cross` : ""}
+                {formatDecimal(frozen.draft.size, sizeDecimals)} {baseName}
+                {isPerp && !frozen.draft.reduceOnly ? ` · ${leverageLabel(frozen.leverage)}` : ""}
               </p>
-              <p className="text-faint mt-1 text-[12px]">
-                {frozen.draft.type === "market"
-                  ? frozen.draft.side === "buy"
-                    ? "Max buy price "
-                    : "Min sell price "
-                  : "Limit price "}
-                {formatDecimal(frozen.draft.price, priceDecimals)} {quoteUnit}
-              </p>
-              <p className="text-faint mt-1 text-[12px]">Worst case: {frozen.worstCost}</p>
-              <OrderSummary
-                side={frozen.draft.side}
-                isPerp={isPerp}
-                display={frozen.estimateDisplay}
-                priceDecimals={priceDecimals}
-                remainingAvailable={frozen.remainingAvailable}
-                quoteSymbol={quoteUnit}
-              />
+              {frozen.draft.type === "limit" && (
+                <p className="text-faint mt-1 text-[12px]">
+                  Limit price {formatDecimal(frozen.draft.price, priceDecimals)} {quoteUnit}
+                </p>
+              )}
+              <p className="text-faint mt-1 mb-3 text-[12px]">Worst case: {frozen.worstCost}</p>
+              <OrderSummary rows={frozen.summaryRows} />
               {(reviewInvalid ?? confirmBlocker) && (
                 <p role="alert" className="text-danger mt-3 text-[12px]">
                   {reviewInvalid ?? confirmBlocker}
