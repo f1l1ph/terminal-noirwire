@@ -69,7 +69,7 @@ export function TransferControl({
     return (
       <button
         type="button"
-        className={`${btnGhost} mt-2 h-8 w-full px-3 text-[12px]`}
+        className={`${btnGhost} mt-2 w-full px-3 text-[12px]`}
         onClick={() => setOpen(true)}
       >
         Transfer between collateral and spot
@@ -130,7 +130,7 @@ export function TransferControl({
           type="button"
           aria-pressed={direction === "toSpot"}
           onClick={() => setDirection("toSpot")}
-          className={`rounded-tile min-h-8 flex-1 border px-2 text-[11px] ${direction === "toSpot" ? "border-line-strong bg-elevated text-ink" : "border-line text-dim"}`}
+          className={`rounded-tile min-h-11 flex-1 border px-2 text-[11px] ${direction === "toSpot" ? "border-line-strong bg-elevated text-ink" : "border-line text-dim"}`}
         >
           Collateral → Spot
         </button>
@@ -138,7 +138,7 @@ export function TransferControl({
           type="button"
           aria-pressed={direction === "toCollateral"}
           onClick={() => setDirection("toCollateral")}
-          className={`rounded-tile min-h-8 flex-1 border px-2 text-[11px] ${direction === "toCollateral" ? "border-line-strong bg-elevated text-ink" : "border-line text-dim"}`}
+          className={`rounded-tile min-h-11 flex-1 border px-2 text-[11px] ${direction === "toCollateral" ? "border-line-strong bg-elevated text-ink" : "border-line text-dim"}`}
         >
           Spot → Collateral
         </button>
@@ -151,10 +151,19 @@ export function TransferControl({
         onChange={(event) => setAmount(event.target.value)}
         aria-label={quoteSymbol ? `Transfer amount (${quoteSymbol})` : "Transfer amount"}
       />
+      {Number(amount) > 0 && (
+        <p className="text-ink mt-2 text-[12px]">
+          You are moving <span className="tnum font-medium">{amount.trim()}</span> {quoteSymbol}{" "}
+          {direction === "toSpot"
+            ? "from your collateral to your spot balance"
+            : "from your spot balance to your collateral"}
+          , both inside your trading account.
+        </p>
+      )}
       <div className="mt-2 flex gap-2">
         <button
           type="button"
-          className={`${btnGhost} h-8 flex-1 text-[12px]`}
+          className={`${btnGhost} flex-1 text-[12px]`}
           onClick={() => {
             setOpen(false);
             setMessage(null);
@@ -164,7 +173,7 @@ export function TransferControl({
         </button>
         <button
           type="button"
-          className={`${btnPrimary} h-8 flex-1 text-[12px]`}
+          className={`${btnPrimary} flex-1 text-[12px]`}
           disabled={
             busy ||
             !amount.trim() ||

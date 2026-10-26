@@ -231,10 +231,10 @@ export default function FundsSection({
         {!open ? (
           <button
             type="button"
-            className={`${btnGhost} h-8 w-full px-3 text-[12px]`}
+            className={`${btnGhost} w-full px-3 text-[12px]`}
             onClick={() => setOpen(true)}
           >
-            Deposit / Withdraw
+            Add or withdraw USDC
           </button>
         ) : (
           <div>
@@ -250,7 +250,7 @@ export default function FundsSection({
                     setKind(choice);
                     setResult(null);
                   }}
-                  className={`rounded-tile min-h-8 flex-1 border px-2 text-[12px] ${kind === choice ? "border-line-strong bg-elevated text-ink" : "border-line text-dim"}`}
+                  className={`rounded-tile min-h-11 flex-1 border px-2 text-[12px] ${kind === choice ? "border-line-strong bg-elevated text-ink" : "border-line text-dim"}`}
                 >
                   {choice === "deposit" ? "Deposit" : "Withdraw"}
                 </button>
@@ -301,15 +301,33 @@ export default function FundsSection({
             {!check.ok && AMOUNT_MESSAGES[check.reason](kind) !== "" && (
               <p className="text-dim mt-1 text-[12px]">{AMOUNT_MESSAGES[check.reason](kind)}</p>
             )}
-            <p className="text-faint mt-1 text-[11px]">
-              {kind === "deposit"
-                ? "Your wallet asks you to approve two transactions."
-                : "Your wallet asks you to approve two or three transactions. A withdrawal can wait a few minutes for fresh prices."}
-            </p>
+            {check.ok ? (
+              <div className="bg-surface-raised rounded-tile border-line-subtle mt-2 border p-2.5">
+                <p className="text-ink text-[13px]">
+                  You are moving{" "}
+                  <span className="tnum font-medium">{atomsText(check.atoms, QUOTE_DECIMALS)}</span>{" "}
+                  USDC{" "}
+                  {kind === "deposit"
+                    ? "from your wallet to your trading account."
+                    : "from your trading account to your wallet."}
+                </p>
+                <p className="text-faint mt-1 text-[11px]">
+                  {kind === "deposit"
+                    ? `Your wallet will ask you to approve two transactions, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
+                    : `Your wallet will ask you to approve two or three transactions, and you pay about ${solText(feeLamports)} in network fees. A withdrawal can wait a few minutes for fresh prices; keep this page open.`}
+                </p>
+              </div>
+            ) : (
+              <p className="text-faint mt-1 text-[11px]">
+                {kind === "deposit"
+                  ? "Your wallet asks you to approve two transactions."
+                  : "Your wallet asks you to approve two or three transactions. A withdrawal can wait a few minutes for fresh prices."}
+              </p>
+            )}
             <div className="mt-2 flex gap-2">
               <button
                 type="button"
-                className={`${btnGhost} h-8 flex-1 text-[12px]`}
+                className={`${btnGhost} flex-1 text-[12px]`}
                 disabled={busy}
                 onClick={() => {
                   setOpen(false);
@@ -320,11 +338,12 @@ export default function FundsSection({
               </button>
               <button
                 type="button"
-                className={`${btnPrimary} h-8 flex-1 text-[12px]`}
+                className={`${btnPrimary} flex-1 text-[12px]`}
                 disabled={busy || blocked || !check.ok || !accountOpen}
                 onClick={() => void submit()}
               >
                 {kind === "deposit" ? "Deposit" : "Withdraw"}
+                {check.ok ? ` ${atomsText(check.atoms, QUOTE_DECIMALS)} USDC` : ""}
               </button>
             </div>
             {phase && (
