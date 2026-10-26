@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import type { Wallet } from "@wallet-standard/base";
 import { formatShortAddress } from "@/lib/format";
 import { isMainnetBuild } from "@/lib/network";
+import { redactToken } from "@/lib/rollup/redact";
 import { useStandardWallet } from "@/lib/wallet/standardWallet";
 import {
   browserLocalStorage,
@@ -155,7 +156,8 @@ const MAX_REASON_LENGTH = 160;
 
 /** The generic failure plus the wallet's own reason (a rejection, a locked wallet), so a refusal can be told from a fault. */
 function connectFailure(error: unknown): string {
-  const reason = error instanceof Error ? error.message.trim().slice(0, MAX_REASON_LENGTH) : "";
+  const reason =
+    error instanceof Error ? redactToken(error.message).trim().slice(0, MAX_REASON_LENGTH) : "";
   return reason ? `${CONNECT_FAILED} The wallet said: ${reason}` : CONNECT_FAILED;
 }
 
