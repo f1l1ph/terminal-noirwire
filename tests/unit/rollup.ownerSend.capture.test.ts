@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
+import { Keypair, Message, SystemProgram, Transaction } from "@solana/web3.js";
 import { signChecked, SignedTransactionRefused } from "@/lib/rollup/ownerSend";
 import { keypairOwnerSigner, type OwnerSigner } from "@/lib/wallet/ownerSigner";
 
@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 describe("signChecked capture of a refused wallet change", () => {
-  it("logs the refusal, chain, built message and returned transaction outside production, and still throws", async () => {
+  it("logs the refusal, chain, built and returned messages and the signers, without signatures, outside production, and still throws", async () => {
     vi.stubEnv("NODE_ENV", "development");
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const owner = Keypair.generate();
@@ -67,8 +67,10 @@ describe("signChecked capture of a refused wallet change", () => {
     expect(capture.reason).toContain("it added 1 instruction");
     expect(capture.chain).toBe("solana:mainnet");
     expect(capture.builtMessageBase64).toBe(Buffer.from(builtMessage).toString("base64"));
-    const returned = Transaction.from(Buffer.from(capture.signedTransactionBase64, "base64"));
+    const returned = Message.from(Buffer.from(capture.signedMessageBase64, "base64"));
     expect(returned.instructions).toHaveLength(2);
+    expect(capture.signers).toEqual([{ publicKey: owner.publicKey.toBase58(), signed: true }]);
+    expect(JSON.stringify(capture)).not.toContain("signature");
   });
 
   it("logs nothing in a production build, and still throws", async () => {

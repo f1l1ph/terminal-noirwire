@@ -52,9 +52,11 @@ function logRefusedCapture(
     reason,
     chain,
     builtMessageBase64: base64(builtMessage),
-    signedTransactionBase64: base64(
-      signed.serialize({ requireAllSignatures: false, verifySignatures: false }),
-    ),
+    signedMessageBase64: base64(signed.serializeMessage()),
+    signers: signed.signatures.map((entry) => ({
+      publicKey: entry.publicKey.toBase58(),
+      signed: entry.signature !== null,
+    })),
   });
 }
 
