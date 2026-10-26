@@ -32,7 +32,9 @@ export async function signChecked(
     : signer.signTransaction(built));
   const reason = signedDiffers(built, builtMessage, signed, signer.publicKey);
   if (reason) {
-    logRefusedCapture(reason, chain, builtMessage, signed);
+    if (chain === "solana:mainnet" || process.env.NODE_ENV !== "production") {
+      logRefusedCapture(reason, chain, builtMessage, signed);
+    }
     throw new SignedTransactionRefused(reason);
   }
   return signed;
@@ -41,6 +43,8 @@ export async function signChecked(
 /**
  * What the wallet handed back, for building an exact acceptance rule. Messages
  * and which keys signed only: without the signatures nobody can send it.
+ * Production builds log only Solana mainnet transfers, which go on a public
+ * chain anyway; rollup transactions carry private amounts and keys.
  */
 function logRefusedCapture(
   reason: string,
@@ -61,7 +65,7 @@ function logRefusedCapture(
       })),
     });
   } catch {
-    console.info("wallet changed the transaction: capture", { reason, chain });
+    // The refusal that follows matters more than its capture.
   }
 }
 

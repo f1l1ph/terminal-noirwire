@@ -72,7 +72,7 @@ describe("signChecked capture of a refused wallet change", () => {
     expect(JSON.stringify(capture)).not.toContain("signature");
   });
 
-  it("logs in a production build too, and still throws", async () => {
+  it("logs a Solana mainnet transfer in a production build too, and still throws", async () => {
     vi.stubEnv("NODE_ENV", "production");
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const owner = Keypair.generate();
@@ -82,6 +82,29 @@ describe("signChecked capture of a refused wallet change", () => {
     ).rejects.toBeInstanceOf(SignedTransactionRefused);
 
     expect(info).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs nothing for a rollup transaction in a production build, and still throws", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const owner = Keypair.generate();
+
+    await expect(signChecked(addingSigner(owner), build(owner))).rejects.toBeInstanceOf(
+      SignedTransactionRefused,
+    );
+
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("still refuses when logging itself throws", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {
+      throw new Error("console unavailable");
+    });
+    const owner = Keypair.generate();
+
+    await expect(
+      signChecked(addingSigner(owner), build(owner), "solana:mainnet"),
+    ).rejects.toBeInstanceOf(SignedTransactionRefused);
   });
 
   it("logs nothing when the wallet returns the transaction it was given", async () => {
