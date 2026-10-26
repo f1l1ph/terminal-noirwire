@@ -650,9 +650,12 @@ export function Terminal() {
       }}
       ownerAddress={owner}
       setup={
-        isMainnetBuild() && ownerIdentity ? (
+        isMainnetBuild() ? (
           <AccountSetup
-            address={ownerIdentity.address}
+            address={ownerIdentity?.address ?? null}
+            funded={
+              trading.accountLoaded ? Number(trading.state.collateral?.total ?? "0") > 0 : null
+            }
             status={trading.accountStatus}
             needsInvite={trading.needsInvite}
             opening={trading.opening}

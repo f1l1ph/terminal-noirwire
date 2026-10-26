@@ -84,7 +84,7 @@ export function AccountDock({
       className={`flex min-h-0 flex-1 flex-col ${bordered ? "bg-surface border-line-subtle rounded-panel border" : ""}`}
     >
       <div
-        className="border-line-subtle flex shrink-0 gap-1 border-b p-2"
+        className="border-line-subtle flex shrink-0 gap-1 overflow-x-auto border-b p-2"
         role="tablist"
         aria-label="Account"
       >
@@ -95,7 +95,7 @@ export function AccountDock({
             role="tab"
             aria-selected={tab === item.id}
             onClick={() => onTabChange(item.id)}
-            className={`rounded-tile min-h-9 px-3 text-[13px] ${
+            className={`rounded-tile focus-visible:outline-ink-strong min-h-11 px-3 text-[13px] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-[-2px] ${
               tab === item.id ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
             }`}
           >
@@ -173,96 +173,137 @@ function PositionsTable({
   onReduce: (position: Position) => void;
 }) {
   const open = positions.filter((position) => Number(position.size) !== 0);
-  if (open.length === 0) return <p className="text-faint text-[13px]">No open positions.</p>;
+  if (open.length === 0) {
+    return (
+      <EmptyState
+        title="No positions yet"
+        hint="Your SOL-PERP positions appear here once an order fills."
+      />
+    );
+  }
   return (
-    <table className="tnum w-full text-left text-[13px]">
-      <thead className="text-faint text-[11px] uppercase">
-        <tr>
-          <th className="font-normal">Market</th>
-          <th className="font-normal">Side</th>
-          <th className="font-normal">Size</th>
-          <th className="font-normal">Entry</th>
-          <th className="font-normal">Mark</th>
-          <th className="font-normal">Unrealised P&amp;L</th>
-          <th className="font-normal">Margin used (est.)</th>
-          <th className="font-normal">Liquidation (est.)</th>
-          <th className="font-normal"></th>
-        </tr>
-      </thead>
-      <tbody>
-        {open.map((position) => {
-          const settings = marketSettings(position.market);
-          const size = Number(position.size);
-          const long = size > 0;
-          const priceDecimals = settings ? priceDecimalsOf(settings) : 2;
-          const sizeDecimals = settings ? sizeDecimalsOf(settings) : 4;
-          const mark = marksByMarket[position.market] ?? null;
-          const markUsable = mark && !isStale(mark.time, now, STALE_MARK_MS);
-          const unrealised = markUsable
-            ? (Number(mark.price) - Number(position.entryPrice)) * size
-            : null;
+    <ul className="flex flex-col gap-2">
+      {open.map((position) => {
+        const settings = marketSettings(position.market);
+        const size = Number(position.size);
+        const long = size > 0;
+        const priceDecimals = settings ? priceDecimalsOf(settings) : 2;
+        const sizeDecimals = settings ? sizeDecimalsOf(settings) : 4;
+        const mark = marksByMarket[position.market] ?? null;
+        const markUsable = mark && !isStale(mark.time, now, STALE_MARK_MS);
+        const unrealised = markUsable
+          ? (Number(mark.price) - Number(position.entryPrice)) * size
+          : null;
 
-          let marginUsed: string | null = null;
-          let liquidation: string | null = null;
-          if (settings && settings.kind === "perp") {
-            const estimate = estimateOrderCost({
-              side: long ? "buy" : "sell",
-              quantity: String(Math.abs(size)),
-              price: position.entryPrice,
-              leverage: settings.maxLeverage,
-              maxLeverage: settings.maxLeverage,
-            });
-            const display = displayOrderCost(estimate, priceDecimals);
-            marginUsed = display.initialMargin;
-            liquidation = display.liquidationPrice;
-          }
+        let marginUsed: string | null = null;
+        let liquidation: string | null = null;
+        if (settings && settings.kind === "perp") {
+          const estimate = estimateOrderCost({
+            side: long ? "buy" : "sell",
+            quantity: String(Math.abs(size)),
+            price: position.entryPrice,
+            leverage: settings.maxLeverage,
+            maxLeverage: settings.maxLeverage,
+          });
+          const display = displayOrderCost(estimate, priceDecimals);
+          marginUsed = display.initialMargin;
+          liquidation = display.liquidationPrice;
+        }
 
-          return (
-            <tr key={position.market} className="border-line-subtle border-t">
-              <td className="py-1.5">{position.market}</td>
-              <td className={long ? "text-safe" : "text-danger"}>{long ? "long" : "short"}</td>
-              <td>{formatDecimal(Math.abs(size), sizeDecimals)}</td>
-              <td>{formatDecimal(position.entryPrice, priceDecimals)}</td>
-              <td>{markUsable ? formatDecimal(mark!.price, priceDecimals) : UNAVAILABLE}</td>
-              <td
-                className={
-                  unrealised === null ? "text-faint" : unrealised >= 0 ? "text-safe" : "text-danger"
+        return (
+          <li
+            key={position.market}
+            className="bg-surface-raised border-line-subtle rounded-tile border p-3"
+          >
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span
+                className={`rounded-tile px-2 py-0.5 text-[12px] font-medium ${
+                  long ? "bg-safe/15 text-safe" : "bg-danger/15 text-danger"
+                }`}
+              >
+                {long ? "Long" : "Short"}
+              </span>
+              <span className="text-ink-strong text-[14px] font-medium">{position.market}</span>
+              <span className="tnum text-dim text-[13px]">
+                {formatDecimal(Math.abs(size), sizeDecimals)}
+                {settings ? ` ${settings.base}` : ""}
+              </span>
+              <span className="ml-auto text-right">
+                <span className="text-faint block text-[11px]">Unrealised P&amp;L</span>
+                <span
+                  className={`tnum text-[15px] font-medium ${
+                    unrealised === null
+                      ? "text-faint"
+                      : unrealised >= 0
+                        ? "text-safe"
+                        : "text-danger"
+                  }`}
+                >
+                  {unrealised !== null
+                    ? `${unrealised > 0 ? "+" : ""}${formatMoney(unrealised, quoteSymbol)}`
+                    : "Price unavailable"}
+                </span>
+              </span>
+            </div>
+            <dl className="tnum mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-4">
+              <PositionStat
+                label="Entry"
+                value={formatDecimal(position.entryPrice, priceDecimals)}
+              />
+              <PositionStat
+                label="Mark"
+                value={markUsable ? formatDecimal(mark!.price, priceDecimals) : UNAVAILABLE}
+              />
+              <PositionStat
+                label="Margin used (est.)"
+                value={marginUsed !== null ? formatMoney(marginUsed, quoteSymbol) : UNAVAILABLE}
+              />
+              <PositionStat
+                label="Liquidation (est.)"
+                title="Estimate: half the market's implied initial margin, computed on this device. Not confirmed by the exchange."
+                value={
+                  liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE
                 }
+              />
+            </dl>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className={`${btnGhost} flex-1 text-[12px]`}
+                onClick={() => onReduce(position)}
               >
-                {unrealised !== null
-                  ? formatMoney(unrealised, quoteSymbol)
-                  : "Unavailable - no live mark"}
-              </td>
-              <td>{marginUsed !== null ? formatMoney(marginUsed, quoteSymbol) : UNAVAILABLE}</td>
-              <td
-                title="Estimate: half the market's implied initial margin, computed on this device. Not a venue-confirmed threshold."
-                className="underline decoration-dotted"
+                Reduce
+              </button>
+              <button
+                type="button"
+                className={`${btnGhost} flex-1 text-[12px]`}
+                onClick={() => onClose(position)}
               >
-                {liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE}
-              </td>
-              <td className="py-1.5 text-right">
-                <div className="flex justify-end gap-1">
-                  <button
-                    type="button"
-                    className={`${btnGhost} h-7 px-2 text-[11px]`}
-                    onClick={() => onReduce(position)}
-                  >
-                    Reduce
-                  </button>
-                  <button
-                    type="button"
-                    className={`${btnGhost} h-7 px-2 text-[11px]`}
-                    onClick={() => onClose(position)}
-                  >
-                    Close
-                  </button>
-                </div>
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+                Close position
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function PositionStat({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div title={title}>
+      <dt className="text-faint text-[11px]">{label}</dt>
+      <dd className={title ? "text-ink underline decoration-dotted" : "text-ink"}>{value}</dd>
+    </div>
+  );
+}
+
+function EmptyState({ title, hint }: { title: string; hint: string }) {
+  return (
+    <div className="flex min-h-[96px] flex-col items-center justify-center gap-1 px-4 py-4 text-center">
+      <p className="text-ink text-[13px] font-medium">{title}</p>
+      <p className="text-faint text-[12px]">{hint}</p>
+    </div>
   );
 }
 
@@ -281,7 +322,14 @@ function OpenOrdersTable({
   onCancel: ((market: string, orderId: string) => void) | null;
   cancellingOrderId: string | null;
 }) {
-  if (openOrders.length === 0) return <p className="text-faint text-[13px]">No open orders.</p>;
+  if (openOrders.length === 0) {
+    return (
+      <EmptyState
+        title="No open orders"
+        hint="Orders that are still waiting to fill show up here, and you can cancel them."
+      />
+    );
+  }
   return (
     <table className="tnum w-full text-left text-[13px]">
       <thead className="text-faint text-[11px] uppercase">
@@ -323,7 +371,7 @@ function OpenOrdersTable({
                 {onCancel && (
                   <button
                     type="button"
-                    className={`${btnGhost} h-7 px-2 text-[11px]`}
+                    className={`${btnGhost} px-2 text-[11px]`}
                     disabled={cancellingOrderId === order.orderId}
                     onClick={() => onCancel(order.market, order.orderId)}
                   >
@@ -348,8 +396,14 @@ function FillsTable({
   fills: OwnFillRecord[];
   marketSettings: MarketSettingsLookup;
 }) {
-  if (fills.length === 0)
-    return <p className="text-faint text-[13px]">No fills yet this session.</p>;
+  if (fills.length === 0) {
+    return (
+      <EmptyState
+        title="No fills yet"
+        hint="Your trades from this visit appear here as they fill."
+      />
+    );
+  }
   return (
     <table className="tnum w-full text-left text-[13px]">
       <thead className="text-faint text-[11px] uppercase">
@@ -412,7 +466,14 @@ function BalancesTable({
       quote: !!quoteSymbol && balance.asset === quoteSymbol,
     })),
   ];
-  if (rows.length === 0) return <p className="text-faint text-[13px]">No balances yet.</p>;
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="No balances yet"
+        hint="Once your account is open and funded, your USDC shows up here."
+      />
+    );
+  }
   const amount = (value: string, quote: boolean) =>
     quote ? formatMoney(value, quoteSymbol) : formatDecimal(value, 6);
   const availableCell = (row: (typeof rows)[number]) =>
@@ -464,8 +525,14 @@ function MarginTable({
     const settings = marketSettings(position.market);
     return Number(position.size) !== 0 && settings?.kind === "perp";
   });
-  if (perpPositions.length === 0)
-    return <p className="text-faint text-[13px]">No perp positions.</p>;
+  if (perpPositions.length === 0) {
+    return (
+      <EmptyState
+        title="No margin in use"
+        hint="Margin is the collateral held against an open position. It appears here once you have one."
+      />
+    );
+  }
   return (
     <>
       <table className="tnum w-full text-left text-[13px]">
@@ -507,11 +574,11 @@ function MarginTable({
           })}
         </tbody>
       </table>
-      <p className={`${sectionLabel} mt-2`}>Estimate, not a venue guarantee</p>
+      <p className={`${sectionLabel} mt-2`}>Estimate, not a guarantee</p>
       <p className="text-faint mt-1 text-[11px] leading-relaxed">
-        sim-noirwire does not publish a maintenance margin ratio or fee over the wire; this assumes
-        half the implied initial margin (10000 / max leverage) and a 0.05% taker fee, both read from
-        its current engine configuration, not from the API. See docs/BUILD-NOTES.md.
+        These figures are worked out on this device from your entry price. They assume half the
+        starting margin as the liquidation threshold and a 0.05% trading fee. The exchange decides
+        the real threshold.
       </p>
     </>
   );

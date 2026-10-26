@@ -7,6 +7,7 @@ import { redactToken } from "../rollup/redact";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
 import { createLatestReads } from "./latestRead";
+import { withoutOpenOutcome } from "./openCopy";
 import type {
   AccountStatus,
   CancelResult,
@@ -214,6 +215,13 @@ export function useTrading(
   const patchFlow = useCallback((owner: string, patch: Partial<OwnerFlow>) => {
     setFlows((prev) => ({ ...prev, [owner]: { ...(prev[owner] ?? NO_FLOW), ...patch } }));
   }, []);
+
+  // A disconnect or a switch to another wallet forgets the last open-account
+  // answer for the wallet leaving, so coming back never shows a stale error.
+  useEffect(() => {
+    if (!walletKey) return;
+    return () => setFlows((prev) => withoutOpenOutcome(prev, walletKey));
+  }, [walletKey]);
 
   useEffect(() => {
     if (!wallet) return;

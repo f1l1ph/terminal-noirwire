@@ -117,6 +117,81 @@ export function recheckOffer(
   return status === "unknown" ? "check" : null;
 }
 
-/** True when this browser said it may not keep the device's trading keys, so trading from it is not recommended. */
+/**
+ * True when the browser did not promise to keep this device's trading keys.
+ * Most browsers answer this way for a new site, so it is a quiet note, never
+ * a warning: a browser that cannot store the keys at all fails the key setup
+ * itself, which is reported as a failure.
+ */
 export const keysMayNotPersist = (keys: OrderKeyState | null): boolean =>
   keys?.seedPersisted === false;
+
+export const KEYS_NOT_PERSISTED_NOTE =
+  "If your browser clears site data, you will set up trading on this device again. Your funds are not affected.";
+
+/** The flows with the owner's last open-account outcome forgotten, so a later visit starts clean. */
+export function withoutOpenOutcome<T extends { outcome: OpenAccountOutcome | null }>(
+  flows: Record<string, T>,
+  owner: string,
+): Record<string, T> {
+  const flow = flows[owner];
+  if (!flow || flow.outcome === null) return flows;
+  return { ...flows, [owner]: { ...flow, outcome: null } };
+}
+
+export type SetupStepId = "connect" | "verify" | "open" | "keys" | "deposit";
+export type SetupStepState = "done" | "current" | "upcoming";
+
+export interface SetupStep {
+  id: SetupStepId;
+  label: string;
+  state: SetupStepState;
+}
+
+export const SETUP_LABELS: Record<SetupStepId, string> = {
+  connect: "Connect wallet",
+  verify: "Verify wallet",
+  open: "Open account",
+  keys: "Trading keys",
+  deposit: "Deposit USDC",
+};
+
+const SETUP_ORDER: SetupStepId[] = ["connect", "verify", "open", "keys", "deposit"];
+
+/**
+ * The steps from a new visitor to a funded account, each done, current or
+ * upcoming, from the state the view already holds. `funded` is null while the
+ * balance is not known; an unknown balance is never read as funded.
+ */
+export function setupSteps(input: {
+  connected: boolean;
+  status: AccountStatus;
+  keys: OrderKeyState | null;
+  funded: boolean | null;
+}): { steps: SetupStep[]; ready: boolean } {
+  const { connected, status, keys, funded } = input;
+  const keysActive = keys !== null;
+  const verified = connected && (status !== "unknown" || keysActive);
+  const opened = verified && (status === "open" || (status === "unknown" && keysActive));
+  const keysReady = opened && keys?.stage === "ready";
+  const done: Record<SetupStepId, boolean> = {
+    connect: connected,
+    verify: verified,
+    open: opened,
+    keys: keysReady,
+    deposit: keysReady && funded === true,
+  };
+  const currentId = SETUP_ORDER.find((id) => !done[id]);
+  const steps = SETUP_ORDER.map((id): SetupStep => {
+    const state = done[id] ? "done" : id === currentId ? "current" : "upcoming";
+    return { id, label: SETUP_LABELS[id], state };
+  });
+  return { steps, ready: currentId === undefined };
+}
+
+/** How far through the trading-key wait this device is, 0 to 1. */
+export function keysSettleFraction(secondsLeft: number, totalMs: number): number {
+  const total = totalMs / 1000;
+  if (total <= 0) return 1;
+  return Math.min(1, Math.max(0, 1 - secondsLeft / total));
+}

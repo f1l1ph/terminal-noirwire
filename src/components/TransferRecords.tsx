@@ -179,13 +179,13 @@ export function TransferRecords({
               Signature <span title={item.signature}>{shortSignature(item.signature)}</span>
             </p>
           )}
-          <div className="mt-2 flex gap-2">
+          <div className="mt-2 flex flex-wrap gap-2">
             {actionsOf(item).map((action) =>
               action === "copy-signature" ? (
                 <button
                   key={action}
                   type="button"
-                  className={`${btnGhost} h-7 px-2 text-[11px]`}
+                  className={`${btnGhost} px-2 text-[11px]`}
                   onClick={() => copy(item.signature ?? "")}
                 >
                   Copy signature
@@ -194,7 +194,7 @@ export function TransferRecords({
                 <button
                   key={action}
                   type="button"
-                  className={`${btnGhost} h-7 px-2 text-[11px]`}
+                  className={`${btnGhost} px-2 text-[11px]`}
                   disabled={busy}
                   onClick={() => void resume(item, action)}
                 >
@@ -210,7 +210,7 @@ export function TransferRecords({
                 <button
                   key={action}
                   type="button"
-                  className={`${btnGhost} h-7 px-2 text-[11px]`}
+                  className={`${btnGhost} px-2 text-[11px]`}
                   disabled={busy}
                   onClick={() => void dismiss()}
                 >
