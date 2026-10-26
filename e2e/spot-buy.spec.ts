@@ -9,11 +9,14 @@ test.describe("A spot buy", () => {
     await page.goto("/");
     await createAndFundWallet(page);
 
-    await page.getByRole("button", { name: "NSOL-NUSD" }).click();
-    await expect(page.getByText("Trade NSOL-NUSD")).toBeVisible();
+    await page.getByRole("button", { name: /^SOL-NUSD/ }).click();
+    await expect(page.getByRole("button", { name: /^SOL-NUSD/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     await expect(page.getByRole("button", { name: "Buy", exact: true })).toBeVisible();
 
-    await page.getByLabel("Quantity (SOL)").fill("1");
+    await page.getByLabel("Amount (nUSD)").fill("200");
     await submitOrder(page, "Place test buy");
 
     await expect(page.getByText("Filled", { exact: true })).toBeVisible({ timeout: 15_000 });

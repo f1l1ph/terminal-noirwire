@@ -3,7 +3,7 @@ import type { KeyValueStore } from "../wallet/index";
 /** The statements the trader accepts before the first order from a device. */
 export const REAL_MONEY_STATEMENTS = [
   "This is real money on Solana mainnet, and you can lose what you deposit.",
-  "Orders are private and final: there is no stop-loss, and NoirWire cannot reverse a trade.",
+  "Filled trades are final, there is no stop-loss, and only your wallet can withdraw your funds (it needs a little SOL for fees).",
 ] as const;
 
 export const acknowledgementKey = (owner: string): string =>
