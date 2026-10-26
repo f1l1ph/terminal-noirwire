@@ -136,7 +136,10 @@ export function AccountSetup({
         if (step.state === "done") return null;
         return (
           <>
-            <p>One button, no code. Your address must be on the invite list.</p>
+            <p>
+              Creates your private trading account. Your wallet asks you to approve one transaction;
+              no funds move.
+            </p>
             {(needsInvite || notice?.tone === "wait") && status !== "open" && (
               <button
                 type="button"
