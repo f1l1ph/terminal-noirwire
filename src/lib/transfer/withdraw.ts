@@ -4,6 +4,7 @@ import {
   withdrawSpl,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Transaction } from "@solana/web3.js";
+import { withComputeBudget } from "./computeBudget";
 import type { OperationRecord } from "./journal";
 import {
   POLL_MS,
@@ -110,18 +111,20 @@ async function balanceInRollup(
       kind: "withdraw",
       step: "withdraw",
       atoms,
-      instructions: exists
-        ? [delegateEphemeralAtaIx(env.owner, balance, env.validator)]
-        : [
-            createAssociatedTokenAccountIdempotentIx(
-              env.owner,
-              walletAccount(env),
-              env.owner,
-              env.mint,
-            ),
-            initEphemeralAtaIx(balance, env.owner, env.mint, env.owner),
-            delegateEphemeralAtaIx(env.owner, balance, env.validator),
-          ],
+      instructions: withComputeBudget(
+        exists
+          ? [delegateEphemeralAtaIx(env.owner, balance, env.validator)]
+          : [
+              createAssociatedTokenAccountIdempotentIx(
+                env.owner,
+                walletAccount(env),
+                env.owner,
+                env.mint,
+              ),
+              initEphemeralAtaIx(balance, env.owner, env.mint, env.owner),
+              delegateEphemeralAtaIx(env.owner, balance, env.validator),
+            ],
+      ),
       shape: { kind: "setup" },
       before: 0n,
       moved: 0n,
@@ -269,11 +272,13 @@ export async function shuttleToWallet(
       kind: "withdraw",
       step,
       atoms,
-      instructions: await withdrawSpl(env.owner, env.mint, atoms, {
-        validator: env.validator,
-        payer: env.owner,
-        initAtasIfMissing: true,
-      }),
+      instructions: withComputeBudget(
+        await withdrawSpl(env.owner, env.mint, atoms, {
+          validator: env.validator,
+          payer: env.owner,
+          initAtasIfMissing: true,
+        }),
+      ),
       shape: { kind: "exit", atoms },
       before,
       moved: atoms,

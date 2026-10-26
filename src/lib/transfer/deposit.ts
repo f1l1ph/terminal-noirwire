@@ -29,6 +29,7 @@ import {
   type Stopped,
   type TransferEnv,
 } from "./operation";
+import { withComputeBudget } from "./computeBudget";
 import { errorCode, pollUntil, readTokenBalance } from "./solanaRpc";
 import { tokenAtoms } from "./verdicts";
 
@@ -145,7 +146,7 @@ async function moveIntoRollup(
     step: "deposit",
     atoms,
     rollupBefore,
-    instructions,
+    instructions: withComputeBudget(instructions),
     shape: { kind: "move", atoms, sealed: env.sealed },
     before: wallet,
     moved: atoms,
