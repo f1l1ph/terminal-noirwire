@@ -32,15 +32,16 @@ export async function signChecked(
     : signer.signTransaction(built));
   const reason = signedDiffers(built, builtMessage, signed, signer.publicKey);
   if (reason) {
-    if (process.env.NODE_ENV !== "production") {
-      logRefusedCapture(reason, chain, builtMessage, signed);
-    }
+    logRefusedCapture(reason, chain, builtMessage, signed);
     throw new SignedTransactionRefused(reason);
   }
   return signed;
 }
 
-/** Development builds only: what the wallet handed back, for building an exact acceptance rule. */
+/**
+ * What the wallet handed back, for building an exact acceptance rule. Messages
+ * and which keys signed only: without the signatures nobody can send it.
+ */
 function logRefusedCapture(
   reason: string,
   chain: MainnetChain | undefined,
@@ -48,16 +49,20 @@ function logRefusedCapture(
   signed: Transaction,
 ) {
   const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
-  console.info("wallet changed the transaction: capture", {
-    reason,
-    chain,
-    builtMessageBase64: base64(builtMessage),
-    signedMessageBase64: base64(signed.serializeMessage()),
-    signers: signed.signatures.map((entry) => ({
-      publicKey: entry.publicKey.toBase58(),
-      signed: entry.signature !== null,
-    })),
-  });
+  try {
+    console.info("wallet changed the transaction: capture", {
+      reason,
+      chain,
+      builtMessageBase64: base64(builtMessage),
+      signedMessageBase64: base64(signed.serializeMessage()),
+      signers: signed.signatures.map((entry) => ({
+        publicKey: entry.publicKey.toBase58(),
+        signed: entry.signature !== null,
+      })),
+    });
+  } catch {
+    console.info("wallet changed the transaction: capture", { reason, chain });
+  }
 }
 
 const CONFIRM_TIMEOUT_MS = 60_000;
