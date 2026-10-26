@@ -1,4 +1,4 @@
-import { FIXED_POINT_SCALE, toFixedPoint } from "./decimal";
+import { BPS_SCALE, FIXED_POINT_SCALE, toFixedPoint } from "./decimal";
 import { impliedInitialMarginBps } from "./risk";
 
 /** One perp market the account has a position or resting orders in, in quote atoms and lots. */
@@ -18,8 +18,6 @@ export interface PerpExposure {
 
 export type MarginSummary =
   { kind: "known"; equity: bigint; reserved: bigint; available: bigint } | { kind: "unknown" };
-
-const BPS_SCALE = 10_000n;
 
 function abs(value: bigint): bigint {
   return value < 0n ? -value : value;

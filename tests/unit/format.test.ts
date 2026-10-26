@@ -8,6 +8,7 @@ import {
   formatPercent,
   formatRelativeAge,
   formatShortAddress,
+  formatUpdatedAge,
   UNAVAILABLE,
 } from "@/lib/format";
 
@@ -90,6 +91,17 @@ describe("formatRelativeAge", () => {
     expect(formatRelativeAge(120_000)).toBe("2m");
     expect(formatRelativeAge(7_200_000)).toBe("2h");
     expect(formatRelativeAge(172_800_000)).toBe("2d");
+  });
+});
+
+describe("formatUpdatedAge", () => {
+  it("says just now without a trailing ago", () => {
+    expect(formatUpdatedAge(400)).toBe("Updated just now");
+  });
+
+  it("names the age and ends in ago", () => {
+    expect(formatUpdatedAge(42_000)).toBe("Updated 42s ago");
+    expect(formatUpdatedAge(120_000)).toBe("Updated 2m ago");
   });
 });
 

@@ -8,55 +8,57 @@ import type { WalletHookResult } from "@/lib/wallet/useWallet";
 
 /**
  * The fixed 1440 x 900 frame from the design review: `h-dvh`, no document
- * scroll. Header and status bar span the full width at a fixed height;
+ * scroll. Header and footer span the full width at a fixed height;
  * everything between them is one flexible column so it still holds at a
  * shorter or taller viewport, with only the panels meant to scroll
- * actually scrolling.
+ * actually scrolling. The header never wraps: wordmark, network badge and
+ * wallet button stay on one line at 390 px.
  */
 export function TerminalShell({
   connectionState,
-  marketDataStale,
   wallet,
-  statusBarText,
+  footer,
   onResetLayout,
   children,
 }: {
   connectionState: ConnectionState;
-  marketDataStale?: boolean;
   wallet: WalletHookResult;
-  statusBarText: string;
+  /** The quiet line under the workspace; absent where it would add nothing. */
+  footer: ReactNode;
   /** Present only once the desktop workspace layout differs from its default - the control itself appears only then. */
   onResetLayout?: () => void;
   children: ReactNode;
 }) {
   return (
     <div className="bg-base flex h-dvh min-h-0 flex-col overflow-hidden">
-      <header className="border-line-subtle relative z-20 flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4">
-        <div className="flex items-center gap-2">
+      <header className="relative z-20 flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
+        <div className="flex min-w-0 items-center gap-2">
           <Mark size={18} title="NoirWire" />
           <span className="text-ink-strong text-[13px] font-semibold tracking-tight">NoirWire</span>
           <NetworkBadge />
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {onResetLayout && (
             <button
               type="button"
-              className="text-dim hover:text-ink text-[12px] underline decoration-dotted underline-offset-2"
+              className="text-dim hover:text-ink rounded-tile text-[12px] underline decoration-dotted underline-offset-2"
               onClick={onResetLayout}
             >
               Reset layout
             </button>
           )}
-          <ConnectionStatus state={connectionState} marketDataStale={marketDataStale} />
+          <ConnectionStatus state={connectionState} />
           <WalletWidget wallet={wallet} />
         </div>
       </header>
-      <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-4 py-2">
+      <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 pb-2 sm:px-4">
         {children}
       </main>
-      <footer className="border-line-subtle text-faint tnum flex h-9 shrink-0 items-center border-t px-4 text-[11px]">
-        {statusBarText}
-      </footer>
+      {footer && (
+        <footer className="text-faint tnum flex h-9 shrink-0 items-center justify-between gap-3 px-3 text-[11px] sm:px-4">
+          {footer}
+        </footer>
+      )}
     </div>
   );
 }

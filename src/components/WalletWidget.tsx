@@ -151,6 +151,11 @@ function useDismissOnOutside(
   }, [open, containerRef, close]);
 }
 
+const WALLET_INSTALLS = [
+  { name: "Phantom", url: "https://phantom.com/download" },
+  { name: "Solflare", url: "https://solflare.com/download" },
+] as const;
+
 const CONNECT_FAILED = "Could not connect. Check the wallet and try again.";
 const MAX_REASON_LENGTH = 160;
 
@@ -159,6 +164,13 @@ function connectFailure(error: unknown): string {
   const reason =
     error instanceof Error ? redactToken(error.message).trim().slice(0, MAX_REASON_LENGTH) : "";
   return reason ? `${CONNECT_FAILED} The wallet said: ${reason}` : CONNECT_FAILED;
+}
+
+const OPEN_WALLET_MENU_EVENT = "noirwire:open-wallet-menu";
+
+/** Opens the header's wallet menu from anywhere on the page, so a button in the page can offer the same choice. */
+export function openWalletMenu() {
+  window.dispatchEvent(new Event(OPEN_WALLET_MENU_EVENT));
 }
 
 /** Phantom, Solflare and any other Wallet Standard wallet that signs for Solana mainnet: connect, show and copy the address, disconnect. */
@@ -170,6 +182,11 @@ function ExternalWalletWidget() {
   const containerRef = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useDismissOnOutside(open, containerRef, close);
+  useEffect(() => {
+    const show = () => setOpen(true);
+    window.addEventListener(OPEN_WALLET_MENU_EVENT, show);
+    return () => window.removeEventListener(OPEN_WALLET_MENU_EVENT, show);
+  }, []);
 
   const address = signer?.publicKey.toBase58() ?? null;
 
@@ -198,28 +215,31 @@ function ExternalWalletWidget() {
     <div className="relative" ref={containerRef}>
       <button
         type="button"
-        className="border-line text-ink rounded-tile min-h-11 border px-3 text-[13px]"
+        className="border-line text-ink rounded-tile min-h-11 border px-3 text-[13px] whitespace-nowrap"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
         {connecting ? "Connecting…" : address ? formatShortAddress(address) : "Connect wallet"}
       </button>
       {open && (
-        <div className={`${panel} absolute right-0 z-10 mt-2 w-80 p-4`}>
+        <div className={`${panel} absolute right-0 z-10 mt-2 w-[min(20rem,calc(100vw-2rem))] p-4`}>
           {address ? (
             <>
-              <p className="text-ink text-[13px] break-all">{address}</p>
+              <p className="text-faint text-[12px]">Connected wallet</p>
+              <p className="tnum text-ink mt-0.5 text-[14px]" title={address}>
+                {formatShortAddress(address)}
+              </p>
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
-                  className={`${btnGhost} h-9 flex-1 text-[12px]`}
+                  className={`${btnGhost} flex-1 text-[12px]`}
                   onClick={() => void copyAddress()}
                 >
                   {copied ? "Copied" : "Copy address"}
                 </button>
                 <button
                   type="button"
-                  className={`${btnGhost} h-9 flex-1 text-[12px]`}
+                  className={`${btnGhost} flex-1 text-[12px]`}
                   onClick={() => {
                     setOpen(false);
                     void disconnect();
@@ -228,29 +248,58 @@ function ExternalWalletWidget() {
                   Disconnect
                 </button>
               </div>
+              <a
+                className="text-dim hover:text-ink mt-3 inline-flex min-h-11 items-center text-[12px] underline underline-offset-2"
+                href={`https://solscan.io/account/${address}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                View address on Solscan
+              </a>
             </>
           ) : wallets.length === 0 ? (
-            <p className="text-faint text-[12px]">
-              No supported wallet found in this browser. Install Phantom or Solflare, then reload
-              this page.
-            </p>
+            <>
+              <p className="text-ink text-[13px] font-medium">No wallet found</p>
+              <p className="text-faint mt-1 text-[12px]">
+                Install one of these, then reload this page.
+              </p>
+              <ul className="mt-3 flex flex-col gap-2">
+                {WALLET_INSTALLS.map((install) => (
+                  <li key={install.name}>
+                    <a
+                      className={`${btnGhost} w-full justify-between px-3`}
+                      href={install.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <span>{install.name}</span>
+                      <span className="text-faint text-[12px]">Install</span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </>
           ) : (
-            <ul className="flex flex-col gap-2">
-              {wallets.map((wallet) => (
-                <li key={wallet.name}>
-                  <button
-                    type="button"
-                    className={`${btnGhost} flex h-9 w-full items-center gap-2 px-3 text-[13px]`}
-                    disabled={connecting}
-                    onClick={() => void choose(wallet)}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element -- a wallet's own data: icon */}
-                    <img src={wallet.icon} alt="" width={18} height={18} />
-                    {wallet.name}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <p className="text-ink text-[13px] font-medium">Connect a wallet</p>
+              <ul className="mt-3 flex flex-col gap-2">
+                {wallets.map((wallet) => (
+                  <li key={wallet.name}>
+                    <button
+                      type="button"
+                      className={`${btnGhost} w-full justify-start px-3 text-[13px]`}
+                      disabled={connecting}
+                      onClick={() => void choose(wallet)}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element -- a wallet's own data: icon */}
+                      <img src={wallet.icon} alt="" width={24} height={24} className="rounded" />
+                      <span className="flex-1 text-left">{wallet.name}</span>
+                      <span className="text-faint text-[12px]">Detected</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
           {problem && <p className="text-danger mt-2 text-[12px]">{problem}</p>}
         </div>

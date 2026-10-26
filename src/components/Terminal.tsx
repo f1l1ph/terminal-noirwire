@@ -3,14 +3,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { env } from "@/lib/env";
 import { MARKET_IDS } from "@/lib/market-data/types";
-import type {
-  Candle,
-  CandleInterval,
-  MarketInfo,
-  PublicFill,
-  StatsResponse,
-} from "@/lib/market-data/types";
-import type { ConnectionState } from "@/lib/market-data/socket";
+import type { CandleInterval } from "@/lib/market-data/types";
 import {
   useMarketDataConnection,
   useMarketDataState,
@@ -31,12 +24,12 @@ import { offersSpotTrading, tradeGate } from "@/lib/trading/uiRules";
 import { AccountSetup } from "@/components/AccountSetup";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
+import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
+import { OrderNotice } from "@/components/OrderNotice";
+import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
 import { TerminalShell } from "@/components/TerminalShell";
 import { DesktopWorkspace } from "@/components/DesktopWorkspace";
-import { MarketChart } from "@/components/MarketChart";
-import { VenuePulse } from "@/components/VenuePulse";
-import { PublicTape } from "@/components/PublicTape";
-import { PublicView } from "@/components/PublicView";
+import { PhoneLayout, type PhoneView } from "@/components/PhoneLayout";
 import {
   WitnessRail,
   type OrderDescriptor,
@@ -60,6 +53,8 @@ const FundsSection =
   process.env.NEXT_PUBLIC_DEPOSITS === "on"
     ? lazy(() => import("@/components/FundsSection"))
     : null;
+
+const CANDLE_INTERVAL: CandleInterval = "1m";
 
 interface OrderSession {
   market: string;
@@ -87,8 +82,6 @@ function sessionKey(owner: string, market: string): string {
 export function Terminal() {
   const store = useSharedMarketDataStore();
   const [chosenMarketId, setChosenMarketId] = useState<string>(MARKET_IDS[0]);
-  const [interval, setInterval] = useState<CandleInterval>("1m");
-  const [retryToken, setRetryToken] = useState(0);
   const allData = useMarketDataState(store);
   // Only the perpetual is launched on mainnet: spot markets are not listed at all.
   const data = useMemo(
@@ -104,11 +97,14 @@ export function Terminal() {
     data.markets.length > 0 && !data.markets.some((item) => item.id === chosenMarketId)
       ? data.markets[0].id
       : chosenMarketId;
-  useMarketDataConnection(store, env.simUrl, env.simWsUrl, selectedMarketId, interval, retryToken);
+  useMarketDataConnection(store, env.simUrl, env.simWsUrl, selectedMarketId, CANDLE_INTERVAL);
   const now = useNow();
   const isDesktop = useMediaQuery("(min-width: 900px)");
   const [layoutResetSignal, setLayoutResetSignal] = useState(0);
-  const [phoneView, setPhoneView] = useState<"trade" | "market">("trade");
+  const [phoneView, setPhoneView] = useState<PhoneView>("trade");
+  const mainnet = isMainnetBuild();
+  const [privacyTools] = usePrivacyTools();
+  const toolsOn = !mainnet || privacyTools;
   const [dockTab, setDockTab] = useState<Tab>("positions");
 
   const wallet = useWallet();
@@ -147,7 +143,7 @@ export function Terminal() {
       cancelled = true;
     };
   }, [trading.client.mode]);
-  const network = deployment?.network ?? "localnet";
+  const network = deployment?.network ?? (mainnet ? "mainnet" : "localnet");
 
   // One session per market, not one session total: switching markets must
   // not erase what happened in another one (second design review, item 5).
@@ -452,15 +448,13 @@ export function Terminal() {
   const hasSpotMarket = data.markets.some((item) => item.kind === "spot");
   const transferBetweenBalances = hasSpotMarket ? trading.transferBetweenBalances : null;
   const mark = data.marksByMarket[selectedMarketId] ?? null;
-  // The global connection dot must never say "Live" over a stale selected
-  // mark (third design review, must-fix 1): the socket itself can be fully
-  // open while sim-noirwire's own price source has gone quiet.
+  // The connection dot reports the socket only; the price header shows how
+  // old the price is.
   const markStale = isStale(mark?.time, now, STALE_MARK_MS);
   const tape = data.tapeByMarket[selectedMarketId] ?? [];
-  const candles = data.candlesByMarket[selectedMarketId]?.[interval] ?? [];
-  const candlesLoading = data.candlesLoading[candlesLoadingKey(selectedMarketId, interval)] ?? true;
-  const candlesFetchFailed =
-    data.candlesError[candlesLoadingKey(selectedMarketId, interval)] ?? false;
+  const candles = data.candlesByMarket[selectedMarketId]?.[CANDLE_INTERVAL] ?? [];
+  const candlesLoading =
+    data.candlesLoading[candlesLoadingKey(selectedMarketId, CANDLE_INTERVAL)] ?? true;
 
   const position = trading.state.positions[selectedMarketId] ?? null;
   const positionsArray = Object.values(trading.state.positions);
@@ -624,6 +618,29 @@ export function Terminal() {
     ? `${market.id} · ${env.networkLabel} · last data ${mark ? formatClockTime(new Date(mark.time)) : "unavailable"} · account ${ownerIdentity ? (trading.lastSyncedAtMs ? `synced at ${formatClockTime(new Date(trading.lastSyncedAtMs))}` : "not yet synced") : "no wallet"}`
     : env.networkLabel;
 
+  const resetLayout = () => setLayoutResetSignal((signal) => signal + 1);
+  const footer = !mainnet ? (
+    statusBarText
+  ) : isDesktop ? (
+    <>
+      <span className="truncate">Orders are private. The price updates about once a minute.</span>
+      <span className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          className="rounded-tile text-faint hover:text-ink min-h-8 px-2 text-[12px] whitespace-nowrap transition-colors"
+          onClick={resetLayout}
+        >
+          Reset layout
+        </button>
+        <PrivacyToolsToggle />
+      </span>
+    </>
+  ) : null;
+
+  const orderNotice = mainnet ? (
+    <OrderNotice order={relevantSession?.descriptor ?? null} steps={railSteps} />
+  ) : null;
+
   const orderEntry = market && (
     <OrderEntry
       key={market.id}
@@ -650,9 +667,12 @@ export function Terminal() {
       }}
       ownerAddress={owner}
       setup={
-        isMainnetBuild() && ownerIdentity ? (
+        isMainnetBuild() ? (
           <AccountSetup
-            address={ownerIdentity.address}
+            address={ownerIdentity?.address ?? null}
+            funded={
+              trading.accountLoaded ? Number(trading.state.collateral?.total ?? "0") > 0 : null
+            }
             status={trading.accountStatus}
             needsInvite={trading.needsInvite}
             opening={trading.opening}
@@ -661,6 +681,7 @@ export function Terminal() {
             onRecheck={trading.recheckAccount}
             keys={trading.orderKeys}
             now={now}
+            depositsOpen={FundsSection !== null}
           />
         ) : null
       }
@@ -765,16 +786,11 @@ export function Terminal() {
       mark={mark}
       now={now}
       quoteSymbol={quoteSymbol}
-      interval={interval}
-      onIntervalChange={setInterval}
       candles={candles}
       tape={tape}
       ownSequences={ownSequences}
-      connectionState={data.connectionState}
       candlesLoading={candlesLoading}
-      candlesFetchFailed={candlesFetchFailed}
       markStale={markStale}
-      onRetry={() => setRetryToken((token) => token + 1)}
       markets={data.markets}
       selectedMarketId={selectedMarketId}
       onSelectMarket={setChosenMarketId}
@@ -785,6 +801,7 @@ export function Terminal() {
       checkPrivacy={trading.checkPrivacy}
       orderEntry={orderEntry}
       accountDock={accountDock}
+      orderNotice={orderNotice}
     />
   ) : (
     <PhoneLayout
@@ -799,29 +816,27 @@ export function Terminal() {
       orderEntry={orderEntry}
       witnessRail={witnessRail}
       accountDock={accountDock}
-      interval={interval}
       candles={candles}
       tape={tape}
       ownSequences={ownSequences}
-      connectionState={data.connectionState}
       candlesLoading={candlesLoading}
-      candlesFetchFailed={candlesFetchFailed}
-      onRetry={() => setRetryToken((token) => token + 1)}
       stats={data.stats}
       network={network}
       checkPrivacy={trading.checkPrivacy}
       markStale={markStale}
       clientDurationMs={clientDurationMs}
+      mainnet={mainnet}
+      toolsOn={toolsOn}
+      orderNotice={orderNotice}
     />
   );
 
   return (
     <TerminalShell
       connectionState={data.connectionState}
-      marketDataStale={markStale}
       wallet={wallet}
-      statusBarText={statusBarText}
-      onResetLayout={isDesktop ? () => setLayoutResetSignal((signal) => signal + 1) : undefined}
+      footer={footer}
+      onResetLayout={isDesktop && !mainnet ? resetLayout : undefined}
     >
       {content}
     </TerminalShell>
@@ -845,158 +860,4 @@ function RailStepSummary(type: RailStepType | undefined): string {
     default:
       return "placed";
   }
-}
-
-/**
- * Phone layout: a 48 px sticky bar (market, side, quantity, status, the
- * primary action) always visible, with the first viewport showing side,
- * quantity, available balance and the action together - the second design
- * review's item 10. Secondary evidence (chart, tape, pulse, public view)
- * collapses behind the "Market" toggle, same as before.
- */
-function PhoneLayout({
-  market,
-  mark,
-  markets,
-  selectedMarketId,
-  onSelectMarket,
-  phoneView,
-  onPhoneViewChange,
-  orderEntry,
-  witnessRail,
-  accountDock,
-  interval,
-  candles,
-  tape,
-  ownSequences,
-  connectionState,
-  candlesLoading,
-  candlesFetchFailed,
-  onRetry,
-  stats,
-  now,
-  network,
-  checkPrivacy,
-  markStale,
-  clientDurationMs,
-}: {
-  market: MarketInfo | undefined;
-  mark: { price: string; time: number } | null;
-  now: number;
-  markets: MarketInfo[];
-  selectedMarketId: string;
-  onSelectMarket: (market: string) => void;
-  phoneView: "trade" | "market";
-  onPhoneViewChange: (view: "trade" | "market") => void;
-  orderEntry: React.ReactNode;
-  witnessRail: React.ReactNode;
-  accountDock: React.ReactNode;
-  interval: CandleInterval;
-  candles: Candle[];
-  tape: PublicFill[];
-  ownSequences: ReadonlySet<number>;
-  connectionState: ConnectionState;
-  candlesLoading: boolean;
-  candlesFetchFailed: boolean;
-  onRetry: () => void;
-  stats: StatsResponse | null;
-  network: string;
-  checkPrivacy: ReturnType<typeof useTrading>["checkPrivacy"];
-  markStale: boolean;
-  clientDurationMs: number | null;
-}) {
-  const priceDecimals = market ? priceDecimalsOf(market) : 2;
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-      {/* The 48 px sticky bar: market, mark, change, always visible. */}
-      <div className="bg-surface border-line-subtle rounded-panel sticky top-0 z-10 flex h-12 shrink-0 items-center justify-between px-3 text-[13px]">
-        <span className="text-ink-strong font-medium">{market?.id ?? ""}</span>
-        <span className="tnum flex items-center gap-2">
-          <span className="text-ink">
-            {mark ? formatDecimal(mark.price, priceDecimals) : "Unavailable"}
-          </span>
-          {market?.change24hPercent !== null && market?.change24hPercent !== undefined && (
-            <span className={market.change24hPercent >= 0 ? "text-safe" : "text-danger"}>
-              {market.change24hPercent >= 0 ? "+" : ""}
-              {market.change24hPercent.toFixed(2)}%
-            </span>
-          )}
-        </span>
-      </div>
-      {/* One compact market selector: a single row of chips, not the full desktop watchlist. */}
-      <div className="flex gap-1.5 overflow-x-auto" role="group" aria-label="Markets">
-        {markets.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            aria-pressed={item.id === selectedMarketId}
-            onClick={() => onSelectMarket(item.id)}
-            className={`rounded-tile min-h-9 shrink-0 px-3 text-[12px] ${
-              item.id === selectedMarketId
-                ? "bg-elevated text-ink-strong"
-                : "border-line text-dim border"
-            }`}
-          >
-            {item.id}
-          </button>
-        ))}
-      </div>
-      <div className="flex gap-2" role="group" aria-label="View">
-        <button
-          type="button"
-          aria-pressed={phoneView === "trade"}
-          onClick={() => onPhoneViewChange("trade")}
-          className={`rounded-tile min-h-11 flex-1 text-[13px] ${phoneView === "trade" ? "bg-elevated text-ink-strong" : "text-dim"}`}
-        >
-          Trade
-        </button>
-        <button
-          type="button"
-          aria-pressed={phoneView === "market"}
-          onClick={() => onPhoneViewChange("market")}
-          className={`rounded-tile min-h-11 flex-1 text-[13px] ${phoneView === "market" ? "bg-elevated text-ink-strong" : "text-dim"}`}
-        >
-          Market
-        </button>
-      </div>
-      {phoneView === "trade" ? (
-        <div className="flex flex-col gap-2">
-          {orderEntry}
-          {witnessRail}
-          {accountDock}
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          <div className="flex h-[260px] flex-col">
-            <MarketChart
-              market={market}
-              interval={interval}
-              candles={candles}
-              mark={mark}
-              publicFills={tape}
-              ownSequences={ownSequences}
-              connectionState={connectionState}
-              loading={candlesLoading}
-              fetchFailed={candlesFetchFailed}
-              markStale={markStale}
-              onRetry={onRetry}
-            />
-          </div>
-          <PublicTape
-            fills={tape}
-            priceDecimals={market ? priceDecimalsOf(market) : 2}
-            sizeDecimals={market ? sizeDecimalsOf(market) : 4}
-            ownSequences={ownSequences}
-          />
-          <VenuePulse
-            stats={stats}
-            now={now}
-            network={network}
-            clientDurationMs={clientDurationMs}
-          />
-          <PublicView market={selectedMarketId} checkPrivacy={checkPrivacy} />
-        </div>
-      )}
-    </div>
-  );
 }

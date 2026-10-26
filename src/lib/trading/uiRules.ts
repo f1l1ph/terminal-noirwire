@@ -1,4 +1,4 @@
-import type { AccountStatus, OrderKeyState } from "./types";
+import type { AccountStatus, OrderKeyState, Side } from "./types";
 
 /** Test funds, the faucet and the built-in test wallet exist on test builds only. */
 export const offersTestFunds = (mainnet: boolean): boolean => !mainnet && !!TEST_ONLY_COPY;
@@ -42,6 +42,12 @@ export const walletlessDockText = (mainnet: boolean): string =>
 
 export const placeLabel = (actionWord: string, mainnet: boolean): string =>
   mainnet || !TEST_ONLY_COPY ? `Place ${actionWord}` : `${TEST_ONLY_COPY.placeVerb} ${actionWord}`;
+
+/** The side as the trader reads it: Long or Short on a perpetual, Buy or Sell on spot. */
+export function sideWord(isPerp: boolean, side: Side): "Long" | "Short" | "Buy" | "Sell" {
+  if (isPerp) return side === "buy" ? "Long" : "Short";
+  return side === "buy" ? "Buy" : "Sell";
+}
 
 export type TradeGate = "needsAccount" | "accountUnknown" | "keysNotReady" | "keysFailed";
 

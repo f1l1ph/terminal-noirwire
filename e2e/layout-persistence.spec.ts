@@ -23,7 +23,7 @@ async function chartPanelBox(page: Page) {
 /**
  * The CRITICAL rule behind the dockview desktop layout: a panel's own React
  * state must never reset because the layout moved around it. A typed-but-
- * not-submitted quantity is the simplest outside observer of that - it
+ * not-submitted amount is the simplest outside observer of that - it
  * lives in `OrderEntry`'s own local state, so it only survives a drag, a
  * resize, a maximize/restore, and a tab switch elsewhere in the layout if
  * every panel was added with `renderer: "always"` and dockview really does
@@ -32,15 +32,15 @@ async function chartPanelBox(page: Page) {
 test.describe("Layout changes never reset the order ticket", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("a typed quantity survives dragging the ticket, a sash drag, maximize/restore, and a tab switch", async ({
+  test("a typed amount survives dragging the ticket, a sash drag, maximize/restore, and a tab switch", async ({
     page,
   }) => {
     await page.goto("/");
     await page.getByRole("tab", { name: "Chart" }).waitFor();
 
-    const quantity = page.getByLabel("Quantity (SOL)");
-    await quantity.fill("2.5");
-    await expect(quantity).toHaveValue("2.5");
+    const quantity = page.getByLabel("Amount (nUSD)");
+    await quantity.fill("250");
+    await expect(quantity).toHaveValue("250");
 
     // 1) Drag the Order ticket's tab onto the left edge of the Markets panel - it should dock to the workspace's left edge, becoming the new leftmost column.
     const ticketTab = page.getByRole("tab", { name: "Order ticket" });
@@ -59,7 +59,7 @@ test.describe("Layout changes never reset the order ticket", () => {
     expect(ticketTabBoxAfter).toBeTruthy();
     // Far to the left of where it started, i.e. now at the workspace's own left edge.
     expect(ticketTabBoxAfter!.x).toBeLessThan(ticketTabBoxBefore.x - 400);
-    await expect(quantity).toHaveValue("2.5");
+    await expect(quantity).toHaveValue("250");
 
     // 2) Drag the sash between the (now adjacent) ticket and Markets panels.
     const ticketPanel = page.getByRole("tabpanel", { name: "Order ticket" });
@@ -68,7 +68,7 @@ test.describe("Layout changes never reset the order ticket", () => {
       x: sash.x + sash.width / 2 + 40,
       y: sash.y + sash.height / 2,
     });
-    await expect(quantity).toHaveValue("2.5");
+    await expect(quantity).toHaveValue("250");
 
     // 3) Maximize the Chart group (double-click its tab), then restore it (double-click again).
     const beforeMaximize = await chartPanelBox(page);
@@ -76,19 +76,19 @@ test.describe("Layout changes never reset the order ticket", () => {
     await chartTab.dblclick();
     const maximized = await chartPanelBox(page);
     expect(maximized.width).toBeGreaterThan(beforeMaximize.width + 300);
-    await expect(quantity).toHaveValue("2.5");
+    await expect(quantity).toHaveValue("250");
     await chartTab.dblclick();
     const restored = await chartPanelBox(page);
     expect(restored.width).toBeLessThan(maximized.width - 300);
     await expect(page.getByRole("tab", { name: "Markets" })).toBeVisible();
-    await expect(quantity).toHaveValue("2.5");
+    await expect(quantity).toHaveValue("250");
 
     // 4) Switch between Public view and Venue timing, the shared tab group.
     await page.getByRole("tab", { name: "Public view" }).click();
     await expect(page.getByRole("tabpanel", { name: "Public view" })).toBeVisible();
     await page.getByRole("tab", { name: "Venue timing" }).click();
     await expect(page.getByRole("tabpanel", { name: "Venue timing" })).toBeVisible();
-    await expect(quantity).toHaveValue("2.5");
+    await expect(quantity).toHaveValue("250");
 
     // The chart and the account dock are the other two panels this rule protects - neither reloaded either.
     await expect(page.getByTestId("market-chart")).toBeVisible();

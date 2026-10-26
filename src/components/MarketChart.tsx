@@ -2,100 +2,137 @@
 
 import {
   createChart,
+  LineStyle,
   type CandlestickData,
-  type HistogramData,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
+  type LineData,
   type MouseEventParams,
+  type SeriesMarker,
+  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatClockTime, formatDecimal, UNAVAILABLE } from "@/lib/format";
-import type { ConnectionState } from "@/lib/market-data/socket";
+import { formatDecimal } from "@/lib/format";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
+import {
+  changePercent,
+  HISTORY_RANGES,
+  RANGE_SPECS,
+  rangeStartPrice,
+  REFERENCE_LABEL,
+  type HistoryRange,
+  type ReferenceCandle,
+} from "@/lib/market-data/reference-history";
+import { useReferenceHistory } from "@/lib/market-data/useReferenceHistory";
 import type { Candle, MarketInfo, PublicFill } from "@/lib/market-data/types";
-import { btnGhost } from "@/components/ui/styles";
 
-const MIN_VALID_CANDLES = 2;
-/**
- * The visible time range is fit to the last this-many candles (plus a few
- * bar-widths of right padding), not to every candle ever loaded: a single
- * outlier far back in history (e.g. a venue's own startup price walk) must
- * not flatten the rest of the chart's price axis, since lightweight-charts
- * autoscales the price axis to whatever is currently in the visible time
- * range. Scrolling is left on, so an outlier stays reachable - the price
- * axis then autoscales to include whatever comes into view.
- */
-const VISIBLE_CANDLE_COUNT = 60;
-const RIGHT_PADDING_BARS = 5;
-/** How many of this session's own mark ticks the "history building" line keeps - enough to draw a real line, not an unbounded array. */
-const MAX_LIVE_MARK_POINTS = 600;
+const UP = "#75bc97";
+const DOWN = "#f18d80";
+const MARK_LINE = "#e8e6e1";
+const MARK_LINE_STALE = "#b08a3a";
+
+type ChartMode = "area" | "candles";
 
 function toUtcSeconds(epochMs: number): UTCTimestamp {
   return Math.floor(epochMs / 1000) as UTCTimestamp;
 }
 
-interface OhlcvLegend {
-  open: string;
-  high: string;
-  low: string;
-  close: string;
-  volume: string;
-  isLast: boolean;
+function formatChartTime(seconds: number, range: HistoryRange): string {
+  const date = new Date(seconds * 1000);
+  if (range === "1H" || range === "1D") {
+    return date.toLocaleString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function fromVenueCandle(candle: Candle): ReferenceCandle {
+  return {
+    time: toUtcSeconds(candle.startMs),
+    open: Number(candle.open),
+    high: Number(candle.high),
+    low: Number(candle.low),
+    close: Number(candle.close),
+  };
+}
+
+interface Readout {
+  price: number;
+  time: number;
 }
 
 export function MarketChart({
   market,
-  interval,
   candles,
   mark,
   publicFills,
   ownSequences,
-  connectionState,
   loading,
-  fetchFailed,
   markStale = false,
-  onRetry,
 }: {
   market: MarketInfo | undefined;
-  /** Together with `market`, identifies this candle series: a change in either means a freshly-loaded series whose visible range should snap back to "latest N candles" rather than wherever the user last scrolled. */
-  interval: string;
+  /** The venue's own candles: drawn only when the reference history is unavailable and they hold at least two. */
   candles: Candle[];
+  /** The one current price. The chart ends at it and draws a dashed line there. */
   mark: { price: string; time: number } | null;
   publicFills: PublicFill[];
   /** This trader's own fills' sequence numbers (mode-agnostic; see PublicTape.tsx). */
   ownSequences: ReadonlySet<number>;
-  connectionState: ConnectionState;
   loading: boolean;
-  /** True only when the candle fetch itself failed (network/HTTP error) - never merely because the market has fewer than two candles yet. Only this drives "Price history unavailable" (second design review, item 1). */
-  fetchFailed: boolean;
-  /** Past the program's 10-second freshness limit: the mark line's own title and color say so, rather than a dashed line that could as easily mean "just drawn" (third design review, must-fix 1). */
+  /** Past the freshness window: the dashed mark line turns amber. */
   markStale?: boolean;
-  onRetry: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const liveMarkSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const areaRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const priceDecimals = market ? priceDecimalsOf(market) : 2;
-  const [legend, setLegend] = useState<OhlcvLegend | null>(null);
-
   const priceDecimalsRef = useRef(priceDecimals);
+  const [range, setRange] = useState<HistoryRange>("1D");
+  const [mode, setMode] = useState<ChartMode>("area");
+  const [readout, setReadout] = useState<Readout | null>(null);
+  const reference = useReferenceHistory(range);
+
   useEffect(() => {
     priceDecimalsRef.current = priceDecimals;
   }, [priceDecimals]);
 
-  // A genuinely new series (market or interval changed) snaps the view back
-  // to "latest N candles"; a live update of the SAME series (a new candle
-  // streaming in) only replaces the data, leaving the user's own scroll
-  // position alone - otherwise enabling scroll at all would be pointless,
-  // since the next tick would always yank the view back to the end.
-  const seriesKeyRef = useRef<string | null>(null);
+  const venueCandles = useMemo(
+    () =>
+      candles
+        .map(fromVenueCandle)
+        .filter((candle) => Object.values(candle).every(Number.isFinite))
+        .sort((a, b) => a.time - b.time),
+    [candles],
+  );
+  const usingReference = reference.candles.length >= 2;
+  const series = useMemo<ReferenceCandle[]>(
+    () => (usingReference ? reference.candles : venueCandles.length >= 2 ? venueCandles : []),
+    [usingReference, reference.candles, venueCandles],
+  );
+  const hasSeries = series.length > 0;
+  const markValue = mark ? Number(mark.price) : NaN;
+  const hasMark = Number.isFinite(markValue);
+
+  const lastClose = series.at(-1)?.close ?? null;
+  const endPrice = hasMark ? markValue : lastClose;
+  const rangeChange = endPrice === null ? null : changePercent(rangeStartPrice(series), endPrice);
+  const trendColor = rangeChange !== null && rangeChange < 0 ? DOWN : UP;
 
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
+    const priceFormat = {
+      type: "price" as const,
+      precision: priceDecimalsRef.current,
+      minMove: 1 / 10 ** priceDecimalsRef.current,
+    };
     const chart = createChart(container, {
       width: container.clientWidth,
       height: container.clientHeight,
@@ -104,85 +141,63 @@ export function MarketChart({
         textColor: "#8d8b86",
         fontFamily: "var(--font-sans)",
         fontSize: 11,
-        // Toggled off only while nothing real is drawn yet (the
-        // "History building" state): the license's attribution
-        // requirement is met whenever an actual series is on screen.
         attributionLogo: true,
       },
-      grid: {
-        horzLines: { color: "#272a2d" },
-        vertLines: { visible: false },
+      grid: { horzLines: { color: "#1f2124" }, vertLines: { visible: false } },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.2, bottom: 0.1 } },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 2,
+        fixLeftEdge: true,
+        fixRightEdge: true,
       },
-      rightPriceScale: { borderColor: "#36393c" },
-      timeScale: { borderColor: "#36393c", timeVisible: true, secondsVisible: false },
-      crosshair: { vertLine: { color: "#515458" }, horzLine: { color: "#515458" } },
-      // Scrolling stays on so an outlier candle outside the default visible
-      // window (see VISIBLE_CANDLE_COUNT) is still reachable; scaling stays
-      // off (pinch/wheel zoom would fight the price axis's own autoscale).
-      handleScroll: {
-        horzTouchDrag: true,
-        vertTouchDrag: false,
-        mouseWheel: true,
-        pressedMouseMove: true,
+      crosshair: {
+        vertLine: {
+          color: "#515458",
+          style: LineStyle.Dashed,
+          width: 1,
+          labelVisible: false,
+        },
+        horzLine: { visible: false, labelVisible: false },
       },
+      handleScroll: false,
       handleScale: false,
     });
-    const candleSeries = chart.addCandlestickSeries({
-      upColor: "#75bc97",
-      downColor: "#f18d80",
-      borderVisible: false,
-      wickUpColor: "#75bc97",
-      wickDownColor: "#f18d80",
-      priceLineVisible: false,
-      priceFormat: {
-        type: "price",
-        precision: priceDecimalsRef.current,
-        minMove: 1 / 10 ** priceDecimalsRef.current,
-      },
-    });
-    const volumeSeries = chart.addHistogramSeries({
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-      color: "#36393c",
-    });
-    // The "history building" line, drawn from this session's own mark
-    // ticks - never a synthesized candle. Hidden once real candles exist.
-    const liveMarkSeries = chart.addLineSeries({
-      color: "#e8e6e1",
+    const area = chart.addAreaSeries({
       lineWidth: 2,
       priceLineVisible: false,
-      lastValueVisible: true,
-      crosshairMarkerVisible: true,
-      priceFormat: {
-        type: "price",
-        precision: priceDecimalsRef.current,
-        minMove: 1 / 10 ** priceDecimalsRef.current,
-      },
+      lastValueVisible: false,
+      crosshairMarkerRadius: 4,
+      priceFormat,
     });
-    chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.22 } });
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: UP,
+      downColor: DOWN,
+      borderVisible: false,
+      wickUpColor: UP,
+      wickDownColor: DOWN,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      visible: false,
+      priceFormat,
+    });
 
     chart.subscribeCrosshairMove((param: MouseEventParams) => {
-      const candleValue = param.seriesData.get(candleSeries) as CandlestickData | undefined;
-      const volumeValue = param.seriesData.get(volumeSeries) as HistogramData | undefined;
-      if (!candleValue) {
-        setLegend(null);
+      if (param.time === undefined) {
+        setReadout(null);
         return;
       }
-      setLegend({
-        open: formatDecimal(candleValue.open, priceDecimalsRef.current),
-        high: formatDecimal(candleValue.high, priceDecimalsRef.current),
-        low: formatDecimal(candleValue.low, priceDecimalsRef.current),
-        close: formatDecimal(candleValue.close, priceDecimalsRef.current),
-        volume: volumeValue ? formatDecimal(volumeValue.value, 2) : UNAVAILABLE,
-        isLast: false,
-      });
+      const areaValue = param.seriesData.get(area) as LineData | undefined;
+      const candleValue = param.seriesData.get(candleSeries) as CandlestickData | undefined;
+      const price = areaValue?.value ?? candleValue?.close;
+      setReadout(price === undefined ? null : { price, time: Number(param.time) });
     });
 
     chartRef.current = chart;
-    candleSeriesRef.current = candleSeries;
-    volumeSeriesRef.current = volumeSeries;
-    liveMarkSeriesRef.current = liveMarkSeries;
+    areaRef.current = area;
+    candleRef.current = candleSeries;
 
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -195,279 +210,190 @@ export function MarketChart({
       resizeObserver.disconnect();
       chart.remove();
       chartRef.current = null;
-      candleSeriesRef.current = null;
-      volumeSeriesRef.current = null;
-      liveMarkSeriesRef.current = null;
+      areaRef.current = null;
+      candleRef.current = null;
     };
   }, [market?.id]);
 
-  const hasEnoughData = candles.length >= MIN_VALID_CANDLES;
-
-  // This session's own accumulated mark ticks, for the "history building"
-  // line - never fetched, never synthesized: exactly the mark updates this
-  // browser has actually received since it opened this market. Reset when
-  // the market changes (a different market's marks mean nothing here).
-  // `buildingSampleCount` mirrors the ref's length as state so the legend
-  // can read it during render without touching the ref there.
-  const liveMarksRef = useRef<{ time: UTCTimestamp; value: number }[]>([]);
-  const [buildingSampleCount, setBuildingSampleCount] = useState(0);
-
   useEffect(() => {
-    liveMarksRef.current = [];
-    // A fresh series for the newly-selected market - not a derived value
-    // React could compute during render, since it must survive every
-    // later mark tick until the market changes again.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setBuildingSampleCount(0);
-  }, [market?.id]);
-
-  useEffect(() => {
-    if (!mark || !market) return;
-    const value = Number(mark.price);
-    if (!Number.isFinite(value)) return;
-    const time = toUtcSeconds(mark.time);
-    const points = liveMarksRef.current;
-    const last = points.at(-1);
-    if (last && last.time === time) {
-      points[points.length - 1] = { time, value };
-    } else if (!last || time > last.time) {
-      points.push({ time, value });
-      if (points.length > MAX_LIVE_MARK_POINTS) points.shift();
-    }
-    // Mirrors the ref's new length into state, the documented way to
-    // expose an external accumulator's value to render.
-    setBuildingSampleCount(points.length);
-  }, [mark, market]);
-
-  useEffect(() => {
-    if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
-    if (!hasEnoughData) return;
-    // lightweight-charts requires strictly ascending time; a REST snapshot
-    // racing a websocket candle update is the one way this terminal could
-    // otherwise hand it two candles out of order.
-    const ordered = [...candles].sort((a, b) => a.startMs - b.startMs);
-    try {
-      candleSeriesRef.current.setData(
-        ordered.map((candle) => ({
-          time: toUtcSeconds(candle.startMs),
-          open: Number(candle.open),
-          high: Number(candle.high),
-          low: Number(candle.low),
-          close: Number(candle.close),
-        })),
-      );
-      volumeSeriesRef.current.setData(
-        ordered.map((candle) => ({
-          time: toUtcSeconds(candle.startMs),
-          value: Number(candle.volume),
-          color: Number(candle.close) >= Number(candle.open) ? "#2e4536" : "#4a2e2a",
-        })),
-      );
-      const seriesKey = `${market?.id ?? ""}:${interval}`;
-      if (seriesKeyRef.current !== seriesKey) {
-        seriesKeyRef.current = seriesKey;
-        const visible = ordered.slice(-VISIBLE_CANDLE_COUNT);
-        const first = visible[0];
-        const last = ordered.at(-1);
-        if (first && last) {
-          const barSpacingMs =
-            visible.length >= 2 ? visible[1].startMs - visible[0].startMs : 60_000;
-          chartRef.current?.timeScale().setVisibleRange({
-            from: toUtcSeconds(first.startMs),
-            to: toUtcSeconds(last.startMs + barSpacingMs * RIGHT_PADDING_BARS),
-          });
-        }
-      }
-      const lastCandle = ordered.at(-1);
-      if (lastCandle && !legend) {
-        setLegend({
-          open: formatDecimal(lastCandle.open, priceDecimalsRef.current),
-          high: formatDecimal(lastCandle.high, priceDecimalsRef.current),
-          low: formatDecimal(lastCandle.low, priceDecimalsRef.current),
-          close: formatDecimal(lastCandle.close, priceDecimalsRef.current),
-          volume: formatDecimal(lastCandle.volume, 2),
-          isLast: true,
-        });
-      }
-    } catch {
-      // Malformed or out-of-order candle data is dropped rather than throwing.
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, hasEnoughData]);
-
-  // Switches which series is actually on screen: candles once there are
-  // enough of them, otherwise the session's own live mark line - never
-  // both, and never a synthesized candle standing in for missing history.
-  useEffect(() => {
-    candleSeriesRef.current?.applyOptions({ visible: hasEnoughData });
-    volumeSeriesRef.current?.applyOptions({ visible: hasEnoughData });
-    liveMarkSeriesRef.current?.applyOptions({ visible: !hasEnoughData });
-    chartRef.current?.applyOptions({ layout: { attributionLogo: hasEnoughData } });
-  }, [hasEnoughData]);
-
-  useEffect(() => {
-    if (!liveMarkSeriesRef.current || hasEnoughData) return;
-    const points = liveMarksRef.current;
-    try {
-      liveMarkSeriesRef.current.setData(points);
-      if (points.length > 0) chartRef.current?.timeScale().fitContent();
-    } catch {
-      // A malformed point is dropped rather than throwing.
-    }
-    // Re-runs on every mark tick (liveMarksRef mutates in place, so `mark`
-    // itself is the dependency that signals a new point landed).
-  }, [mark, hasEnoughData]);
-
-  useEffect(() => {
-    if (!candleSeriesRef.current || !mark) return;
-    const value = Number(mark.price);
-    if (!Number.isFinite(value)) return;
-    const priceLine = candleSeriesRef.current.createPriceLine({
-      price: value,
-      color: markStale ? "#b08a3a" : "#e8e6e1",
-      lineWidth: 1,
-      lineStyle: 2,
-      axisLabelVisible: true,
-      title: markStale
-        ? `stale mark ${formatClockTime(new Date(mark.time))}`
-        : `mark ${formatClockTime(new Date(mark.time))}`,
+    areaRef.current?.applyOptions({
+      visible: mode === "area",
+      lineColor: trendColor,
+      topColor: `${trendColor}40`,
+      bottomColor: `${trendColor}00`,
     });
-    return () => {
-      candleSeriesRef.current?.removePriceLine(priceLine);
+    candleRef.current?.applyOptions({ visible: mode === "candles" });
+  }, [mode, trendColor, market?.id]);
+
+  useEffect(() => {
+    if (!areaRef.current || !candleRef.current) return;
+    const lastTime = series.at(-1)?.time ?? 0;
+    const markTime = toUtcSeconds(mark?.time ?? 0);
+    const areaPoints = series.map((candle) => ({
+      time: candle.time as UTCTimestamp,
+      value: candle.close,
+    }));
+    if (hasMark && markTime > lastTime && areaPoints.length > 0) {
+      areaPoints.push({ time: markTime, value: markValue });
+    }
+    try {
+      areaRef.current.setData(areaPoints);
+      candleRef.current.setData(
+        series.map((candle) => ({
+          time: candle.time as UTCTimestamp,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+        })),
+      );
+      if (areaPoints.length > 0) chartRef.current?.timeScale().fitContent();
+    } catch {
+      // Out-of-order or malformed points are dropped rather than throwing.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [series, mark, market?.id]);
+
+  useEffect(() => {
+    const area = areaRef.current;
+    const candleSeries = candleRef.current;
+    if (!area || !candleSeries || !hasSeries || !hasMark) return;
+    const options = {
+      price: markValue,
+      color: markStale ? MARK_LINE_STALE : MARK_LINE,
+      lineWidth: 1 as const,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: "",
     };
-  }, [mark, markStale]);
+    const lines: [ISeriesApi<"Area"> | ISeriesApi<"Candlestick">, IPriceLine][] = [
+      [area, area.createPriceLine(options)],
+      [candleSeries, candleSeries.createPriceLine(options)],
+    ];
+    return () => {
+      for (const [owner, line] of lines) owner.removePriceLine(line);
+    };
+  }, [markValue, markStale, hasSeries, hasMark, market?.id]);
 
-  // Candle bucket size, estimated from the loaded series itself rather than
-  // parsed from the interval string: several own fills landing in the same
-  // candle share that candle's x-position regardless of their exact second,
-  // so grouping must match how the chart buckets time, not raw timestamps.
-  const candleDurationMs =
-    candles.length >= 2 ? Math.abs(candles[1].startMs - candles[0].startMs) : 60_000;
-
-  function fillMarkers() {
-    const ascending = [...publicFills].sort((a, b) => a.timestampMs - b.timestampMs).slice(-80);
-    const publicMarkers = ascending
-      .filter((fill) => !ownSequences.has(fill.sequence))
-      .map((fill) => ({
-        time: toUtcSeconds(fill.timestampMs),
-        position: "inBar" as const,
-        color: "#515458",
-        shape: "circle" as const,
-      }));
-    // Several own fills in one candle would otherwise render as multiple
-    // markers stacked at the same bar position (indistinguishable from a
-    // rendering glitch); grouped into one marker per candle bucket, with
-    // a count label once more than one fill landed there.
-    const ownByBucket = new Map<number, number>();
-    for (const fill of ascending) {
+  const ownMarkers = useMemo(() => {
+    const first = series[0]?.time;
+    const last = series.at(-1)?.time;
+    if (first === undefined || last === undefined) return [];
+    const bucketMs = RANGE_SPECS[range].granularitySec * 1000;
+    const byBucket = new Map<number, number>();
+    for (const fill of publicFills) {
       if (!ownSequences.has(fill.sequence)) continue;
-      const bucket = Math.floor(fill.timestampMs / candleDurationMs) * candleDurationMs;
-      ownByBucket.set(bucket, (ownByBucket.get(bucket) ?? 0) + 1);
+      const bucket = Math.floor(fill.timestampMs / bucketMs) * bucketMs;
+      byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + 1);
     }
-    const ownMarkers = [...ownByBucket.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([bucket, count]) => ({
-        time: toUtcSeconds(bucket),
-        position: "aboveBar" as const,
+    const markers: SeriesMarker<Time>[] = [];
+    for (const [bucket, count] of [...byBucket.entries()].sort(([a], [b]) => a - b)) {
+      const time = toUtcSeconds(bucket);
+      if (time < first || time > last) continue;
+      markers.push({
+        time,
+        position: "aboveBar",
         color: "#f5f3ee",
-        shape: "circle" as const,
+        shape: "circle",
         text: count > 1 ? `×${count}` : undefined,
-      }));
-    return [...publicMarkers, ...ownMarkers].sort((a, b) => a.time - b.time);
-  }
+      });
+    }
+    return markers;
+  }, [series, publicFills, ownSequences, range]);
 
   useEffect(() => {
-    if (!candleSeriesRef.current || !hasEnoughData) return;
     try {
-      candleSeriesRef.current.setMarkers(fillMarkers());
+      areaRef.current?.setMarkers(ownMarkers);
+      candleRef.current?.setMarkers(ownMarkers);
     } catch {
       // Markers are decorative; a malformed set is dropped rather than throwing.
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [publicFills, ownSequences, candleDurationMs, hasEnoughData]);
+  }, [ownMarkers]);
 
-  useEffect(() => {
-    if (!liveMarkSeriesRef.current || hasEnoughData) return;
-    try {
-      liveMarkSeriesRef.current.setMarkers(fillMarkers());
-    } catch {
-      // Markers are decorative; a malformed set is dropped rather than throwing.
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [publicFills, ownSequences, candleDurationMs, hasEnoughData]);
+  const noSeries = !hasSeries;
+  const waiting = noSeries && (reference.status === "loading" || loading);
 
-  const frozen = connectionState !== "open";
-  const lastUpdateLabel = mark ? formatClockTime(new Date(mark.time)) : UNAVAILABLE;
+  const caption = usingReference
+    ? REFERENCE_LABEL
+    : noSeries
+      ? "History unavailable"
+      : "Venue price history. Reference history unavailable";
 
-  const overlay = useMemo(() => {
-    if (frozen) {
-      return {
-        title: "Market data paused",
-        detail: `Last update ${lastUpdateLabel}`,
-        retry: false,
-      };
-    }
-    if (loading) {
-      return { title: "Loading 1m history", detail: null, retry: false };
-    }
-    // Reserved for an actual fetch failure only - a market genuinely too
-    // new to have two candles yet draws the live mark line below instead
-    // (second design review, item 1), never this message.
-    if (fetchFailed) {
-      return {
-        title: "Price history unavailable",
-        detail: "The candle history fetch failed.",
-        retry: true,
-      };
-    }
-    return null;
-  }, [frozen, loading, fetchFailed, lastUpdateLabel]);
+  const toggle = (active: boolean) =>
+    `rounded-tile min-h-8 px-2.5 text-[12px] ${
+      active ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
+    }`;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="text-faint flex items-center gap-3 px-1 pb-1 text-[11px]" aria-live="off">
-        {!overlay && !hasEnoughData ? (
-          <span className="tnum">History building · n={buildingSampleCount}</span>
-        ) : legend ? (
-          <span className="tnum">
-            O {legend.open} H {legend.high} L {legend.low} C {legend.close} V {legend.volume}
-            {legend.isLast ? " · close" : ""}
-          </span>
-        ) : (
-          <span>Hover the chart for O H L C V</span>
-        )}
-        <span className="ml-auto flex items-center gap-2">
-          <span
-            className="inline-flex h-2 w-2 rounded-full"
-            style={{ backgroundColor: "#f5f3ee" }}
-          />
-          yours
-          <span
-            className="inline-flex h-2 w-2 rounded-full"
-            style={{ backgroundColor: "#515458" }}
-          />
-          public
-        </span>
+      <div className="flex items-center gap-2 px-1 pb-1">
+        <div className="flex gap-1" role="group" aria-label="Chart period">
+          {HISTORY_RANGES.map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={range === option}
+              onClick={() => setRange(option)}
+              className={toggle(range === option)}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        <div className="ml-auto flex gap-1" role="group" aria-label="Chart style">
+          <button
+            type="button"
+            aria-pressed={mode === "area"}
+            onClick={() => setMode("area")}
+            className={toggle(mode === "area")}
+          >
+            Line
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === "candles"}
+            onClick={() => setMode("candles")}
+            className={toggle(mode === "candles")}
+          >
+            Candles
+          </button>
+        </div>
       </div>
       <div className="relative min-h-0 min-w-0 flex-1">
         <div ref={containerRef} className="h-full w-full" data-testid="market-chart" />
-        {overlay && (
+        {readout && !noSeries && (
+          <div
+            className="tnum bg-surface/80 rounded-tile pointer-events-none absolute top-1 left-1 z-10 flex items-center gap-2 px-2 py-0.5 text-[12px]"
+            aria-live="off"
+          >
+            <span className="text-ink-strong">${formatDecimal(readout.price, priceDecimals)}</span>
+            <span className="text-faint">{formatChartTime(readout.time, range)}</span>
+          </div>
+        )}
+        {noSeries && (
           <div
             role="status"
-            className="chart-overlay rounded-panel text-dim absolute inset-0 flex flex-col items-center justify-center gap-2 text-[13px]"
+            className="text-dim absolute inset-0 flex flex-col items-center justify-center gap-1 text-[13px]"
           >
-            <p className="text-ink">{overlay.title}</p>
-            {overlay.detail && <p className="text-faint text-[12px]">{overlay.detail}</p>}
-            {overlay.retry && (
-              <button
-                type="button"
-                className={`${btnGhost} mt-1 h-8 px-3 text-[12px]`}
-                onClick={onRetry}
-              >
-                Retry
-              </button>
+            <p className="text-ink">{waiting ? "Loading price history" : "History unavailable"}</p>
+            {!waiting && hasMark && (
+              <p className="text-faint text-[12px]">
+                Current price ${formatDecimal(markValue, priceDecimals)}
+              </p>
             )}
           </div>
+        )}
+      </div>
+      <div className="text-faint flex items-center gap-3 px-1 pt-1 text-[11px]">
+        <span>{caption}</span>
+        {ownMarkers.length > 0 && (
+          <span className="ml-auto flex items-center gap-1.5">
+            <span
+              className="inline-flex h-2 w-2 rounded-full"
+              style={{ backgroundColor: "#f5f3ee" }}
+            />
+            your fills
+          </span>
         )}
       </div>
     </div>

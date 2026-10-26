@@ -1,16 +1,20 @@
-import { formatDecimal, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
+import { formatDecimal, formatUpdatedAge, UNAVAILABLE } from "@/lib/format";
 import type { MarketInfo } from "@/lib/market-data/types";
-import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
+import { marketDisplayName } from "@/lib/market-data/displayName";
+import { ageMs } from "@/lib/market-data/selectors";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
 
 export function MarketSwitcher({
   markets,
   selectedId,
+  selectedMark,
   onSelect,
   now,
 }: {
   markets: MarketInfo[];
   selectedId: string;
+  /** The mark the price header shows for the selected market, so the list row reads the same price and age. */
+  selectedMark: { price: string; time: number } | null;
   onSelect: (id: string) => void;
   now: number;
 }) {
@@ -18,8 +22,10 @@ export function MarketSwitcher({
     <nav aria-label="Markets" className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-1.5">
       {markets.map((market) => {
         const selected = market.id === selectedId;
-        const age = ageMs(market.markPriceUpdatedAtMs, now);
-        const stale = isStale(market.markPriceUpdatedAtMs, now, STALE_MARK_MS);
+        const price = selected && selectedMark ? selectedMark.price : market.markPrice;
+        const updatedAtMs =
+          selected && selectedMark ? selectedMark.time : market.markPriceUpdatedAtMs;
+        const age = ageMs(updatedAtMs, now);
         const change = market.change24hPercent;
         return (
           <button
@@ -31,12 +37,10 @@ export function MarketSwitcher({
               selected ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
             }`}
           >
-            <span className="text-[13px] font-medium">{market.id}</span>
+            <span className="text-[13px] font-medium">{marketDisplayName(market.id)}</span>
             <span className="tnum grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-1.5 text-[12px]">
-              <span className={stale ? "text-faint/70 italic" : "text-faint"}>
-                {market.markPrice
-                  ? formatDecimal(market.markPrice, priceDecimalsOf(market))
-                  : UNAVAILABLE}
+              <span className="text-faint">
+                {price ? formatDecimal(price, priceDecimalsOf(market)) : UNAVAILABLE}
               </span>
               <span
                 className={
@@ -52,11 +56,7 @@ export function MarketSwitcher({
                   : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
               </span>
               <span className="text-faint col-span-2 text-left">
-                {age === null
-                  ? ""
-                  : stale
-                    ? `${formatRelativeAge(age)} ago`
-                    : formatRelativeAge(age)}
+                {age === null ? "" : formatUpdatedAge(age)}
               </span>
             </span>
           </button>

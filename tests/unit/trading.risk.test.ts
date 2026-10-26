@@ -3,18 +3,28 @@ import {
   displayOrderCost,
   estimateOrderCost,
   impliedInitialMarginBps,
-  impliedMaintenanceMarginBps,
+  MAINTENANCE_MARGIN_BPS,
 } from "@/lib/trading/risk";
 
-describe("impliedInitialMarginBps / impliedMaintenanceMarginBps", () => {
-  it("derives 10% initial and 5% maintenance from 10x max leverage", () => {
-    expect(impliedInitialMarginBps(10)).toBe(1000);
-    expect(impliedMaintenanceMarginBps(10)).toBe(500);
+describe("impliedInitialMarginBps / MAINTENANCE_MARGIN_BPS", () => {
+  it("derives 20% initial margin from 5x max leverage, with a fixed 5% maintenance", () => {
+    expect(impliedInitialMarginBps(5)).toBe(2000);
+    expect(MAINTENANCE_MARGIN_BPS).toBe(500);
   });
 
   it("has no margin concept for a market with no leverage (spot)", () => {
     expect(impliedInitialMarginBps(0)).toBeNull();
-    expect(impliedMaintenanceMarginBps(0)).toBeNull();
+  });
+
+  it("places the 5x liquidation 15% from entry, matching the ticket", () => {
+    const estimate = estimateOrderCost({
+      side: "buy",
+      quantity: "1",
+      price: "100",
+      leverage: 5,
+      maxLeverage: 5,
+    });
+    expect(displayOrderCost(estimate, 2).liquidationPrice).toBe("85.00");
   });
 });
 

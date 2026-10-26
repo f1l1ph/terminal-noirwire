@@ -29,7 +29,6 @@ export function useMarketDataConnection(
   simWsUrl: string,
   selectedMarket: string,
   interval: CandleInterval,
-  retryToken = 0,
 ): void {
   useEffect(() => {
     let cancelled = false;
@@ -53,21 +52,16 @@ export function useMarketDataConnection(
     store.setCandlesLoading(selectedMarket, interval, true);
     fetchCandles(simUrl, selectedMarket, interval)
       .then((candles) => {
-        if (!cancelled) {
-          store.setInitialCandles(selectedMarket, interval, candles);
-          store.setCandlesError(selectedMarket, interval, false);
-        }
+        if (!cancelled) store.setInitialCandles(selectedMarket, interval, candles);
       })
-      .catch(() => {
-        if (!cancelled) store.setCandlesError(selectedMarket, interval, true);
-      })
+      .catch(() => {})
       .finally(() => {
         if (!cancelled) store.setCandlesLoading(selectedMarket, interval, false);
       });
     return () => {
       cancelled = true;
     };
-  }, [store, simUrl, selectedMarket, interval, retryToken]);
+  }, [store, simUrl, selectedMarket, interval]);
 
   useEffect(() => {
     let cancelled = false;

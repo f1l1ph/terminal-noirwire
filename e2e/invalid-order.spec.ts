@@ -17,9 +17,10 @@ test.describe("An invalid order (below the minimum lot size)", () => {
     await page.goto("/");
     await createAndFundWallet(page);
 
-    await page.getByLabel("Quantity (SOL)").fill("0.0001");
-    await page.getByLabel("Quantity (SOL)").blur();
-    await expect(page.getByText(/Use increments of/)).toBeVisible();
+    const amount = page.getByLabel("Amount (nUSD)");
+    await amount.fill("0.01");
+    await amount.blur();
+    await expect(page.getByText(/Too small to trade\. The minimum is 0\.001\d* SOL/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Place test long", exact: true })).toBeDisabled();
     await shot(page, "01-invalid-order");
   });

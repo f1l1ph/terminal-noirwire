@@ -3,6 +3,7 @@ import {
   offersSpotTrading,
   offersTestFunds,
   placeLabel,
+  sideWord,
   tradeGate,
   walletlessAction,
   walletlessDockText,
@@ -78,5 +79,17 @@ describe("tradeGate", () => {
 
   it("never gates a test build", () => {
     expect(tradeGate(false, "absent", keys("settling"))).toBeNull();
+  });
+});
+
+describe("sideWord", () => {
+  it("reads Long and Short on a perpetual", () => {
+    expect(sideWord(true, "buy")).toBe("Long");
+    expect(sideWord(true, "sell")).toBe("Short");
+  });
+
+  it("reads Buy and Sell on spot", () => {
+    expect(sideWord(false, "buy")).toBe("Buy");
+    expect(sideWord(false, "sell")).toBe("Sell");
   });
 });
