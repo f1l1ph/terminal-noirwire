@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+} from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { signedDiffers as check } from "@/lib/rollup/signedCheck";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
@@ -185,5 +191,104 @@ describe("signedDiffers", () => {
     built.partialSign(extra);
     const signed = await keypairOwnerSigner(owner).signTransaction(built);
     expect(signedDiffers(built, signed, owner.publicKey)).toBeNull();
+  });
+});
+
+describe("signedDiffers on a transaction the fee payer signed first", () => {
+  const BUDGET = "ComputeBudget111111111111111111111111111111";
+
+  function gateSigned(gate: Keypair, owner: Keypair) {
+    const built = new Transaction({
+      feePayer: gate.publicKey,
+      blockhash: BLOCKHASH,
+      lastValidBlockHeight: 1,
+    });
+    built.add(
+      SystemProgram.transfer({
+        fromPubkey: owner.publicKey,
+        toPubkey: Keypair.generate().publicKey,
+        lamports: 5,
+      }),
+    );
+    built.partialSign(gate);
+    return built;
+  }
+
+  const cloneOf = (transaction: Transaction) =>
+    Transaction.from(
+      transaction.serialize({ requireAllSignatures: false, verifySignatures: false }),
+    );
+
+  it("accepts a wallet that only added the owner's signature and kept the gate's", async () => {
+    const gate = Keypair.generate();
+    const owner = Keypair.generate();
+    const built = gateSigned(gate, owner);
+    const signed = await keypairOwnerSigner(owner).signTransaction(built);
+    expect(signedDiffers(built, signed, owner.publicKey)).toBeNull();
+  });
+
+  it("refuses instructions the wallet added and names their programs", async () => {
+    const gate = Keypair.generate();
+    const owner = Keypair.generate();
+    const built = gateSigned(gate, owner);
+    const widened = cloneOf(built);
+    for (const data of [
+      [2, 1],
+      [3, 2],
+    ]) {
+      widened.add(
+        new TransactionInstruction({
+          programId: new PublicKey(BUDGET),
+          keys: [],
+          data: Buffer.from(data),
+        }),
+      );
+    }
+    const signed = await keypairOwnerSigner(owner).signTransaction(widened);
+    expect(signedDiffers(built, signed, owner.publicKey)).toBe(
+      `your wallet changed the transaction (it added 2 instructions, from programs ${BUDGET})`,
+    );
+  });
+
+  it("refuses a dropped gate signature and says so", async () => {
+    const gate = Keypair.generate();
+    const owner = Keypair.generate();
+    const built = gateSigned(gate, owner);
+    const signed = await keypairOwnerSigner(owner).signTransaction(cloneOf(built));
+    signed.signatures.find((entry) => entry.publicKey.equals(gate.publicKey))!.signature = null;
+    expect(signedDiffers(built, signed, owner.publicKey)).toBe(
+      `your wallet removed or changed the signature already on the transaction from ${gate.publicKey.toBase58()}`,
+    );
+  });
+
+  it("refuses an altered gate signature", async () => {
+    const gate = Keypair.generate();
+    const owner = Keypair.generate();
+    const built = gateSigned(gate, owner);
+    const signed = await keypairOwnerSigner(owner).signTransaction(cloneOf(built));
+    signed.signatures.find((entry) => entry.publicKey.equals(gate.publicKey))!.signature =
+      Buffer.alloc(64, 3);
+    expect(signedDiffers(built, signed, owner.publicKey)).toContain("removed or changed");
+  });
+
+  it("names a changed blockhash and a changed fee payer", async () => {
+    const gate = Keypair.generate();
+    const owner = Keypair.generate();
+    const built = gateSigned(gate, owner);
+    const rehashed = cloneOf(built);
+    rehashed.recentBlockhash = Keypair.generate().publicKey.toBase58();
+    const signedRehashed = await keypairOwnerSigner(owner).signTransaction(rehashed);
+    expect(signedDiffers(built, signedRehashed, owner.publicKey)).toBe(
+      "your wallet changed the transaction (it changed the recent blockhash)",
+    );
+    const repaid = new Transaction({
+      feePayer: owner.publicKey,
+      blockhash: BLOCKHASH,
+      lastValidBlockHeight: 1,
+    }).add(...built.instructions);
+    const signedRepaid = await keypairOwnerSigner(owner).signTransaction(repaid);
+    expect(signedDiffers(built, signedRepaid, owner.publicKey)).toBe(
+      "your wallet changed the transaction (it changed the fee payer)",
+    );
   });
 });

@@ -1,4 +1,5 @@
 import { PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
+import nacl from "tweetnacl";
 import { z } from "zod";
 import { programInstructions } from "./sdk";
 
@@ -98,8 +99,10 @@ export interface ExpectedOpen {
  * one built here for this owner and exactly these four order keys. In that
  * builder the owner is a signer and not writable, so the owner's signature
  * cannot authorise moving anything out of the owner's own account. The
- * service leaves every signature slot empty, so any signature already on
- * the transaction is unexpected.
+ * service has already signed as the gate (a wallet leaves a transaction that
+ * carries a signature alone, and adds its own instructions to one that
+ * carries none): the gate's signature must verify over the message, the
+ * owner's slot must be empty, and there must be no other slot.
  */
 export function isExpectedOpen(
   transaction: Transaction,
@@ -118,8 +121,15 @@ export function isExpectedOpen(
   }
   if (!transaction.feePayer?.equals(gate)) return "the fee payer is not the gate";
   if (transaction.instructions.length !== 1) return "the transaction has other instructions";
-  if (transaction.signatures.some((entry) => entry.signature !== null)) {
-    return "the transaction already carries a signature";
+  const slots = transaction.signatures;
+  if (slots.length !== 2 || !slots[0].publicKey.equals(gate) || !slots[1].publicKey.equals(owner)) {
+    return "the transaction does not have exactly the gate's and the owner's signature slots";
+  }
+  if (slots[1].signature !== null) return "the owner's signature slot is not empty";
+  const gateSignature = slots[0].signature;
+  if (gateSignature === null) return "the gate has not signed the transaction";
+  if (!nacl.sign.detached.verify(transaction.serializeMessage(), gateSignature, gate.toBytes())) {
+    return "the gate's signature does not verify over the transaction";
   }
   const expected = programInstructions(programId).openTrader(gate, owner, [...orderKeys]);
   // The fee payer is writable once the message is compiled, though the builder marks the gate a plain signer.

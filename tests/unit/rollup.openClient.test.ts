@@ -42,11 +42,16 @@ function preparedTransaction(shape: Shape = {}): Transaction {
   return transaction;
 }
 
-/** What `/v1/open/prepare` sends: serialized with no signature on it. */
+const serialized = (transaction: Transaction): Transaction =>
+  Transaction.from(transaction.serialize({ requireAllSignatures: false, verifySignatures: false }));
+
+/** The transaction as it was before the service signed it: no signature on it. */
+const unsignedOnTheWire = serialized;
+
+/** What `/v1/open/prepare` sends: signed by the gate as fee payer, the owner's slot left empty. */
 function onTheWire(transaction: Transaction): Transaction {
-  return Transaction.from(
-    transaction.serialize({ requireAllSignatures: false, verifySignatures: false }),
-  );
+  if (transaction.feePayer?.equals(GATE.publicKey)) transaction.partialSign(GATE);
+  return serialized(transaction);
 }
 
 const expectation = (overrides: Partial<ExpectedOpen> = {}): ExpectedOpen => ({
@@ -130,10 +135,64 @@ describe("isExpectedOpen", () => {
     expect(isExpectedOpen(transaction, expectation())).not.toBeNull();
   });
 
-  it("refuses a transaction that already carries a signature", () => {
+  it("refuses a transaction the gate has not signed", () => {
+    expect(isExpectedOpen(unsignedOnTheWire(preparedTransaction()), expectation())).toBe(
+      "the gate has not signed the transaction",
+    );
+  });
+
+  it("refuses a gate signature that does not verify over the message", () => {
+    const forged = serialized(preparedTransaction());
+    forged.signatures[0].signature = Buffer.alloc(64, 9);
+    expect(isExpectedOpen(forged, expectation())).toBe(
+      "the gate's signature does not verify over the transaction",
+    );
+  });
+
+  it("refuses a gate signature made over a different message", () => {
+    const other = preparedTransaction();
+    other.partialSign(GATE);
+    const transaction = serialized(preparedTransaction());
+    transaction.signatures[0].signature = other.signatures[0].signature;
+    expect(isExpectedOpen(transaction, expectation())).toBe(
+      "the gate's signature does not verify over the transaction",
+    );
+  });
+
+  it("refuses a signature made by a key other than the gate", () => {
     const transaction = preparedTransaction();
+    const impostor = Keypair.generate();
+    transaction.feePayer = impostor.publicKey;
+    transaction.partialSign(impostor);
+    expect(isExpectedOpen(serialized(transaction), expectation())).not.toBeNull();
+  });
+
+  it("refuses an owner slot that is already filled", () => {
+    const transaction = preparedTransaction();
+    transaction.partialSign(GATE, OWNER);
+    expect(isExpectedOpen(serialized(transaction), expectation())).toBe(
+      "the owner's signature slot is not empty",
+    );
+  });
+
+  it("refuses a signature slot beyond the gate's and the owner's", () => {
+    const extra = Keypair.generate();
+    const transaction = preparedTransaction();
+    transaction.instructions[0].keys.push({
+      pubkey: extra.publicKey,
+      isSigner: true,
+      isWritable: false,
+    });
     transaction.partialSign(GATE);
-    expect(isExpectedOpen(onTheWire(transaction), expectation())).not.toBeNull();
+    expect(isExpectedOpen(serialized(transaction), expectation())).not.toBeNull();
+  });
+
+  it("accepts the gate-signed transaction after the wire round trip", () => {
+    const wire = onTheWire(preparedTransaction());
+    expect(wire.signatures).toHaveLength(2);
+    expect(wire.signatures[0].signature).not.toBeNull();
+    expect(wire.signatures[1].signature).toBeNull();
+    expect(isExpectedOpen(wire, expectation())).toBeNull();
   });
 });
 
@@ -175,6 +234,7 @@ describe("prepareOpen", () => {
 
   it("sends the owner, the four order keys and the invite to the open endpoint", async () => {
     const transaction = preparedTransaction();
+    transaction.partialSign(GATE);
     const fetchFn = vi.fn(async () =>
       reply(200, {
         transaction: transaction

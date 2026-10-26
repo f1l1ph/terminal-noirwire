@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+} from "@solana/web3.js";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { KeyValueStore } from "@/lib/wallet/index";
 import { keypairOwnerSigner, type OwnerSigner } from "@/lib/wallet/ownerSigner";
@@ -59,7 +65,7 @@ const memoryStore = (): KeyValueStore => {
   };
 };
 
-/** What `/v1/open/prepare` sends: `open_trader` with the gate paying, no signature. */
+/** What `/v1/open/prepare` sends: `open_trader` with the gate paying and already signed as the gate. */
 function preparedBase64(shape: { feePayer?: PublicKey; extra?: boolean } = {}): string {
   const transaction = new Transaction({
     feePayer: shape.feePayer ?? GATE.publicKey,
@@ -75,6 +81,7 @@ function preparedBase64(shape: { feePayer?: PublicKey; extra?: boolean } = {}): 
       }),
     );
   }
+  if (transaction.feePayer?.equals(GATE.publicKey)) transaction.partialSign(GATE);
   return transaction
     .serialize({ requireAllSignatures: false, verifySignatures: false })
     .toString("base64");
@@ -247,6 +254,40 @@ describe("opening an account on mainnet", () => {
     const outcome = await h.client.openAccount(h.wallet);
     expect(outcome.kind).toBe("notSent");
     expect(h.events).not.toContain("submit");
+  });
+
+  it("says what the wallet added, once, when it widens the gate-signed transaction", async () => {
+    const budget = new PublicKey("ComputeBudget111111111111111111111111111111");
+    const h = harness({
+      signer: (base) => ({
+        ...base,
+        signTransaction: async (tx) => {
+          const widened = Transaction.from(
+            tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+          );
+          widened.add(
+            new TransactionInstruction({
+              programId: budget,
+              keys: [],
+              data: Buffer.from([2, 1, 0, 0, 0]),
+            }),
+          );
+          return keypairOwnerSigner(OWNER).signTransaction(widened);
+        },
+      }),
+    });
+    const outcome = await h.client.openAccount(h.wallet);
+    expect(outcome).toEqual({
+      kind: "notSent",
+      reason: `your wallet changed the transaction (it added 1 instruction, from programs ${budget.toBase58()})`,
+    });
+    expect(h.events).not.toContain("submit");
+  });
+
+  it("submits the owner's signature on the gate-signed transaction when the wallet only signs", async () => {
+    const h = harness({});
+    expect((await h.client.openAccount(h.wallet)).kind).toBe("opened");
+    expect(h.events).toContain("submit");
   });
 
   it("does not sign when the prepared transaction is about to expire", async () => {

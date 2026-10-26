@@ -5,9 +5,13 @@ import { signedDiffers } from "./signedCheck";
 
 /** The wallet returned something other than the transaction it was given. Nothing was sent. */
 export class SignedTransactionRefused extends Error {
+  /** The refusal without the closing sentence, for a caller that words the whole line itself. */
+  readonly reason: string;
+
   constructor(reason: string) {
-    super(`${reason}. Nothing was sent.`);
+    super(`${reason.charAt(0).toUpperCase()}${reason.slice(1)}. Nothing was sent.`);
     this.name = "SignedTransactionRefused";
+    this.reason = reason;
   }
 }
 
