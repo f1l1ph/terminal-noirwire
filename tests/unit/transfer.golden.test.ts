@@ -29,6 +29,7 @@ const DELEGATION = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh")
 const TOKEN = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const ASSOCIATED = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const SYSTEM = new PublicKey("11111111111111111111111111111111");
+const COMPUTE_BUDGET = new PublicKey("ComputeBudget111111111111111111111111111111");
 
 const ATOMS = 2_500_000n;
 const SHUTTLE_ID = 42;
@@ -65,6 +66,21 @@ const instruction = (
   keys: ReturnType<typeof meta>[],
   data: Buffer,
 ): TransactionInstruction => new TransactionInstruction({ programId, keys, data });
+
+/**
+ * The compute budget program's two instructions (data 2 then a u32 unit limit,
+ * data 3 then a u64 price in micro-lamports) that lead a transaction sent to
+ * Solana: 200,000 units for each instruction of its own, at 50,000 micro-lamports.
+ */
+const budgeted = (instructions: TransactionInstruction[]) => [
+  instruction(
+    COMPUTE_BUDGET,
+    [],
+    Buffer.concat([Buffer.from([2]), u32(200_000 * instructions.length)]),
+  ),
+  instruction(COMPUTE_BUDGET, [], Buffer.concat([Buffer.from([3]), u64(50_000n)])),
+  ...instructions,
+];
 
 const written = (instructions: TransactionInstruction[]) =>
   instructions.map((ix) => ({
@@ -156,7 +172,7 @@ describe("golden transactions, written by hand", () => {
       initBalance(balance, owner, mint),
       delegateBalance(owner, balance, validator),
     ];
-    expect(await guardAccepts(world, hand, { kind: "setup" })).toBeNull();
+    expect(await guardAccepts(world, budgeted(hand), { kind: "setup" })).toBeNull();
     const built = [
       createAssociatedTokenAccountIdempotentIx(owner, walletAccount(world.env), owner, mint),
       ...hand.slice(1),
@@ -207,7 +223,7 @@ describe("golden transactions, written by hand", () => {
       delegateBalance(owner, balance, validator),
     ];
     const shape = { kind: "move", atoms: ATOMS, sealed: false } as const;
-    expect(await guardAccepts(world, hand, shape)).toBeNull();
+    expect(await guardAccepts(world, budgeted(hand), shape)).toBeNull();
     const built = await delegateSpl(owner, mint, ATOMS, {
       validator,
       idempotent: false,
@@ -257,7 +273,7 @@ describe("golden transactions, written by hand", () => {
       ),
     ];
     const shape = { kind: "exit", atoms: ATOMS } as const;
-    expect(await guardAccepts(world, hand, shape)).toBeNull();
+    expect(await guardAccepts(world, budgeted(hand), shape)).toBeNull();
     const built = await withdrawSpl(owner, mint, ATOMS, {
       validator,
       payer: owner,

@@ -9,6 +9,7 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { PublicKey, type Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
+import { withComputeBudget } from "./computeBudget";
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 
 /** What the app pins: the order book program, the quote token and the rollup validator. */
@@ -109,21 +110,23 @@ async function expectedTransactions(
       ];
     case "exit":
       return [
-        await withdrawSpl(owner, pins.mint, shape.atoms, {
-          validator: pins.validator,
-          payer: owner,
-          initAtasIfMissing: true,
-          shuttleId,
-        }),
+        withComputeBudget(
+          await withdrawSpl(owner, pins.mint, shape.atoms, {
+            validator: pins.validator,
+            payer: owner,
+            initAtasIfMissing: true,
+            shuttleId,
+          }),
+        ),
       ];
     case "setup":
       return [
-        [
+        withComputeBudget([
           createAssociatedTokenAccountIdempotentIx(owner, wallet, owner, pins.mint),
           initEphemeralAtaIx(balance, owner, pins.mint, owner),
           delegateEphemeralAtaIx(owner, balance, pins.validator),
-        ],
-        [delegateEphemeralAtaIx(owner, balance, pins.validator)],
+        ]),
+        withComputeBudget([delegateEphemeralAtaIx(owner, balance, pins.validator)]),
       ];
     case "move": {
       const variants = [false, true].flatMap((vault) => [
@@ -143,7 +146,7 @@ async function expectedTransactions(
           if (shape.sealed && !idempotent) {
             instructions.push(delegateEataPermissionIx(owner, balance, pins.validator));
           }
-          return instructions;
+          return withComputeBudget(instructions);
         }),
       );
     }
@@ -154,7 +157,9 @@ async function expectedTransactions(
  * Why `transaction` may not be signed, or null. Run on every transaction just
  * before the owner is asked to sign: the owner pays, and the instructions are
  * exactly the ordered list the flow means to send, rebuilt here from the pins,
- * the owner and the requested amount, down to every account's signer and
+ * the owner and the requested amount (the shapes sent to Solana lead with
+ * exactly the compute unit limit and price of `withComputeBudget`, the rollup
+ * ones carry none), down to every account's signer and
  * writable flags and every byte of data. An extra, missing, reordered or
  * differently flagged instruction, a foreign program, mint or validator, and a
  * different amount all differ from it.

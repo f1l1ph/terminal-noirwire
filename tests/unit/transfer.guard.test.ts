@@ -7,6 +7,7 @@ import {
   withdrawSpl,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import {
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SystemProgram,
@@ -14,6 +15,14 @@ import {
   TransactionInstruction,
 } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
+import {
+  MAX_EXIT_PRIORITY_LAMPORTS,
+  MAX_MOVE_PRIORITY_LAMPORTS,
+  MAX_SETUP_PRIORITY_LAMPORTS,
+  computeUnitsFor,
+  priorityLamportsFor,
+  withComputeBudget,
+} from "@/lib/transfer/computeBudget";
 import { deposit } from "@/lib/transfer/deposit";
 import {
   signableRefusal,
@@ -54,14 +63,25 @@ const refusalOf = (
   payer = world.keypair.publicKey,
 ) => signableRefusal(contextOf(world), txOf(payer, instructions), shape);
 
-const moveOf = (world: World, validator = world.pins.validator, mint = world.pins.mint) =>
-  delegateSpl(world.keypair.publicKey, mint, ATOMS, {
-    validator,
-    idempotent: false,
+const moveOf = async (world: World, validator = world.pins.validator, mint = world.pins.mint) =>
+  withComputeBudget(
+    await delegateSpl(world.keypair.publicKey, mint, ATOMS, {
+      validator,
+      idempotent: false,
+      payer: world.keypair.publicKey,
+      initVaultIfMissing: true,
+      private: false,
+    }),
+  );
+
+const exitOf = async (world: World) =>
+  withdrawSpl(world.keypair.publicKey, world.pins.mint, ATOMS, {
+    validator: world.pins.validator,
     payer: world.keypair.publicKey,
-    initVaultIfMissing: true,
-    private: false,
+    initAtasIfMissing: true,
   });
+
+const EXIT = { kind: "exit", atoms: ATOMS } as const;
 
 describe("exactly what may be signed", () => {
   it("accepts each transaction the flows build", async () => {
@@ -81,20 +101,17 @@ describe("exactly what may be signed", () => {
         if (sealed && !idempotent) {
           move.push(delegateEataPermissionIx(owner, balance, pins.validator));
         }
-        expect(await refusalOf(world, move, { kind: "move", atoms: ATOMS, sealed })).toBeNull();
+        expect(
+          await refusalOf(world, withComputeBudget(move), { kind: "move", atoms: ATOMS, sealed }),
+        ).toBeNull();
       }
     }
-    const out = await withdrawSpl(owner, pins.mint, ATOMS, {
-      validator: pins.validator,
-      payer: owner,
-      initAtasIfMissing: true,
-    });
-    expect(await refusalOf(world, out, { kind: "exit", atoms: ATOMS })).toBeNull();
-    const setup = [
+    expect(await refusalOf(world, withComputeBudget(await exitOf(world)), EXIT)).toBeNull();
+    const setup = withComputeBudget([
       createAssociatedTokenAccountIdempotentIx(owner, walletAccount(world.env), owner, pins.mint),
       initEphemeralAtaIx(balance, owner, pins.mint, owner),
       delegateEphemeralAtaIx(owner, balance, pins.validator),
-    ];
+    ]);
     expect(await refusalOf(world, setup, { kind: "setup" })).toBeNull();
     expect(
       await refusalOf(world, [depositInstruction(world.env, ATOMS)], {
@@ -153,7 +170,13 @@ describe("exactly what may be signed", () => {
     expect(await refusalOf(world, sealed, { kind: "move", atoms: ATOMS, sealed: false })).toMatch(
       /expected move/,
     );
-    expect(await refusalOf(world, sealed, { kind: "move", atoms: ATOMS, sealed: true })).toBeNull();
+    expect(
+      await refusalOf(world, withComputeBudget(sealed), {
+        kind: "move",
+        atoms: ATOMS,
+        sealed: true,
+      }),
+    ).toBeNull();
   });
 
   it("refuses an extra order book instruction", async () => {
@@ -193,15 +216,103 @@ describe("exactly what may be signed", () => {
 
   it("refuses a missing or reordered instruction", async () => {
     const world = makeWorld();
-    const owner = world.keypair.publicKey;
-    const out = await withdrawSpl(owner, world.pins.mint, ATOMS, {
-      validator: world.pins.validator,
-      payer: owner,
-      initAtasIfMissing: true,
+    const out = await exitOf(world);
+    expect(await refusalOf(world, withComputeBudget(out.slice(1)), EXIT)).toMatch(/expected exit/);
+    expect(await refusalOf(world, withComputeBudget([...out].reverse()), EXIT)).toMatch(
+      /expected exit/,
+    );
+  });
+
+  describe("the compute budget of the transactions sent to Solana", () => {
+    const [limit, price] = withComputeBudget([]);
+    const budgeted = async (world: World) => withComputeBudget(await exitOf(world));
+
+    it("accepts the exit with its budget and refuses it without", async () => {
+      const world = makeWorld();
+      expect(await refusalOf(world, await budgeted(world), EXIT)).toBeNull();
+      expect(await refusalOf(world, await exitOf(world), EXIT)).toMatch(/expected exit/);
     });
-    const shape = { kind: "exit", atoms: ATOMS } as const;
-    expect(await refusalOf(world, out.slice(1), shape)).toMatch(/expected exit/);
-    expect(await refusalOf(world, [...out].reverse(), shape)).toMatch(/expected exit/);
+
+    it("refuses the price before the limit", async () => {
+      const world = makeWorld();
+      const [, , ...rest] = await budgeted(world);
+      expect(await refusalOf(world, [price, limit, ...rest], EXIT)).toMatch(/expected exit/);
+    });
+
+    it("refuses a changed unit limit", async () => {
+      const world = makeWorld();
+      const [, same, ...rest] = await budgeted(world);
+      const changed = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
+      expect(await refusalOf(world, [changed, same, ...rest], EXIT)).toMatch(/expected exit/);
+    });
+
+    it("refuses a changed unit price", async () => {
+      const world = makeWorld();
+      const [same, , ...rest] = await budgeted(world);
+      const changed = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_001 });
+      expect(await refusalOf(world, [same, changed, ...rest], EXIT)).toMatch(/expected exit/);
+      expect(await refusalOf(world, [same, price, ...rest], EXIT)).toBeNull();
+    });
+
+    it("refuses a third budget instruction", async () => {
+      const world = makeWorld();
+      const instructions = await budgeted(world);
+      const extra = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 });
+      expect(await refusalOf(world, [...instructions, extra], EXIT)).toMatch(/expected exit/);
+      expect(await refusalOf(world, [extra, ...instructions], EXIT)).toMatch(/expected exit/);
+    });
+
+    it("gives the setup and the move the same two instructions, and the rollup shapes none", async () => {
+      const world = makeWorld();
+      const owner = world.keypair.publicKey;
+      const balance = deriveEphemeralAta(owner, world.pins.mint)[0];
+      const delegate = delegateEphemeralAtaIx(owner, balance, world.pins.validator);
+      expect(await refusalOf(world, [delegate], { kind: "setup" })).toMatch(/expected setup/);
+      expect(await refusalOf(world, withComputeBudget([delegate]), { kind: "setup" })).toBeNull();
+      const move = await moveOf(world);
+      expect(
+        await refusalOf(world, move.slice(2), { kind: "move", atoms: ATOMS, sealed: false }),
+      ).toMatch(/expected move/);
+      const seat = depositInstruction(world.env, ATOMS);
+      const shape = { kind: "seat-deposit", atoms: ATOMS } as const;
+      expect(await refusalOf(world, withComputeBudget([seat]), shape)).toMatch(
+        /expected seat-deposit/,
+      );
+      expect(await refusalOf(world, [seat], shape)).toBeNull();
+    });
+  });
+
+  it("keeps the largest Solana transaction under the size limit with the budget", async () => {
+    const world = makeWorld();
+    const owner = world.keypair.publicKey;
+    const { pins } = world;
+    const balance = deriveEphemeralAta(owner, pins.mint)[0];
+    const sealedFirst = await delegateSpl(owner, pins.mint, ATOMS, {
+      validator: pins.validator,
+      idempotent: false,
+      payer: owner,
+      initVaultIfMissing: true,
+      private: true,
+    });
+    sealedFirst.push(delegateEataPermissionIx(owner, balance, pins.validator));
+    const setup = [
+      createAssociatedTokenAccountIdempotentIx(owner, walletAccount(world.env), owner, pins.mint),
+      initEphemeralAtaIx(balance, owner, pins.mint, owner),
+      delegateEphemeralAtaIx(owner, balance, pins.validator),
+    ];
+    const exit = await exitOf(world);
+    const lists = [sealedFirst, setup, exit];
+    const maxFee = (list: TransactionInstruction[]) =>
+      priorityLamportsFor(computeUnitsFor(list.length));
+    expect(maxFee(sealedFirst)).toBe(MAX_MOVE_PRIORITY_LAMPORTS);
+    expect(maxFee(setup)).toBe(MAX_SETUP_PRIORITY_LAMPORTS);
+    expect(maxFee(exit)).toBe(MAX_EXIT_PRIORITY_LAMPORTS);
+    for (const list of lists) {
+      const transaction = txOf(owner, withComputeBudget(list));
+      transaction.recentBlockhash = Keypair.generate().publicKey.toBase58();
+      transaction.sign(world.keypair);
+      expect(transaction.serialize().length).toBeLessThan(1232);
+    }
   });
 
   it("refuses a foreign program and a system transfer", async () => {
