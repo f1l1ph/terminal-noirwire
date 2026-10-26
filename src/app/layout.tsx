@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Figtree } from "next/font/google";
 import { connection } from "next/server";
+import { isMainnetBuild } from "@/lib/network";
+import { StandardWalletProvider } from "@/lib/wallet/standardWallet";
 import "./globals.css";
 
 const figtree = Figtree({
@@ -11,7 +13,9 @@ const figtree = Figtree({
 
 export const metadata: Metadata = {
   title: "NoirWire terminal",
-  description: "A trading terminal for the NoirWire order book, on a test network.",
+  description: isMainnetBuild()
+    ? "A trading terminal for the NoirWire order book."
+    : "A trading terminal for the NoirWire order book, on a test network.",
   robots: { index: false, follow: false },
 };
 
@@ -25,7 +29,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   await connection();
   return (
     <html lang="en" className={`${figtree.variable} h-full antialiased`}>
-      <body className="bg-base text-ink min-h-full">{children}</body>
+      <body className="bg-base text-ink min-h-full">
+        <StandardWalletProvider>{children}</StandardWalletProvider>
+      </body>
     </html>
   );
 }

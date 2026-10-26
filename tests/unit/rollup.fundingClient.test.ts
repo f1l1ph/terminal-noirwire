@@ -7,6 +7,7 @@ import {
   type TransactionInstruction,
 } from "@solana/web3.js";
 import { openAndFund } from "@/lib/rollup/fundingClient";
+import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { PACKAGE_PROGRAM_ID, programInstructions, type CustodyToken } from "@/lib/rollup/sdk";
 
 const GATE = Keypair.generate();
@@ -101,7 +102,7 @@ async function signedByOwner(owner: Keypair, keys: PublicKey[], shape: Shape) {
   }) as unknown as typeof fetch;
   const outcome = await openAndFund(
     "http://sim.test",
-    owner,
+    keypairOwnerSigner(owner),
     keys.map((key) => key.toBase58()),
     CUSTODY,
     fetchFn,
@@ -123,7 +124,7 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
 
     const outcome = await openAndFund(
       "http://sim.test",
-      owner,
+      keypairOwnerSigner(owner),
       keys.map((key) => key.toBase58()),
       CUSTODY,
       fetchFn,
@@ -157,7 +158,13 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
       .mockResolvedValueOnce(
         jsonResponse({ error: "this address already received its fund grant" }, 409),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
+    const outcome = await openAndFund(
+      "http://sim.test",
+      keypairOwnerSigner(owner),
+      [],
+      CUSTODY,
+      fetchFn,
+    );
     expect(outcome).toEqual({ kind: "alreadyFunded" });
     expect(fetchFn).toHaveBeenCalledTimes(1); // never gets to sign or submit
   });
@@ -169,7 +176,13 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
       .mockResolvedValueOnce(
         jsonResponse({ error: "no seat can be offered right now, try again" }, 503),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
+    const outcome = await openAndFund(
+      "http://sim.test",
+      keypairOwnerSigner(owner),
+      [],
+      CUSTODY,
+      fetchFn,
+    );
     expect(outcome).toEqual({
       kind: "rateLimited",
       message: "no seat can be offered right now, try again",
@@ -186,7 +199,13 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
           503,
         ),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
+    const outcome = await openAndFund(
+      "http://sim.test",
+      keypairOwnerSigner(owner),
+      [],
+      CUSTODY,
+      fetchFn,
+    );
     expect(outcome).toEqual({ kind: "noFaucet" });
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
@@ -208,7 +227,13 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
           503,
         ),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
+    const outcome = await openAndFund(
+      "http://sim.test",
+      keypairOwnerSigner(owner),
+      [],
+      CUSTODY,
+      fetchFn,
+    );
     expect(outcome).toEqual({
       kind: "rateLimited",
       message: "daily limit reached: no more new accounts can be opened today, try again tomorrow",
@@ -232,14 +257,26 @@ describe("openAndFund: the two-step open-and-fund flow", () => {
           409,
         ),
       );
-    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
+    const outcome = await openAndFund(
+      "http://sim.test",
+      keypairOwnerSigner(owner),
+      [],
+      CUSTODY,
+      fetchFn,
+    );
     expect(outcome).toEqual({ kind: "alreadyFunded" });
   });
 
   it("surfaces a network failure as an error outcome, not a thrown exception", async () => {
     const owner = Keypair.generate();
     const fetchFn = vi.fn().mockRejectedValue(new Error("fetch failed"));
-    const outcome = await openAndFund("http://sim.test", owner, [], CUSTODY, fetchFn);
+    const outcome = await openAndFund(
+      "http://sim.test",
+      keypairOwnerSigner(owner),
+      [],
+      CUSTODY,
+      fetchFn,
+    );
     expect(outcome.kind).toBe("error");
   });
 });

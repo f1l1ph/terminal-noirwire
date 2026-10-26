@@ -2,14 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hexToBytes, ownerDataKeys } from "../wallet/index";
-import type { WalletAccount } from "../wallet/index";
+import { isMainnetBuild } from "../network";
+import { redactToken } from "../rollup/redact";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
+import { createLatestReads } from "./latestRead";
 import type {
+  AccountStatus,
   CancelResult,
   FundOutcome,
   MarketSettingsLookup,
   NewOrderInput,
+  OpenAccountOutcome,
+  OrderKeyState,
   PlaceOrderResult,
   TraderState,
   TransferResult,
@@ -30,14 +35,27 @@ export interface PlacedOrderOutcome {
   clientDurationMs: number;
 }
 
+interface OwnerFlow {
+  status: AccountStatus;
+  opening: boolean;
+  outcome: OpenAccountOutcome | null;
+  keys: OrderKeyState | null;
+  makersListed: ReadonlySet<string>;
+}
+
+const NO_MARKETS: ReadonlySet<string> = new Set();
+const NO_FLOW: OwnerFlow = {
+  status: "unknown",
+  opening: false,
+  outcome: null,
+  keys: null,
+  makersListed: NO_MARKETS,
+};
+
 interface AccountRead {
   state: TraderState | null;
   syncedAtMs: number | null;
   error: string | null;
-}
-
-function walletOf(account: WalletAccount): WalletIdentity {
-  return { address: account.publicKey, secretKeyHex: account.secretKeyHex };
 }
 
 /**
@@ -76,7 +94,7 @@ function writeGrantUsed(address: string): void {
  * reload still recognises them - see `src/lib/rollup/secretStore.ts`).
  */
 export function useTrading(
-  wallet: WalletAccount | null,
+  wallet: WalletIdentity | null,
   marketSettingsLookup: MarketSettingsLookup,
 ) {
   const client = useMemo(() => createTradingClient(marketSettingsLookup), [marketSettingsLookup]);
@@ -115,7 +133,7 @@ export function useTrading(
   const rollupSecretsKeyRef = useRef<string | null>(null);
   const grantUsedKeyRef = useRef<string | null>(null);
 
-  const walletKey = wallet ? wallet.publicKey : null;
+  const walletKey = wallet ? wallet.address : null;
   if (walletKey !== grantUsedKeyRef.current) {
     grantUsedKeyRef.current = walletKey;
     setGrantUsed(readGrantUsed(walletKey));
@@ -129,7 +147,7 @@ export function useTrading(
 
   function readRollupSecrets(): Uint8Array[] {
     if (!wallet || client.mode !== "rollup" || typeof window === "undefined") return [];
-    return loadTrackedSecrets(window.localStorage, wallet.publicKey).map((entry) =>
+    return loadTrackedSecrets(window.localStorage, wallet.address).map((entry) =>
       hexToBytes(entry.secretHex),
     );
   }
@@ -139,7 +157,7 @@ export function useTrading(
   // store's writes all come from this hook's own callbacks below, which can
   // set state directly; only the "wallet identity changed" case needs to
   // reload it, and that is exactly what this key comparison catches.
-  const rollupSecretsKey = wallet ? `${wallet.publicKey}:${client.mode}` : null;
+  const rollupSecretsKey = wallet ? `${wallet.address}:${client.mode}` : null;
   if (rollupSecretsKey !== rollupSecretsKeyRef.current) {
     rollupSecretsKeyRef.current = rollupSecretsKey;
     setRollupSecrets(readRollupSecrets());
@@ -147,7 +165,7 @@ export function useTrading(
 
   useEffect(() => {
     if (!wallet) return;
-    const identity = walletOf(wallet);
+    const identity = wallet;
     let active = true;
     const unsubscribe = client.subscribe(
       identity,
@@ -185,18 +203,77 @@ export function useTrading(
     };
   }, [client, wallet]);
 
+  // The owner's account and order keys, keyed by address like `reads`, so a
+  // late answer for a wallet no longer in view writes only its own entry.
+  const [flows, setFlows] = useState<Record<string, OwnerFlow>>({});
+  const [statusReads] = useState(createLatestReads);
+  const currentOwnerRef = useRef<string | null>(null);
+  useEffect(() => {
+    currentOwnerRef.current = wallet?.address ?? null;
+  }, [wallet]);
+  const patchFlow = useCallback((owner: string, patch: Partial<OwnerFlow>) => {
+    setFlows((prev) => ({ ...prev, [owner]: { ...(prev[owner] ?? NO_FLOW), ...patch } }));
+  }, []);
+
+  useEffect(() => {
+    if (!wallet) return;
+    let active = true;
+    const stopKeys = client.subscribeOrderKeys?.(wallet, (keys) => {
+      if (active) patchFlow(wallet.address, { keys });
+    });
+    const ticket = statusReads.begin(wallet.address);
+    client.accountStatus?.(wallet).then(
+      (status) => {
+        if (active && statusReads.isCurrent(wallet.address, ticket, wallet.address)) {
+          patchFlow(wallet.address, { status });
+        }
+      },
+      () => {},
+    );
+    client.makersListedMarkets?.(wallet).then(
+      (makersListed) => {
+        if (active) patchFlow(wallet.address, { makersListed });
+      },
+      () => {},
+    );
+    return () => {
+      active = false;
+      stopKeys?.();
+    };
+  }, [client, wallet, patchFlow, statusReads]);
+
+  /** Runs the account check again, and with it the sign-in and key setup a failed attempt left undone. */
+  const recheckAccount = useCallback(async (): Promise<void> => {
+    if (!wallet || !client.accountStatus) return;
+    const owner = wallet.address;
+    const ticket = statusReads.begin(owner);
+    const status = await client.accountStatus(wallet).catch((): AccountStatus => "unknown");
+    if (!statusReads.isCurrent(owner, ticket, currentOwnerRef.current)) return;
+    patchFlow(owner, { status });
+    // A failed check says the session could not be built; reading the markets
+    // would build another and could prompt the wallet again unasked.
+    if (status === "unknown") return;
+    client.makersListedMarkets?.(wallet).then(
+      (makersListed) => {
+        if (currentOwnerRef.current === owner) patchFlow(owner, { makersListed });
+      },
+      () => {},
+    );
+  }, [client, wallet, patchFlow, statusReads]);
+
   // The page itself unloading (close, refresh, navigate away) does not
   // always run the effect cleanup above in time; this ends the same
   // subscription from the one event guaranteed to fire first.
   useEffect(() => {
     if (!wallet || typeof window === "undefined") return;
-    const identity = walletOf(wallet);
+    const identity = wallet;
     const onUnload = () => client.closeWallet?.(identity);
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
   }, [client, wallet]);
 
-  const currentRead = wallet ? reads[wallet.publicKey] : undefined;
+  const flow = (wallet ? flows[wallet.address] : undefined) ?? NO_FLOW;
+  const currentRead = wallet ? reads[wallet.address] : undefined;
   const effectiveState = currentRead?.state ?? EMPTY_STATE;
   const effectiveLastSyncedAtMs = currentRead?.syncedAtMs ?? null;
 
@@ -210,9 +287,9 @@ export function useTrading(
     let active = true;
     const refresh = setTimeout(
       () => {
-        client.fetchState(walletOf(wallet)).then(
+        client.fetchState(wallet).then(
           (next) => {
-            if (active) setStateSynced(wallet.publicKey, next);
+            if (active) setStateSynced(wallet.address, next);
           },
           () => {},
         );
@@ -225,11 +302,39 @@ export function useTrading(
     };
   }, [client, wallet, marginValidUntilMs, setStateSynced]);
 
+  const openAccount = useCallback(
+    async (invite?: string): Promise<OpenAccountOutcome> => {
+      if (!wallet) return { kind: "notSent", reason: "No wallet is connected." };
+      patchFlow(wallet.address, { opening: true });
+      let outcome: OpenAccountOutcome;
+      try {
+        outcome = await client.openAccount(wallet, invite);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "The account could not be opened.";
+        outcome = { kind: "notSent", reason: redactToken(reason) };
+      }
+      const nowOpen = outcome.kind === "opened" || outcome.kind === "alreadyOpen";
+      if (nowOpen) statusReads.begin(wallet.address);
+      patchFlow(wallet.address, {
+        opening: false,
+        outcome,
+        ...(nowOpen ? { status: "open" as const } : {}),
+      });
+      return outcome;
+    },
+    [client, wallet, patchFlow, statusReads],
+  );
+
+  const rollupReader = useMemo(() => {
+    const read = client.rollupReader?.bind(client);
+    return wallet && read ? () => read(wallet) : null;
+  }, [client, wallet]);
+
   const fund = useCallback(async (): Promise<FundOutcome> => {
     if (!wallet) return { kind: "error", message: "No wallet to fund" };
-    const outcome = await client.fund(walletOf(wallet));
+    const outcome = await client.fund(wallet);
     if (outcome.kind === "granted" || outcome.kind === "alreadyFunded") {
-      writeGrantUsed(wallet.publicKey);
+      writeGrantUsed(wallet.address);
       setGrantUsed(true);
     }
     if (outcome.kind === "noFaucet") setNoFaucet(true);
@@ -240,7 +345,7 @@ export function useTrading(
     async (draft: NewOrderInput): Promise<PlacedOrderOutcome> => {
       if (!wallet) throw new Error("No wallet to trade with");
       const clickedAt = performance.now();
-      const result = await client.placeOrder(walletOf(wallet), draft);
+      const result = await client.placeOrder(wallet, draft);
       // Rollup mode reports exactly when its result was read from the view
       // (performance.now(), the same clock as clickedAt), which is more
       // precise than timing the whole call from out here: that would also
@@ -251,23 +356,27 @@ export function useTrading(
           : performance.now() - clickedAt;
       addOwnTag(result.tag);
       setRollupSecrets(readRollupSecrets());
+      void client.makersListedMarkets?.(wallet).then(
+        (makersListed) => patchFlow(wallet.address, { makersListed }),
+        () => {},
+      );
       // Rollup mode pushes the state an order leaves behind with the result
       // itself; dev mode only polls, so it is asked once, without waiting.
       if (client.mode === "dev") {
-        void client.fetchState(walletOf(wallet)).then(
-          (next) => setStateSynced(wallet.publicKey, next),
+        void client.fetchState(wallet).then(
+          (next) => setStateSynced(wallet.address, next),
           () => {},
         );
       }
       return { result, clientDurationMs };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- readRollupSecrets closes over wallet/client, already deps
-    [client, wallet, addOwnTag, setStateSynced],
+    [client, wallet, addOwnTag, setStateSynced, patchFlow],
   );
 
   const releaseUnknownOutcome = useCallback(
     (market: string, tag?: string) => {
-      if (wallet) client.releaseUnknownOutcome?.(walletOf(wallet), market, tag);
+      if (wallet) client.releaseUnknownOutcome?.(wallet, market, tag);
     },
     [client, wallet],
   );
@@ -275,7 +384,7 @@ export function useTrading(
   const readUnknownOutcome = useCallback(
     async (market: string) => {
       if (!wallet || !client.readUnknownOutcome) return null;
-      return client.readUnknownOutcome(walletOf(wallet), market);
+      return client.readUnknownOutcome(wallet, market);
     },
     [client, wallet],
   );
@@ -283,7 +392,7 @@ export function useTrading(
   const cancelAllInMarket = useCallback(
     async (market: string): Promise<CancelResult> => {
       if (!wallet) throw new Error("No wallet to cancel for");
-      return client.cancelAllInMarket(walletOf(wallet), market);
+      return client.cancelAllInMarket(wallet, market);
     },
     [client, wallet],
   );
@@ -291,7 +400,7 @@ export function useTrading(
   const syncMarket = useCallback(
     async (market: string) => {
       if (!wallet || !client.syncMarket) return;
-      await client.syncMarket(walletOf(wallet), market);
+      await client.syncMarket(wallet, market);
     },
     [client, wallet],
   );
@@ -300,7 +409,7 @@ export function useTrading(
     async (market: string, orderId: string): Promise<CancelResult> => {
       if (!wallet) throw new Error("No wallet to cancel for");
       if (!client.cancelOrder) throw new Error("Per-order cancel is not available");
-      return client.cancelOrder(walletOf(wallet), market, orderId);
+      return client.cancelOrder(wallet, market, orderId);
     },
     [client, wallet],
   );
@@ -308,7 +417,7 @@ export function useTrading(
   const checkPrivacy = useCallback(
     async (market: string) => {
       if (!wallet || !client.checkPrivacy) return null;
-      return client.checkPrivacy(walletOf(wallet), market);
+      return client.checkPrivacy(wallet, market);
     },
     [client, wallet],
   );
@@ -319,10 +428,10 @@ export function useTrading(
       if (!client.transferBetweenBalances) {
         return { kind: "error", message: "Transfer is not available in this mode" };
       }
-      const result = await client.transferBetweenBalances(walletOf(wallet), toSpot, amount);
+      const result = await client.transferBetweenBalances(wallet, toSpot, amount);
       if (result.kind === "ok") {
-        const next = await client.fetchState(walletOf(wallet));
-        setStateSynced(wallet.publicKey, next);
+        const next = await client.fetchState(wallet);
+        setStateSynced(wallet.address, next);
       }
       return result;
     },
@@ -339,6 +448,23 @@ export function useTrading(
     rollupSecrets,
     grantUsed,
     noFaucet,
+    /** Mainnet: the connected owner has no account yet and needs the invite NoirWire issued for this address. */
+    needsInvite: isMainnetBuild() && flow.status === "absent",
+    // Only a successful account read for this owner moves this off "unknown":
+    // state on the stream may be a placeholder for an account never seen.
+    accountStatus: flow.status,
+    /** True from the moment the open request starts until it is settled. */
+    opening: flow.opening,
+    /** What the last attempt to open the account came to; null before any. */
+    openOutcome: flow.outcome,
+    openAccount,
+    recheckAccount,
+    /** Reads the rollup as the owner; null in dev mode and with no wallet. */
+    rollupReader,
+    /** Where the order keys stand on this device (waiting to replace old keys, installing, ready); null until known. */
+    orderKeys: flow.keys,
+    /** Symbols of the markets where only listed makers may rest orders; a Limit there is sent as immediate-or-cancel. */
+    makersListed: flow.makersListed,
     fund,
     placeOrder,
     releaseUnknownOutcome,

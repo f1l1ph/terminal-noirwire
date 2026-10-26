@@ -1,6 +1,8 @@
-import { Keypair, PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
+import { PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { z } from "zod";
 import type { FundOutcome } from "../trading/types";
+import type { OwnerSigner } from "../wallet/ownerSigner";
+import { signChecked } from "./ownerSend";
 import { PACKAGE_PROGRAM_ID, programInstructions, type CustodyToken } from "./sdk";
 import { amountToQuoteAtoms } from "./units";
 
@@ -96,7 +98,7 @@ function isExpectedFunding(
  */
 export async function openAndFund(
   simUrl: string,
-  owner: Keypair,
+  owner: OwnerSigner,
   orderKeyPublicKeys: string[],
   collateral: CustodyToken,
   fetchFn: typeof fetch = fetch,
@@ -131,8 +133,16 @@ export async function openAndFund(
   } catch {
     return { kind: "error", message: UNEXPECTED_TRANSACTION };
   }
-  transaction.partialSign(owner);
-  const submitted = transaction
+  let signed: Transaction;
+  try {
+    signed = await signChecked(owner, transaction);
+  } catch (error) {
+    return {
+      kind: "error",
+      message: error instanceof Error ? error.message : UNEXPECTED_TRANSACTION,
+    };
+  }
+  const submitted = signed
     .serialize({ requireAllSignatures: false, verifySignatures: false })
     .toString("base64");
 

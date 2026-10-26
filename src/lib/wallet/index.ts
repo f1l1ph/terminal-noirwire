@@ -1,4 +1,5 @@
 import { Keypair } from "@solana/web3.js";
+import { isMainnetBuild, refuseOnMainnet } from "../network";
 import { openSecret, parseSealedSecret, sealSecret } from "./sealedSecret";
 
 export interface KeyValueStore {
@@ -24,6 +25,7 @@ export const ownerDataKeys = {
   grantUsed: (address: string) => `noirwire-terminal-grant-used:${address}`,
   unknownHolds: (address: string) => `noirwire-terminal-unknown-orders:${address}`,
   accountOpened: (address: string) => `noirwire-terminal-account-opened:${address}`,
+  signInToken: (address: string) => `noirwire-terminal-rollup-token:${address}`,
 };
 
 export function bytesToHex(bytes: Uint8Array): string {
@@ -74,6 +76,7 @@ export class WalletExistsError extends Error {
 
 /** A wallet from a build that stored the secret in plain text, still waiting to be encrypted. */
 export function loadLegacyWallet(storage: KeyValueStore): WalletAccount | null {
+  if (isMainnetBuild()) return null;
   const hex = storage.getItem(LEGACY_SECRET_KEY);
   if (!hex) return null;
   try {
@@ -106,6 +109,7 @@ export function storedWalletAddress(storage: KeyValueStore): string | null {
  * it cannot keep linking that address to its fills.
  */
 export function createWallet(storage: KeyValueStore): WalletAccount {
+  refuseOnMainnet("Creating a wallet in the page");
   const kept = keptWalletAddress(storage);
   if (kept) throw new WalletExistsError(kept);
   clearWallet(storage);
@@ -123,6 +127,7 @@ export async function protectWallet(
   account: WalletAccount,
   passphrase: string,
 ): Promise<void> {
+  refuseOnMainnet("Keeping a wallet secret in the page");
   if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
     throw new Error(`A passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters is required`);
   }
@@ -137,6 +142,7 @@ export async function unlockWallet(
   storage: KeyValueStore,
   passphrase: string,
 ): Promise<WalletAccount | null> {
+  refuseOnMainnet("Unlocking a wallet in the page");
   const sealed = parseSealedSecret(storage.getItem(SEALED_SECRET_KEY));
   if (!sealed) return null;
   const secret = await openSecret(sealed, passphrase);
@@ -167,6 +173,7 @@ export function importWallet(
   secretHex: string,
   options: { replace?: boolean; heldAddress?: string | null } = {},
 ): WalletAccount {
+  refuseOnMainnet("Importing a wallet secret into the page");
   const account = accountFromHex(secretHex);
   const kept = keptWalletAddress(storage);
   if (kept === account.publicKey) return account;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
 import { openAndFund } from "@/lib/rollup/fundingClient";
+import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 
 /**
  * `openAndFund` adds the owner's signature to whatever transaction
@@ -48,7 +49,13 @@ describe("audit: open-and-fund signs the service's transaction without inspectin
     }) as typeof fetch;
 
     const collateral = { mint: Keypair.generate().publicKey, custodyNonce: 1n };
-    await openAndFund("https://sim.example", owner, [], collateral, fetchFn).catch(() => null);
+    await openAndFund(
+      "https://sim.example",
+      keypairOwnerSigner(owner),
+      [],
+      collateral,
+      fetchFn,
+    ).catch(() => null);
 
     const ownerSignedTheDrain =
       submitted !== null &&

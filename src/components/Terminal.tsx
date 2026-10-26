@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { env } from "@/lib/env";
 import { MARKET_IDS } from "@/lib/market-data/types";
 import type {
@@ -17,13 +17,18 @@ import {
   useSharedMarketDataStore,
 } from "@/lib/market-data/hooks";
 import { candlesLoadingKey, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
+import { isMainnetBuild } from "@/lib/network";
+import { useOwnerIdentity } from "@/lib/wallet/useOwnerIdentity";
 import { useWallet } from "@/lib/wallet/useWallet";
 import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
+import { deploymentOverrides } from "@/lib/trading";
 import type { CancelResult, Position } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { fetchDeployment, quoteSymbolOf, type PublicDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
+import { offersSpotTrading, tradeGate } from "@/lib/trading/uiRules";
+import { AccountSetup } from "@/components/AccountSetup";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { TerminalShell } from "@/components/TerminalShell";
@@ -41,9 +46,20 @@ import {
 } from "@/components/WitnessRail";
 import { OrderEntry, type PrefillRequest } from "@/components/OrderEntry";
 import { AccountDock, type Tab } from "@/components/AccountDock";
+import { TransferRecords } from "@/components/TransferRecords";
 import { holdClearableAtMs, type UnknownHold } from "@/lib/rollup/accountMemory";
 import { formatClockTime, formatDecimal } from "@/lib/format";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
+
+/**
+ * The deposit and withdraw controls and everything they move money with. The
+ * literal comparison lets the build drop the import when the switch is off,
+ * so such a build ships none of the transfer code.
+ */
+const FundsSection =
+  process.env.NEXT_PUBLIC_DEPOSITS === "on"
+    ? lazy(() => import("@/components/FundsSection"))
+    : null;
 
 interface OrderSession {
   market: string;
@@ -73,7 +89,15 @@ export function Terminal() {
   const [chosenMarketId, setChosenMarketId] = useState<string>(MARKET_IDS[0]);
   const [interval, setInterval] = useState<CandleInterval>("1m");
   const [retryToken, setRetryToken] = useState(0);
-  const data = useMarketDataState(store);
+  const allData = useMarketDataState(store);
+  // Only the perpetual is launched on mainnet: spot markets are not listed at all.
+  const data = useMemo(
+    () =>
+      offersSpotTrading(isMainnetBuild())
+        ? allData
+        : { ...allData, markets: allData.markets.filter((item) => item.kind === "perp") },
+    [allData],
+  );
   // A deployment may list fewer markets than this build knows: once the
   // list has loaded, a choice it does not hold falls back to its first.
   const selectedMarketId =
@@ -88,7 +112,8 @@ export function Terminal() {
   const [dockTab, setDockTab] = useState<Tab>("positions");
 
   const wallet = useWallet();
-  const owner = wallet.account?.publicKey ?? "";
+  const ownerIdentity = useOwnerIdentity(wallet);
+  const owner = ownerIdentity?.address ?? "";
   const marketSettings = useCallback(
     (id: string) => data.markets.find((item) => item.id === id),
     [data.markets],
@@ -101,7 +126,7 @@ export function Terminal() {
     [store],
   );
   const marketsLoaded = data.markets.length > 0;
-  const trading = useTrading(marketsLoaded ? wallet.account : null, marketSettingsFromStore);
+  const trading = useTrading(marketsLoaded ? ownerIdentity : null, marketSettingsFromStore);
 
   // Dev mode is always an in-memory, same-process engine - "localnet" in
   // spirit regardless of label. Rollup mode reads the real value from
@@ -113,7 +138,7 @@ export function Terminal() {
   useEffect(() => {
     if (trading.client.mode !== "rollup") return;
     let cancelled = false;
-    fetchDeployment(env.simUrl)
+    fetchDeployment(env.simUrl, deploymentOverrides)
       .then((described) => {
         if (!cancelled) setDeployment(described);
       })
@@ -596,7 +621,7 @@ export function Terminal() {
     (positionsArray.some((p) => Number(p.size) !== 0) || ownFillsForMarket.length > 0);
 
   const statusBarText = market
-    ? `${market.id} · ${env.networkLabel} · last data ${mark ? formatClockTime(new Date(mark.time)) : "unavailable"} · account ${wallet.account ? (trading.lastSyncedAtMs ? `synced at ${formatClockTime(new Date(trading.lastSyncedAtMs))}` : "not yet synced") : "no wallet"}`
+    ? `${market.id} · ${env.networkLabel} · last data ${mark ? formatClockTime(new Date(mark.time)) : "unavailable"} · account ${ownerIdentity ? (trading.lastSyncedAtMs ? `synced at ${formatClockTime(new Date(trading.lastSyncedAtMs))}` : "not yet synced") : "no wallet"}`
     : env.networkLabel;
 
   const orderEntry = market && (
@@ -605,7 +630,7 @@ export function Terminal() {
       market={market}
       mark={mark}
       now={now}
-      hasWallet={!!wallet.account}
+      hasWallet={!!ownerIdentity}
       walletReady={wallet.ready}
       walletLocked={!!wallet.lockedAddress}
       balances={trading.state.balances}
@@ -620,7 +645,27 @@ export function Terminal() {
       }
       onClearUnknownHold={() => clearUnknownHold(market.id)}
       position={position}
-      onCreateWallet={() => wallet.create()}
+      onCreateWallet={() => {
+        if (!isMainnetBuild()) wallet.create();
+      }}
+      ownerAddress={owner}
+      setup={
+        isMainnetBuild() && ownerIdentity ? (
+          <AccountSetup
+            address={ownerIdentity.address}
+            status={trading.accountStatus}
+            needsInvite={trading.needsInvite}
+            opening={trading.opening}
+            outcome={trading.openOutcome}
+            onOpen={(invite) => void trading.openAccount(invite)}
+            onRecheck={trading.recheckAccount}
+            keys={trading.orderKeys}
+            now={now}
+          />
+        ) : null
+      }
+      gate={tradeGate(isMainnetBuild(), trading.accountStatus, trading.orderKeys)}
+      makersListed={trading.makersListed.has(market.id)}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
       noFaucet={trading.noFaucet}
@@ -687,13 +732,28 @@ export function Terminal() {
       marketSettings={marketSettings}
       marksByMarket={data.marksByMarket}
       now={now}
-      hasWallet={!!wallet.account}
+      hasWallet={!!ownerIdentity}
       quoteSymbol={quoteSymbol}
       onTransfer={transferBetweenBalances}
       onClosePosition={requestClose}
       onReducePosition={requestReduce}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
       cancellingOrderId={cancelling ? (trackedOpenOrder?.orderId ?? null) : null}
+      transfers={
+        FundsSection ? (
+          <Suspense fallback={null}>
+            <FundsSection
+              identity={ownerIdentity}
+              rollupReader={trading.rollupReader}
+              accountOpen={trading.accountStatus === "open"}
+              collateral={trading.state.collateral ?? null}
+              onSettled={() => void trading.syncMarket(selectedMarketId)}
+            />
+          </Suspense>
+        ) : (
+          <TransferRecords owner={ownerIdentity?.address ?? null} engine={null} />
+        )
+      }
       bordered={!isDesktop}
     />
   );

@@ -106,7 +106,8 @@ required. See `.env.example` for the full comments.
 | `NEXT_PUBLIC_SIM_URL`              | yes                         | sim-noirwire's HTTP origin                                                                                                                                      |
 | `NEXT_PUBLIC_SIM_WS_URL`           | yes                         | sim-noirwire's websocket URL (`/v1/stream`)                                                                                                                     |
 | `NEXT_PUBLIC_TRADING_MODE`         | no (default `dev`)          | `dev` talks to sim-noirwire's local-development trading routes; `rollup` signs and sends every trade straight to the real on-chain order book from this browser |
-| `NEXT_PUBLIC_NETWORK_LABEL`        | no (default `TEST NETWORK`) | the words shown beside every balance, volume and speed figure                                                                                                   |
+| `NEXT_PUBLIC_NETWORK`              | no (default `test`)         | `mainnet` pins the program, rollup URLs, USDC mint and market ids in code (`src/lib/rollup/pins.ts`); a test build trusts `/v1/deployment`                      |
+| `NEXT_PUBLIC_NETWORK_LABEL`        | no (default `TEST NETWORK`) | the words shown beside every balance, volume and speed figure (default `MAINNET` on mainnet)                                                                    |
 | `NEXT_PUBLIC_ROLLUP_RPC_URL`       | no - override only          | replaces the RPC URL `/v1/deployment` reports (the local query filter), so markets are checked on a rollup the service did not pick; also widens the CSP        |
 | `NEXT_PUBLIC_ROLLUP_WS_URL`        | no - override only          | replaces the websocket URL `/v1/deployment` reports; also widens the CSP                                                                                        |
 | `NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID` | no - override only          | the program id this build signs for (default: the `@noirwire/orderbook` package's own); a `/v1/deployment` naming another program is refused                    |
@@ -189,6 +190,29 @@ Environment variables to set on the Vercel project, for devnet:
 | `NEXT_PUBLIC_NETWORK_LABEL`  | `DEVNET`                                                                                                                                                             |
 | `NEXT_PUBLIC_ROLLUP_RPC_URL` | `https://devnet-tee.magicblock.app` (confirmed by reading a live devnet `/v1/deployment` response by hand; re-verify if MagicBlock ever changes the hosted endpoint) |
 | `NEXT_PUBLIC_ROLLUP_WS_URL`  | `wss://devnet-tee.magicblock.app` (same endpoint, websocket scheme)                                                                                                  |
+
+### Deploy to Vercel, for mainnet
+
+A mainnet build refuses to start unless it is in rollup mode, has no
+`NEXT_PUBLIC_ALLOW_UNSIGNED_DEV_MODE`, has a label that is unset or exactly
+`MAINNET`, and every program or rollup override is unset or exactly the pin.
+It fails `next build` otherwise. It also refuses a `/v1/deployment` answer
+naming another network, program, market other than id 0, or USDC mint, and
+`connect-src` allows exactly the pinned rollup origins. Before the owner key
+signs anything, it asks the rollup (`getIdentity`) who runs it and refuses
+unless that is the pinned validator. A test build refuses
+an answer naming mainnet. Never set `NEXT_PUBLIC_ALLOW_UNSIGNED_DEV_MODE` here.
+
+| Variable                           | Value                                          |
+| ---------------------------------- | ---------------------------------------------- |
+| `NEXT_PUBLIC_SIM_URL`              | `https://book.noirwire.com`                    |
+| `NEXT_PUBLIC_SIM_WS_URL`           | `wss://book.noirwire.com/v1/stream`            |
+| `NEXT_PUBLIC_TRADING_MODE`         | `rollup`                                       |
+| `NEXT_PUBLIC_NETWORK`              | `mainnet`                                      |
+| `NEXT_PUBLIC_NETWORK_LABEL`        | `MAINNET`                                      |
+| `NEXT_PUBLIC_ROLLUP_RPC_URL`       | `https://mainnet-tee.magicblock.app`           |
+| `NEXT_PUBLIC_ROLLUP_WS_URL`        | `wss://mainnet-tee.magicblock.app`             |
+| `NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID` | `BrUoDsreaeXWypVxh6LoGseqwB4TZVJZBxvhfxXprvwP` |
 
 No Solana RPC origin is needed in `connect-src`: nothing in the trading path
 talks to base-layer Solana directly (the deployment's own `solanaRpcUrl` is

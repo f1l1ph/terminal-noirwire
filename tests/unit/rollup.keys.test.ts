@@ -3,6 +3,7 @@ import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js"
 import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
 import { deriveOrderSeed, isSignInChallenge, signInSigner } from "@/lib/rollup/keys";
+import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 
 const text = (value: string) => new TextEncoder().encode(value);
 
@@ -46,7 +47,7 @@ describe("the rollup sign-in signer", () => {
   it("signs a sign-in challenge for its own owner", async () => {
     const owner = Keypair.generate();
     const challenge = challengeFor(owner);
-    const signature = await signInSigner(owner)(challenge);
+    const signature = await signInSigner(keypairOwnerSigner(owner))(challenge);
     expect(nacl.sign.detached.verify(challenge, signature, owner.publicKey.toBytes())).toBe(true);
   });
 
@@ -63,7 +64,7 @@ describe("the rollup sign-in signer", () => {
     ];
     for (const bytes of refused) {
       expect(isSignInChallenge(bytes, owner.publicKey)).toBe(false);
-      await expect(signInSigner(owner)(bytes)).rejects.toThrow();
+      await expect(signInSigner(keypairOwnerSigner(owner))(bytes)).rejects.toThrow();
     }
   });
 
@@ -71,7 +72,7 @@ describe("the rollup sign-in signer", () => {
     const owner = Keypair.generate();
     for (const tag of ["noirwire-terminal/order-key-seed/v1", "NoirWire anything"]) {
       expect(isSignInChallenge(text(tag), owner.publicKey)).toBe(false);
-      await expect(signInSigner(owner)(text(tag))).rejects.toThrow();
+      await expect(signInSigner(keypairOwnerSigner(owner))(text(tag))).rejects.toThrow();
     }
   });
 
@@ -98,7 +99,7 @@ describe("the rollup sign-in signer", () => {
     ];
     for (const bytes of refused) {
       expect(isSignInChallenge(bytes, owner.publicKey)).toBe(false);
-      await expect(signInSigner(owner)(bytes)).rejects.toThrow();
+      await expect(signInSigner(keypairOwnerSigner(owner))(bytes)).rejects.toThrow();
     }
   });
 });

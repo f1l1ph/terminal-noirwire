@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pinRefusal, testBuildRefusal, type NetworkPins } from "./pins";
 
 /**
  * `GET /v1/deployment` (sim-noirwire, rollup mode only): everything a
@@ -67,46 +68,65 @@ export interface DeploymentOverrides {
    * program is still caught by the comparison in `buildRealSession`.
    */
   programId?: string;
+  /**
+   * Set on a mainnet build only. The answer is refused unless it agrees with
+   * these pins, and the pinned rollup URLs replace whatever it names.
+   */
+  pins?: NetworkPins;
 }
 
 const cache = new Map<string, Promise<PublicDeployment>>();
 
 /**
- * One fetch per service and set of overrides for the life of the page. A
- * failed fetch is forgotten as soon as it fails, so the next caller asks
- * again instead of inheriting a network blip until the page is reloaded.
+ * One fetch per service for the life of the page. The pin checks and the URL
+ * overrides run on every call, after the cache, so no caller can be handed an
+ * answer another caller's pins would have refused. A failed fetch is
+ * forgotten as soon as it fails, so the next caller asks again instead of
+ * inheriting a network blip until the page is reloaded.
  */
-export function fetchDeployment(
+export async function fetchDeployment(
   simUrl: string,
   overrides: DeploymentOverrides = {},
   fetchFn: typeof fetch = fetch,
 ): Promise<PublicDeployment> {
-  const key = JSON.stringify([simUrl, overrides.rollupRpcUrl, overrides.rollupWsUrl]);
-  const existing = cache.get(key);
-  if (existing) return existing;
-  const promise = load(simUrl, overrides, fetchFn);
-  cache.set(key, promise);
-  promise.catch(() => {
-    if (cache.get(key) === promise) cache.delete(key);
-  });
-  return promise;
+  let promise = cache.get(simUrl);
+  if (!promise) {
+    promise = load(simUrl, fetchFn);
+    cache.set(simUrl, promise);
+    const loading = promise;
+    loading.catch(() => {
+      if (cache.get(simUrl) === loading) cache.delete(simUrl);
+    });
+  }
+  try {
+    return accepted(simUrl, await promise, overrides);
+  } catch (error) {
+    if (cache.get(simUrl) === promise) cache.delete(simUrl);
+    throw error;
+  }
 }
 
-async function load(
+function accepted(
   simUrl: string,
+  parsed: PublicDeployment,
   overrides: DeploymentOverrides,
-  fetchFn: typeof fetch,
-): Promise<PublicDeployment> {
+): PublicDeployment {
+  const { pins } = overrides;
+  const refusal = pins ? pinRefusal(pins, parsed) : testBuildRefusal(parsed);
+  if (refusal) throw new Error(`${simUrl}/v1/deployment refused: ${refusal}`);
+  return {
+    ...parsed,
+    rollupRpcUrl: pins?.rollupRpcUrl ?? overrides.rollupRpcUrl ?? parsed.rollupRpcUrl,
+    rollupWsUrl: pins?.rollupWsUrl ?? overrides.rollupWsUrl ?? parsed.rollupWsUrl,
+  };
+}
+
+async function load(simUrl: string, fetchFn: typeof fetch): Promise<PublicDeployment> {
   const response = await fetchFn(`${simUrl}/v1/deployment`, {
     headers: { accept: "application/json" },
   });
   if (!response.ok) {
     throw new Error(`${simUrl}/v1/deployment answered ${response.status}`);
   }
-  const parsed = deploymentSchema.parse(await response.json());
-  return {
-    ...parsed,
-    rollupRpcUrl: overrides.rollupRpcUrl ?? parsed.rollupRpcUrl,
-    rollupWsUrl: overrides.rollupWsUrl ?? parsed.rollupWsUrl,
-  };
+  return deploymentSchema.parse(await response.json());
 }

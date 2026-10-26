@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import type { Wallet } from "@wallet-standard/base";
 import { formatShortAddress } from "@/lib/format";
+import { isMainnetBuild } from "@/lib/network";
+import { useStandardWallet } from "@/lib/wallet/standardWallet";
 import {
   browserLocalStorage,
   keptWalletAddress,
@@ -115,7 +118,139 @@ function PassphraseForm({
   );
 }
 
+/**
+ * The wallet control in the header. A mainnet build lists the wallets in the
+ * browser and never offers to hold a secret; a test build keeps the built-in
+ * wallet.
+ */
 export function WalletWidget({ wallet }: { wallet: WalletHookResult }) {
+  return isMainnetBuild() ? <ExternalWalletWidget /> : <BuiltInWalletWidget wallet={wallet} />;
+}
+
+/** Closes the panel on a click outside `containerRef` or on Escape. */
+function useDismissOnOutside(
+  open: boolean,
+  containerRef: RefObject<HTMLDivElement | null>,
+  close: () => void,
+) {
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, containerRef, close]);
+}
+
+const CONNECT_FAILED = "Could not connect. Check the wallet and try again.";
+
+/** Phantom, Solflare and any other Wallet Standard wallet that signs for Solana mainnet: connect, show and copy the address, disconnect. */
+function ExternalWalletWidget() {
+  const { wallets, signer, connecting, connect, disconnect } = useStandardWallet();
+  const [open, setOpen] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useDismissOnOutside(open, containerRef, close);
+
+  const address = signer?.publicKey.toBase58() ?? null;
+
+  async function choose(wallet: Wallet) {
+    setProblem(null);
+    try {
+      await connect(wallet);
+      setOpen(false);
+    } catch {
+      setProblem(CONNECT_FAILED);
+    }
+  }
+
+  async function copyAddress() {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        className="border-line text-ink rounded-tile min-h-11 border px-3 text-[13px]"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {connecting ? "Connecting…" : address ? formatShortAddress(address) : "Connect wallet"}
+      </button>
+      {open && (
+        <div className={`${panel} absolute right-0 z-10 mt-2 w-80 p-4`}>
+          {address ? (
+            <>
+              <p className="text-ink text-[13px] break-all">{address}</p>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  className={`${btnGhost} h-9 flex-1 text-[12px]`}
+                  onClick={() => void copyAddress()}
+                >
+                  {copied ? "Copied" : "Copy address"}
+                </button>
+                <button
+                  type="button"
+                  className={`${btnGhost} h-9 flex-1 text-[12px]`}
+                  onClick={() => {
+                    setOpen(false);
+                    void disconnect();
+                  }}
+                >
+                  Disconnect
+                </button>
+              </div>
+            </>
+          ) : wallets.length === 0 ? (
+            <p className="text-faint text-[12px]">
+              No supported wallet found in this browser. Install Phantom or Solflare, then reload
+              this page.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {wallets.map((wallet) => (
+                <li key={wallet.name}>
+                  <button
+                    type="button"
+                    className={`${btnGhost} flex h-9 w-full items-center gap-2 px-3 text-[13px]`}
+                    disabled={connecting}
+                    onClick={() => void choose(wallet)}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element -- a wallet's own data: icon */}
+                    <img src={wallet.icon} alt="" width={18} height={18} />
+                    {wallet.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {problem && <p className="text-danger mt-2 text-[12px]">{problem}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BuiltInWalletWidget({ wallet }: { wallet: WalletHookResult }) {
   const [open, setOpen] = useState(false);
   const [importValue, setImportValue] = useState("");
   const [importError, setImportError] = useState<string | null>(null);

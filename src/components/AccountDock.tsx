@@ -15,6 +15,8 @@ import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/t
 import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
+import { isMainnetBuild } from "@/lib/network";
+import { walletlessDockText } from "@/lib/trading/uiRules";
 
 export type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
 
@@ -45,6 +47,7 @@ export function AccountDock({
   onReducePosition,
   onCancelOrder,
   cancellingOrderId,
+  transfers = null,
   bordered = true,
 }: {
   tab: Tab;
@@ -71,6 +74,8 @@ export function AccountDock({
   onReducePosition: (position: Position) => void;
   onCancelOrder: ((market: string, orderId: string) => void) | null;
   cancellingOrderId: string | null;
+  /** Deposits, withdrawals and the transfers that did not finish, shown above the tabs. */
+  transfers?: React.ReactNode;
   /** False inside the desktop Account panel frame, which already supplies the border. True (default) on phone, where this renders standalone. */
   bordered?: boolean;
 }) {
@@ -99,9 +104,10 @@ export function AccountDock({
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3" role="tabpanel">
+        {hasWallet && transfers && <div className="-mx-3 -mt-3 mb-3">{transfers}</div>}
         {!hasWallet && (
           <div className="flex h-full min-h-[96px] flex-col items-center justify-center gap-1 text-center">
-            <p className="text-dim text-[13px]">Create a test wallet to see your account.</p>
+            <p className="text-dim text-[13px]">{walletlessDockText(isMainnetBuild())}</p>
           </div>
         )}
         {hasWallet && tab === "positions" && (

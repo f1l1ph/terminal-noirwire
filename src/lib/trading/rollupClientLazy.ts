@@ -1,10 +1,14 @@
+import type { Connection } from "@solana/web3.js";
 import type { UnknownHold } from "../rollup/accountMemory";
 import type { DeploymentOverrides } from "../rollup/deployment";
 import type {
+  AccountStatus,
   CancelResult,
   FundOutcome,
   MarketSettingsLookup,
   NewOrderInput,
+  OpenAccountOutcome,
+  OrderKeyState,
   PlaceOrderResult,
   PrivacyCheck,
   TraderState,
@@ -51,8 +55,35 @@ export class LazyRollupTradingClient implements TradingClient {
     return this.loaded;
   }
 
-  async openAccount(wallet: WalletIdentity): Promise<void> {
-    return (await this.load()).openAccount(wallet);
+  async openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome> {
+    return (await this.load()).openAccount(wallet, invite);
+  }
+
+  async rollupReader(wallet: WalletIdentity): Promise<Connection> {
+    const client = await this.load();
+    if (!client.rollupReader)
+      throw new Error("This client has no rollup connection to read through");
+    return client.rollupReader(wallet);
+  }
+
+  async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
+    return (await (await this.load()).accountStatus?.(wallet)) ?? "unknown";
+  }
+
+  async makersListedMarkets(wallet: WalletIdentity): Promise<ReadonlySet<string>> {
+    return (await (await this.load()).makersListedMarkets?.(wallet)) ?? new Set();
+  }
+
+  subscribeOrderKeys(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void this.load().then((client) => {
+      if (!cancelled) unsubscribe = client.subscribeOrderKeys?.(wallet, listener) ?? null;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }
 
   async fund(wallet: WalletIdentity): Promise<FundOutcome> {
