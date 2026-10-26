@@ -55,11 +55,11 @@ export function describeOpenOutcome(
     case "notInvited":
       return notice(
         "error",
-        "Nothing was sent. This address has no invite, or the code is wrong. Check the code and try again.",
+        "Nothing was sent. This address is not on the invite list yet. Ask NoirWire to add it, then try again.",
         { nothingSent: true },
       );
     case "inviteUsed":
-      return notice("error", "Nothing was sent. This invite code has already been used.", {
+      return notice("error", "Nothing was sent. This address's invite has already been used.", {
         nothingSent: true,
       });
     case "tooManyToday":
