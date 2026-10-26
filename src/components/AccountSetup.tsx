@@ -13,8 +13,9 @@ import { btnGhost, btnPrimary, input } from "@/components/ui/styles";
 const TONE_CLASS = { ok: "text-dim", wait: "text-warning", error: "text-danger" } as const;
 
 /**
- * Mainnet only: the connected address, opening the account with the invite
- * NoirWire issued for it, and where this device's trading keys stand.
+ * Mainnet only: the connected address, opening the account (invited by
+ * address, or with the invite code NoirWire issued for it), and where this
+ * device's trading keys stand.
  */
 export function AccountSetup({
   address,
@@ -67,7 +68,7 @@ export function AccountSetup({
       {needsInvite && (
         <div className="flex flex-col gap-1">
           <label className="text-faint text-[12px]" htmlFor="open-invite">
-            Invite code for this address
+            Invite code, if you were given one
           </label>
           <input
             id="open-invite"
@@ -83,7 +84,7 @@ export function AccountSetup({
         <button
           type="button"
           className={`${btnPrimary} h-10 w-full`}
-          disabled={opening || (needsInvite && invite.length === 0)}
+          disabled={opening}
           onClick={() => onOpen(invite.length > 0 ? invite : undefined)}
         >
           {opening ? "Opening…" : "Open account"}

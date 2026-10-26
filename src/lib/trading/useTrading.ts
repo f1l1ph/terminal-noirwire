@@ -448,7 +448,7 @@ export function useTrading(
     rollupSecrets,
     grantUsed,
     noFaucet,
-    /** Mainnet: the connected owner has no account yet and needs the invite NoirWire issued for this address. */
+    /** Mainnet: the connected owner has no account yet and opens it through the invite list, by address or with an invite code. */
     needsInvite: isMainnetBuild() && flow.status === "absent",
     // Only a successful account read for this owner moves this off "unknown":
     // state on the stream may be a placeholder for an account never seen.
