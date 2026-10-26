@@ -1,14 +1,7 @@
 "use client";
 
 import { createContext, useContext, type ReactNode } from "react";
-import type {
-  Candle,
-  CandleInterval,
-  MarketInfo,
-  PublicFill,
-  StatsResponse,
-} from "@/lib/market-data/types";
-import type { ConnectionState } from "@/lib/market-data/socket";
+import type { Candle, MarketInfo, PublicFill, StatsResponse } from "@/lib/market-data/types";
 import type { useTrading } from "@/lib/trading/useTrading";
 
 /**
@@ -22,16 +15,11 @@ export interface TerminalPanelData {
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
   now: number;
-  interval: CandleInterval;
-  onIntervalChange: (interval: CandleInterval) => void;
   candles: Candle[];
   tape: PublicFill[];
   ownSequences: ReadonlySet<number>;
-  connectionState: ConnectionState;
   candlesLoading: boolean;
-  candlesFetchFailed: boolean;
   markStale: boolean;
-  onRetry: () => void;
   markets: MarketInfo[];
   selectedMarketId: string;
   onSelectMarket: (id: string) => void;

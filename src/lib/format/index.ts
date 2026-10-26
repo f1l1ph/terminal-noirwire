@@ -73,6 +73,12 @@ export function formatRelativeAge(ageMs: number): string {
   return `${days}d`;
 }
 
+/** How old a price is, as shown beside it: "Updated just now", "Updated 42s ago". */
+export function formatUpdatedAge(ageMs: number): string {
+  const relative = formatRelativeAge(ageMs);
+  return relative === "just now" ? "Updated just now" : `Updated ${relative} ago`;
+}
+
 /** Clock time for an event from today; a plain date for an older row. */
 export function formatEventTime(date: Date, now: Date = new Date()): string {
   const sameDay = date.toDateString() === now.toDateString();

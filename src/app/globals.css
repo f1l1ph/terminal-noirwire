@@ -160,11 +160,6 @@ button:disabled {
   background: var(--color-line);
 }
 
-/* A chart overlay for a stale or disconnected market, over the plot only. */
-.chart-overlay {
-  background: color-mix(in oklab, var(--color-surface) 88%, transparent);
-}
-
 /*
  * The desktop workspace's docking layout (dockview-react), themed entirely
  * through its own CSS variables so it reads as part of the terminal rather

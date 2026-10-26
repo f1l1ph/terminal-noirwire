@@ -43,6 +43,8 @@ export function divFixedPoint(a: bigint, b: bigint): bigint {
   return (a * FIXED_POINT_SCALE) / b;
 }
 
+export const BPS_SCALE = 10_000n;
+
 export function bpsOfFixedPoint(amount: bigint, bps: number): bigint {
-  return (amount * BigInt(Math.round(bps))) / 10_000n;
+  return (amount * BigInt(Math.round(bps))) / BPS_SCALE;
 }

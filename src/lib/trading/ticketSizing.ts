@@ -1,4 +1,5 @@
 import {
+  BPS_SCALE,
   bpsOfFixedPoint,
   divFixedPoint,
   fromFixedPoint,
@@ -10,7 +11,6 @@ import type { Side } from "./types";
 
 const ONE = toFixedPoint("1");
 const CENT = toFixedPoint("0.01");
-const BPS_SCALE = 10_000n;
 
 /** The slider's step, so a leverage is always one decimal and survives the trip through a number. */
 export const LEVERAGE_STEP = 0.1;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { formatDecimal, formatRelativeAge } from "@/lib/format";
+import { formatDecimal, formatUpdatedAge } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import { ASSUMED_TAKER_FEE_BPS } from "@/lib/trading/risk";
@@ -73,8 +73,7 @@ export function PriceHeadline({
         {change !== null && <span className="text-faint text-[11px]">past day</span>}
         {hasPrice && age !== null && (
           <span className={`text-[11px] ${stale ? "text-warning" : "text-faint"}`}>
-            Updated {formatRelativeAge(age)}
-            {age < 1000 ? "" : " ago"}
+            {formatUpdatedAge(age)}
           </span>
         )}
       </span>

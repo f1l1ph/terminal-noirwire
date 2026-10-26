@@ -105,26 +105,16 @@ function ChartPanel() {
   const data = useTerminalPanelData();
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col gap-1 p-1">
-      {!isMainnetBuild() && (
-        <MarketHeader
-          marketId={data.market?.id}
-          interval={data.interval}
-          onIntervalChange={data.onIntervalChange}
-        />
-      )}
+      {!isMainnetBuild() && <MarketHeader marketId={data.market?.id} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <MarketChart
           market={data.market}
-          interval={data.interval}
           candles={data.candles}
           mark={data.mark}
           publicFills={data.tape}
           ownSequences={data.ownSequences}
-          connectionState={data.connectionState}
           loading={data.candlesLoading}
-          fetchFailed={data.candlesFetchFailed}
           markStale={data.markStale}
-          onRetry={data.onRetry}
         />
       </div>
     </div>
