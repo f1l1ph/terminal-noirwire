@@ -43,6 +43,35 @@ export const PANEL_TITLES: Record<PanelId, string> = {
   [ACCOUNT_PANEL_ID]: "Account",
 };
 
+/** The same panels under plain names, for the build that trades real money. */
+export const MAINNET_PANEL_TITLES: Record<PanelId, string> = {
+  ...PANEL_TITLES,
+  [WITNESS_PANEL_ID]: "Your private orders",
+  [VENUE_TIMING_PANEL_ID]: "Timing",
+  [PUBLIC_VIEW_PANEL_ID]: "Privacy check",
+};
+
+/** The panels a real-money build always shows: the chart, the order ticket and the account. */
+export const MAINNET_MAIN_PANEL_IDS: readonly PanelId[] = [
+  CHART_PANEL_ID,
+  TICKET_PANEL_ID,
+  ACCOUNT_PANEL_ID,
+];
+
+/** The panels a real-money build adds only while privacy tools are switched on. */
+export const MAINNET_TOOLS_PANEL_IDS: readonly PanelId[] = [
+  WITNESS_PANEL_ID,
+  TAPE_PANEL_ID,
+  PUBLIC_VIEW_PANEL_ID,
+  VENUE_TIMING_PANEL_ID,
+];
+
+/** Exactly the panels the desktop workspace holds for this build and tools setting. */
+export function activePanelIds(mainnet: boolean, tools: boolean): readonly PanelId[] {
+  if (!mainnet) return PANEL_IDS;
+  return tools ? [...MAINNET_MAIN_PANEL_IDS, ...MAINNET_TOOLS_PANEL_IDS] : MAINNET_MAIN_PANEL_IDS;
+}
+
 /** The two hard floors from the task: the chart's group and the order ticket's group. Every other boundary only keeps a header visible. */
 export const MIN_CHART_WIDTH = 320;
 export const MIN_CHART_HEIGHT = 200;
@@ -67,6 +96,29 @@ const DEFAULT_CHART_HEIGHT_FRACTION = 0.7;
  * starting point - the splitter is freely draggable from the first frame.
  */
 const ASSUMED_CENTRE_COLUMN_HEIGHT = 560;
+
+const MAINNET_TICKET_WIDTH = 360;
+const MAINNET_WIDE_TICKET_WIDTH = 400;
+const MAINNET_ACCOUNT_HEIGHT = 260;
+const MAINNET_SHORT_ACCOUNT_HEIGHT = 210;
+/** The real-money ticket column keeps a width in this range so it neither clips nor swallows the chart. */
+export const MAINNET_MIN_TICKET_WIDTH = 340;
+export const MAINNET_MAX_TICKET_WIDTH = 440;
+
+/** Default sizes for the real-money layout: a chart column beside a fixed-width ticket column, the account under the chart. */
+export function mainnetPanelSizes(
+  windowWidthPx: number,
+  windowHeightPx: number,
+): { ticketWidth: number; accountHeight: number } {
+  return {
+    ticketWidth:
+      windowWidthPx >= WIDE_WIDTH_BREAKPOINT ? MAINNET_WIDE_TICKET_WIDTH : MAINNET_TICKET_WIDTH,
+    accountHeight:
+      windowHeightPx < SHORT_HEIGHT_BREAKPOINT
+        ? MAINNET_SHORT_ACCOUNT_HEIGHT
+        : MAINNET_ACCOUNT_HEIGHT,
+  };
+}
 
 export interface DockviewDefaultSizes {
   marketsWidth: number;
@@ -96,7 +148,7 @@ export function defaultPanelSizes(
 // ---------------------------------------------------------------------------
 
 export const LAYOUT_STORAGE_KEY = "noirwire-terminal-dockview-layout";
-export const LAYOUT_VERSION = 1;
+export const LAYOUT_VERSION = 2;
 
 /** The minimal storage surface the component needs - matches `window.localStorage`, but lets tests pass a fake (including one that throws). */
 export interface DockviewLayoutStorage {
@@ -114,8 +166,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * a large, library-owned shape, and re-encoding its full schema here would
  * only drift from whatever the installed version actually accepts. This
  * checks the two things a hand-rolled or stale payload is likely to get
- * wrong - not an object at all, the wrong version, or missing one of the
- * panels this build actually has - and leaves the rest (gridview node
+ * wrong - not an object at all, the wrong version, or a panel set that is
+ * not exactly the one this build holds now (a missing panel, or a removed one
+ * that would otherwise come back) - and leaves the rest (gridview node
  * shapes, group view state) to the real `DockviewApi.fromJSON`, which throws
  * on a deeper problem; the caller catches that too.
  */
@@ -130,7 +183,10 @@ export function isValidStoredLayout(
   if (!isPlainObject(layout.grid)) return false;
   const panels = layout.panels;
   if (!isPlainObject(panels)) return false;
-  return requiredPanelIds.every((id) => id in panels);
+  const storedIds = Object.keys(panels);
+  return (
+    storedIds.length === requiredPanelIds.length && requiredPanelIds.every((id) => id in panels)
+  );
 }
 
 /** Parses and validates a stored layout string. Any JSON error, shape mismatch, wrong version, or missing panel falls back to `null` (the caller substitutes the default). */

@@ -43,6 +43,8 @@ export interface TerminalPanelData {
   orderEntry: ReactNode;
   witnessRail: ReactNode;
   accountDock: ReactNode;
+  /** The result of the last order, shown above the account where the order log is not on screen; null when there is nothing to say. */
+  orderNotice: ReactNode;
 }
 
 const TerminalPanelContext = createContext<TerminalPanelData | null>(null);

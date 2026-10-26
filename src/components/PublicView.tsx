@@ -4,6 +4,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { formatClockTime, formatShortAddress } from "@/lib/format";
 import { env } from "@/lib/env";
+import { isMainnetBuild } from "@/lib/network";
 import type { AccountReadOutcome, PrivacyCheck } from "@/lib/trading/types";
 import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
 
@@ -27,6 +28,32 @@ const TAPE_FIELDS = [
 
 const WHAT_THIS_SHOWS =
   "These two unsigned reads returned no account data at this time. Public fills and timing remain visible. This check does not establish anonymity or rule out timing correlation.";
+
+/** Plain-language names for the build that trades real money; the test build keeps its longer technical ones. */
+const COPY = {
+  mainnet: {
+    title: "Privacy check",
+    intro:
+      "Reads your account and the market book without signing in, to show that no balances or orders come back. It does not prove anonymity.",
+    tapeButton: "Check public data",
+    tapeHint: "Fetches the public tape the way any visitor would, without signing in.",
+    accountTitle: "Account check",
+    accountButton: "Check my account",
+    accountHint: "Reads your account and this market's book without signing in.",
+    viewLabel: "Your account",
+  },
+  test: {
+    title: "Public view",
+    intro: null,
+    tapeButton: "Check public tape",
+    tapeHint: "An unsigned fetch of this market's public tape.",
+    accountTitle: "Unsigned account check",
+    accountButton: "Check unsigned accounts",
+    accountHint:
+      "Reads your own on-chain account and this market's book, unsigned, straight from the rollup.",
+    viewLabel: "Trader view",
+  },
+} as const;
 
 /** Pass is green, a real fail is red, a failed read is neutral (never green) - the second design review's "a failed or errored unsigned read must never show as empty." */
 function readRowTone(outcome: AccountReadOutcome): string {
@@ -72,6 +99,7 @@ export function PublicView({
   /** False inside the desktop "Public view" dockview panel, which already supplies the surface and border. True (default) on phone, where this renders standalone. */
   bordered?: boolean;
 }) {
+  const copy = isMainnetBuild() ? COPY.mainnet : COPY.test;
   const [snapshot, setSnapshot] = useState<PublicSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -127,13 +155,14 @@ export function PublicView({
   return (
     <div className={`${bordered ? panel : ""} relative flex flex-col gap-1.5 p-3`}>
       <div className="flex flex-col items-start gap-1.5">
-        <p className={sectionLabel}>Public view</p>
+        <p className={sectionLabel}>{copy.title}</p>
+        {copy.intro && <p className="text-dim text-[12px] leading-relaxed">{copy.intro}</p>}
         <button
           type="button"
           className={`${btnGhost} h-7 w-full justify-start px-2 text-[11px] whitespace-nowrap`}
           onClick={() => void check()}
         >
-          {loading ? "Checking…" : snapshot ? "Check again" : "Check public tape"}
+          {loading ? "Checking…" : snapshot ? "Check again" : copy.tapeButton}
         </button>
       </div>
       {error && <p className="text-warning text-[11px]">{error}</p>}
@@ -148,9 +177,7 @@ export function PublicView({
           {Math.round(snapshot.responseMs)} ms, unsigned
         </button>
       ) : (
-        <p className="text-faint text-[11px]">
-          An unsigned fetch of this market&apos;s public tape.
-        </p>
+        <p className="text-faint text-[11px]">{copy.tapeHint}</p>
       )}
       {snapshot && open && (
         <div className="bg-surface border-line-strong rounded-panel absolute inset-x-0 top-full z-10 mt-1 flex flex-col gap-2 border p-3 shadow-lg">
@@ -175,19 +202,19 @@ export function PublicView({
       {checkPrivacy && (
         <div className="border-line-subtle mt-1 border-t pt-1.5">
           <div className="flex flex-col items-start gap-1.5">
-            <p className={sectionLabel}>Unsigned account check</p>
+            <p className={sectionLabel}>{copy.accountTitle}</p>
             <button
               type="button"
               className={`${btnGhost} h-7 w-full justify-start px-2 text-[11px] whitespace-nowrap`}
               onClick={() => void checkOnChain()}
             >
-              {privacyLoading ? "Checking…" : privacy ? "Check again" : "Check unsigned accounts"}
+              {privacyLoading ? "Checking…" : privacy ? "Check again" : copy.accountButton}
             </button>
           </div>
           {privacyError && <p className="text-warning text-[11px]">{privacyError}</p>}
           {privacy ? (
             <div className="mt-2 flex flex-col gap-1.5">
-              <AccountReadRow label="Trader view" outcome={privacy.view.outcome} />
+              <AccountReadRow label={copy.viewLabel} outcome={privacy.view.outcome} />
               <AccountReadRow label={`${market} book`} outcome={privacy.book.outcome} />
               <p className="tnum text-faint mt-1 text-[11px]">
                 Unsigned {privacy.network} rollup RPC · checked{" "}
@@ -215,10 +242,7 @@ export function PublicView({
               )}
             </div>
           ) : (
-            <p className="text-faint mt-1 text-[11px]">
-              Reads your own on-chain account and this market&apos;s book, unsigned, straight from
-              the rollup.
-            </p>
+            <p className="text-faint mt-1 text-[11px]">{copy.accountHint}</p>
           )}
         </div>
       )}
@@ -252,7 +276,7 @@ export function PublicView({
                   Close
                 </button>
               </div>
-              <AccountReadRow label="Trader view" outcome={privacy.view.outcome} />
+              <AccountReadRow label={copy.viewLabel} outcome={privacy.view.outcome} />
               <AccountReadRow label={`${market} book`} outcome={privacy.book.outcome} />
               <p className="tnum text-dim text-[13px] leading-snug">
                 Unsigned {privacy.network} rollup RPC

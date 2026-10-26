@@ -4,6 +4,7 @@ import { useState } from "react";
 import { formatDuration, formatRelativeAge, networkDisplayLabel } from "@/lib/format";
 import { ageMs, latencyDisplay } from "@/lib/market-data/selectors";
 import { MIN_LATENCY_SAMPLE_SIZE, type StatsResponse } from "@/lib/market-data/types";
+import { isMainnetBuild } from "@/lib/network";
 import { panel } from "@/components/ui/styles";
 
 /**
@@ -30,9 +31,12 @@ export function VenuePulse({
   /** False inside the desktop "Venue timing" dockview panel, which already supplies the surface and border. True (default) on phone, where this renders standalone. */
   bordered?: boolean;
 }) {
-  const [showMethod, setShowMethod] = useState(false);
+  const mainnet = isMainnetBuild();
+  // Real money: there is no demo copy to show before a first order, so the
+  // venue's own figures are the content and start open.
+  const [showMethod, setShowMethod] = useState(mainnet);
   const display = latencyDisplay(stats, now);
-  const networkLabel = networkDisplayLabel(network);
+  const networkLabel = mainnet ? "Mainnet" : networkDisplayLabel(network);
 
   const headline =
     clientDurationMs === null
@@ -59,15 +63,19 @@ export function VenuePulse({
 
   return (
     <div className={`${bordered ? panel : ""} flex flex-col gap-0.5 px-3 py-2`}>
-      <p className="tnum text-ink text-[12px] leading-tight">{headline}</p>
-      <p className="text-faint text-[11px] leading-tight">{headlineDetail}</p>
+      {(!mainnet || clientDurationMs !== null) && (
+        <>
+          <p className="tnum text-ink text-[12px] leading-tight">{headline}</p>
+          <p className="text-faint text-[11px] leading-tight">{headlineDetail}</p>
+        </>
+      )}
       <button
         type="button"
         className="text-faint mt-1 shrink-0 self-start text-[11px] underline"
         onClick={() => setShowMethod((value) => !value)}
         aria-expanded={showMethod}
       >
-        Venue timing details
+        {mainnet ? "Order timing details" : "Venue timing details"}
       </button>
       {showMethod && (
         <div className="border-line-subtle mt-1 flex flex-col gap-0.5 border-t pt-1">

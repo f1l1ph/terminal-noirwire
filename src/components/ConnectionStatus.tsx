@@ -1,47 +1,36 @@
 import type { ConnectionState } from "@/lib/market-data/socket";
 
 /**
- * "Connection lost" for both `reconnecting` and `closed`: an unexpected
- * drop always retries on its own, so the trader never needs to tell the two
- * apart; the dot still distinguishes an active retry from a fully stopped
- * socket.
+ * The state of the market-data socket and nothing else: the price's own age is
+ * shown by the price header. An open socket is a quiet dot with no text; the
+ * words appear only while the connection is being made or has dropped, and on
+ * a narrow screen those collapse to the dot, the full text kept in the label.
  */
 const LABELS: Record<ConnectionState, string> = {
   connecting: "Connecting",
-  open: "Live",
-  reconnecting: "Connection lost",
-  closed: "Connection lost",
+  open: "Connected",
+  reconnecting: "Connection lost, reconnecting",
+  closed: "Connection lost, reconnecting",
 };
 
 const DOT_CLASS: Record<ConnectionState, string> = {
   connecting: "bg-warning",
-  open: "bg-safe live-dot",
+  open: "bg-safe",
   reconnecting: "bg-danger live-dot",
-  closed: "bg-danger",
+  closed: "bg-danger live-dot",
 };
 
-/**
- * `marketDataStale` only changes the label while the socket itself is
- * `open`: the socket can be fully connected while the selected market's own
- * mark has gone past the program's 10-second freshness limit (sim-noirwire
- * paused, a slow price source), and a bare "Live" dot then contradicts the
- * market header's own stale warning right beside it (third design review,
- * must-fix 1). A lost connection already says so on its own.
- */
-export function ConnectionStatus({
-  state,
-  marketDataStale = false,
-}: {
-  state: ConnectionState;
-  marketDataStale?: boolean;
-}) {
-  const label =
-    state === "open" && marketDataStale ? "Connected · market data stale" : LABELS[state];
-  const dotClass = state === "open" && marketDataStale ? "bg-warning" : DOT_CLASS[state];
+export function ConnectionStatus({ state }: { state: ConnectionState }) {
+  const label = LABELS[state];
   return (
-    <span className="text-dim inline-flex items-center gap-2 text-[12px]" aria-live="off">
-      <span className={`h-2 w-2 rounded-full ${dotClass}`} aria-hidden="true" />
-      {label}
+    <span
+      className="text-dim inline-flex shrink-0 items-center gap-2 text-[12px] whitespace-nowrap"
+      role="status"
+      aria-label={label}
+      title={label}
+    >
+      <span className={`h-2 w-2 rounded-full ${DOT_CLASS[state]}`} aria-hidden="true" />
+      <span className={state === "open" ? "sr-only" : "sr-only sm:not-sr-only"}>{label}</span>
     </span>
   );
 }
