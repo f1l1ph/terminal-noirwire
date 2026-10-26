@@ -138,7 +138,7 @@ export function MarketContextBar({
       <div className="tnum mt-6 ml-auto flex flex-wrap items-start justify-end gap-x-8 gap-y-2 text-right">
         {dayRange && (
           <BarStat
-            label="24h range"
+            label="SOL/USD 24h range"
             value={`${formatDecimal(dayRange.low, priceDecimals)} - ${formatDecimal(dayRange.high, priceDecimals)}`}
           />
         )}

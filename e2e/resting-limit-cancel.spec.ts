@@ -11,13 +11,14 @@ test.describe("A resting limit order, then cancelled", () => {
     await page.goto("/");
     await createAndFundWallet(page);
 
-    const maxBuyPrice = await page.getByLabel("Max buy price (nUSD)").inputValue();
-    const mark = Number(maxBuyPrice) / 1.01;
-    const restingPrice = (Math.round((mark * 0.95) / 0.1) * 0.1).toFixed(2);
+    await page.getByLabel("Order type").selectOption("limit");
+    const limitPrice = page.getByLabel(/Limit price/);
+    await expect(limitPrice).not.toHaveValue("");
+    const passivePrice = Number(await limitPrice.inputValue());
+    const restingPrice = (Math.round((passivePrice * 0.95) / 0.1) * 0.1).toFixed(2);
 
-    await page.getByRole("button", { name: "limit", exact: true }).click();
-    await page.getByLabel("Quantity (SOL)").fill("1");
-    await page.getByLabel(/Limit price/).fill(restingPrice);
+    await limitPrice.fill(restingPrice);
+    await page.getByLabel("Amount (nUSD)").fill("200");
 
     await submitOrder(page, "Place test long");
 
@@ -25,11 +26,13 @@ test.describe("A resting limit order, then cancelled", () => {
     await shot(page, "01-resting");
 
     await page.getByRole("tab", { name: "Open orders" }).click();
-    await expect(page.getByRole("tabpanel").getByText("NSOL-PERP")).toBeVisible();
+    await expect(page.getByRole("tabpanel").getByText("SOL-PERP")).toBeVisible();
     await shot(page, "02-open-orders");
 
-    await page.getByRole("button", { name: "Cancel all NSOL-PERP orders" }).click();
-    await expect(page.getByRole("tabpanel").getByText("No open orders.")).toBeVisible({
+    await page.getByRole("button", { name: "Cancel all SOL-PERP orders" }).click();
+    await expect(
+      page.getByRole("tabpanel").getByText("No open orders", { exact: true }),
+    ).toBeVisible({
       timeout: 15_000,
     });
     await shot(page, "03-cancelled");

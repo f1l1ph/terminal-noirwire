@@ -8,7 +8,7 @@ test.describe("First minute: wallet, funds, a filled market long", () => {
     page,
   }) => {
     await page.goto("/");
-    await expect(page.getByText("NSOL-PERP").first()).toBeVisible();
+    await expect(page.getByText("SOL-PERP").first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Create test wallet" })).toBeVisible();
     await shot(page, "01-arrival");
 
@@ -20,8 +20,8 @@ test.describe("First minute: wallet, funds, a filled market long", () => {
     await expect(page.getByText("Grant used · 5,000.00 nUSD available")).toBeVisible();
     await shot(page, "03-funded");
 
-    await page.getByLabel("Quantity (SOL)").fill("1");
-    await expect(page.getByRole("term").filter({ hasText: "Margin" })).toBeVisible();
+    await page.getByLabel("Amount (nUSD)").fill("200");
+    await expect(page.getByRole("term").filter({ hasText: "Margin used" })).toBeVisible();
 
     await page.getByRole("button", { name: "Place test long", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Confirm order" });
@@ -34,11 +34,11 @@ test.describe("First minute: wallet, funds, a filled market long", () => {
     await shot(page, "05-filled-rail");
 
     await page.getByRole("tab", { name: "Positions" }).click();
-    await expect(page.getByRole("tabpanel").getByText("long", { exact: true })).toBeVisible();
+    await expect(page.getByRole("tabpanel").getByText("Long", { exact: true })).toBeVisible();
     await shot(page, "06-positions");
 
     // Every order is confirmed, however many came before it.
-    await page.getByLabel("Quantity (SOL)").fill("0.5");
+    await page.getByLabel("Amount (nUSD)").fill("100");
     await page.getByRole("button", { name: "Place test long", exact: true }).first().click();
     await expect(page.getByRole("dialog", { name: "Confirm order" })).toBeVisible();
   });
