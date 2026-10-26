@@ -5,11 +5,8 @@ import {
   mulFixedPoint,
   toFixedPoint,
 } from "./decimal";
-import { ASSUMED_TAKER_FEE_BPS, impliedInitialMarginBps } from "./risk";
+import { ASSUMED_TAKER_FEE_BPS, MAINTENANCE_MARGIN_BPS, impliedInitialMarginBps } from "./risk";
 import type { Side } from "./types";
-
-/** Maintenance margin ratio the liquidation estimate assumes, in basis points. */
-export const TICKET_MAINTENANCE_BPS = 500;
 
 const ONE = toFixedPoint("1");
 const CENT = toFixedPoint("0.01");
@@ -163,7 +160,7 @@ export function estimateLiquidation(params: {
     const fee = bpsOfFixedPoint(notional, params.takerFeeBps ?? ASSUMED_TAKER_FEE_BPS);
     const equity = toFixedPoint(params.collateral) - fee;
     if (equity <= 0n) return null;
-    const maintenance = bpsOfFixedPoint(ONE, params.maintenanceBps ?? TICKET_MAINTENANCE_BPS);
+    const maintenance = bpsOfFixedPoint(ONE, params.maintenanceBps ?? MAINTENANCE_MARGIN_BPS);
     if (params.side === "buy") {
       if (equity >= notional) return { kind: "none" };
       const ratio = divFixedPoint(notional - equity, mulFixedPoint(notional, ONE - maintenance));

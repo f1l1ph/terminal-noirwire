@@ -1,4 +1,5 @@
 import { formatClockTime, formatDecimal, formatDuration, isLocalNetwork } from "@/lib/format";
+import { marketDisplayName } from "@/lib/market-data/displayName";
 import { isMainnetBuild } from "@/lib/network";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type { OpenOrder, Side } from "@/lib/trading/types";
@@ -85,7 +86,7 @@ function RecentActivity({
           className={`${btnGhost} h-6 px-2 text-[10px]`}
           onClick={() => onSelect(item.market)}
         >
-          {item.market} · {item.summary}
+          {marketDisplayName(item.market)} · {item.summary}
         </button>
       ))}
     </div>
@@ -161,8 +162,9 @@ export function WitnessRail({
         {hasAccountHistory ? (
           <>
             <p className="text-dim mt-1 text-[13px]">
-              {existingAccountLabel} - this session only. No order placed in {market} yet this
-              browser session; earlier activity is not restored after a reload.
+              {existingAccountLabel} - this session only. No order placed in{" "}
+              {marketDisplayName(market)} yet this browser session; earlier activity is not restored
+              after a reload.
             </p>
             <button
               type="button"
@@ -283,7 +285,7 @@ export function WitnessRail({
               ? "Cancelling…"
               : onCancelOrder
                 ? `Cancel order ${openOrder.orderId}`
-                : `Cancel all ${order.market} orders`}
+                : `Cancel all ${marketDisplayName(order.market)} orders`}
           </button>
           {cancelPending && (
             <p className="text-faint mt-1 text-[12px]">

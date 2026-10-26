@@ -2,7 +2,7 @@
 
 import "dockview-react/dist/styles/dockview.css";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DockviewReact,
   DockviewDefaultTab,
@@ -105,11 +105,13 @@ function ChartPanel() {
   const data = useTerminalPanelData();
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col gap-1 p-1">
-      <MarketHeader
-        marketId={data.market?.id}
-        interval={data.interval}
-        onIntervalChange={data.onIntervalChange}
-      />
+      {!isMainnetBuild() && (
+        <MarketHeader
+          marketId={data.market?.id}
+          interval={data.interval}
+          onIntervalChange={data.onIntervalChange}
+        />
+      )}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <MarketChart
           market={data.market}
@@ -144,7 +146,35 @@ function TapePanel() {
 
 function TicketPanel() {
   const data = useTerminalPanelData();
-  return <div className="h-full min-h-0 w-full overflow-y-auto">{data.orderEntry}</div>;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [moreBelow, setMoreBelow] = useState(false);
+  const measure = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    setMoreBelow(element.scrollHeight - element.scrollTop - element.clientHeight > 4);
+  }, []);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    return () => observer.disconnect();
+  }, [measure]);
+  return (
+    <div className="relative h-full min-h-0 w-full">
+      <div ref={scrollRef} onScroll={measure} className="h-full min-h-0 w-full overflow-y-auto">
+        <div>{data.orderEntry}</div>
+      </div>
+      {moreBelow && (
+        <div
+          aria-hidden="true"
+          className="from-surface pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t to-transparent"
+        />
+      )}
+    </div>
+  );
 }
 
 function AccountPanel() {

@@ -166,6 +166,13 @@ function connectFailure(error: unknown): string {
   return reason ? `${CONNECT_FAILED} The wallet said: ${reason}` : CONNECT_FAILED;
 }
 
+const OPEN_WALLET_MENU_EVENT = "noirwire:open-wallet-menu";
+
+/** Opens the header's wallet menu from anywhere on the page, so a button in the page can offer the same choice. */
+export function openWalletMenu() {
+  window.dispatchEvent(new Event(OPEN_WALLET_MENU_EVENT));
+}
+
 /** Phantom, Solflare and any other Wallet Standard wallet that signs for Solana mainnet: connect, show and copy the address, disconnect. */
 function ExternalWalletWidget() {
   const { wallets, signer, connecting, connect, disconnect } = useStandardWallet();
@@ -175,6 +182,11 @@ function ExternalWalletWidget() {
   const containerRef = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useDismissOnOutside(open, containerRef, close);
+  useEffect(() => {
+    const show = () => setOpen(true);
+    window.addEventListener(OPEN_WALLET_MENU_EVENT, show);
+    return () => window.removeEventListener(OPEN_WALLET_MENU_EVENT, show);
+  }, []);
 
   const address = signer?.publicKey.toBase58() ?? null;
 

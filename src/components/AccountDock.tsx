@@ -8,6 +8,7 @@ import {
   UNAVAILABLE,
 } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
+import { marketDisplayName } from "@/lib/market-data/displayName";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
@@ -95,7 +96,7 @@ export function AccountDock({
             role="tab"
             aria-selected={tab === item.id}
             onClick={() => onTabChange(item.id)}
-            className={`rounded-tile focus-visible:outline-ink-strong min-h-11 px-3 text-[13px] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-[-2px] ${
+            className={`rounded-tile focus-visible:outline-ink-strong min-h-11 px-3 text-[13px] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-[-2px] max-sm:flex-1 max-sm:px-1 max-sm:text-[12px] ${
               tab === item.id ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
             }`}
           >
@@ -223,7 +224,9 @@ function PositionsTable({
               >
                 {long ? "Long" : "Short"}
               </span>
-              <span className="text-ink-strong text-[14px] font-medium">{position.market}</span>
+              <span className="text-ink-strong text-[14px] font-medium">
+                {marketDisplayName(position.market)}
+              </span>
               <span className="tnum text-dim text-[13px]">
                 {formatDecimal(Math.abs(size), sizeDecimals)}
                 {settings ? ` ${settings.base}` : ""}
@@ -260,7 +263,7 @@ function PositionsTable({
               />
               <PositionStat
                 label="Liquidation (est.)"
-                title="Estimate: half the market's implied initial margin, computed on this device. Not confirmed by the exchange."
+                title="Estimate: a 5% maintenance margin, computed on this device. Not confirmed by the exchange."
                 value={
                   liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE
                 }
@@ -350,7 +353,7 @@ function OpenOrdersTable({
           const age = seenAt !== undefined ? ageMs(seenAt, now) : null;
           return (
             <tr key={order.orderId} className="border-line-subtle border-t">
-              <td className="py-1.5">{order.market}</td>
+              <td className="py-1.5">{marketDisplayName(order.market)}</td>
               <td className={order.side === "buy" ? "text-safe" : "text-danger"}>
                 {order.side === "buy" ? "buy" : "sell"}
               </td>
@@ -420,7 +423,7 @@ function FillsTable({
           const settings = marketSettings(fill.market);
           return (
             <tr key={fill.sequence} className="border-line-subtle border-t">
-              <td className="py-1.5">{fill.market}</td>
+              <td className="py-1.5">{marketDisplayName(fill.market)}</td>
               <td className={fill.side === "buy" ? "text-safe" : "text-danger"}>
                 {fill.side === "buy" ? "buy" : "sell"}
               </td>
@@ -562,7 +565,7 @@ function MarginTable({
             const display = displayOrderCost(estimate, priceDecimalsOf(settings));
             return (
               <tr key={position.market} className="border-line-subtle border-t">
-                <td className="py-1.5">{position.market}</td>
+                <td className="py-1.5">{marketDisplayName(position.market)}</td>
                 <td>{formatMoney(display.initialMargin, quoteSymbol)}</td>
                 <td>
                   {display.liquidationPrice
@@ -576,9 +579,9 @@ function MarginTable({
       </table>
       <p className={`${sectionLabel} mt-2`}>Estimate, not a guarantee</p>
       <p className="text-faint mt-1 text-[11px] leading-relaxed">
-        These figures are worked out on this device from your entry price. They assume half the
-        starting margin as the liquidation threshold and a 0.05% trading fee. The exchange decides
-        the real threshold.
+        These figures are worked out on this device from your entry price. They assume a 5%
+        maintenance margin as the liquidation threshold and a 0.05% trading fee. The exchange
+        decides the real threshold.
       </p>
     </>
   );

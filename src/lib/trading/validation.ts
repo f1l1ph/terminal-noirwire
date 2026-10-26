@@ -1,4 +1,5 @@
 import type { MarketInfo } from "../market-data/types";
+import { marketDisplayName } from "../market-data/displayName";
 import { isStale, STALE_MARK_MS } from "../market-data/selectors";
 import { toFixedPoint } from "./decimal";
 import type { NewOrderInput } from "./types";
@@ -150,9 +151,9 @@ export function describeFieldError(error: OrderFieldError, market: MarketInfo): 
     case "priceTooFarFromMark":
       return `Price is more than ${MAX_LIMIT_PRICE_DEVIATION_BPS / 100}% away from the current price. Check for a typo.`;
     case "markStale":
-      return `The current price of ${market.id} is too old. Wait for a fresh price.`;
+      return `The current price of ${marketDisplayName(market.id)} is too old. Wait for a fresh price.`;
     case "markUnavailable":
-      return `Waiting for the current price of ${market.id}. Try again in a moment.`;
+      return `Waiting for the current price of ${marketDisplayName(market.id)}. Try again in a moment.`;
   }
 }
 

@@ -16,7 +16,7 @@ import {
   useMarketDataState,
   useSharedMarketDataStore,
 } from "@/lib/market-data/hooks";
-import { ageMs, candlesLoadingKey, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
+import { candlesLoadingKey, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { isMainnetBuild } from "@/lib/network";
 import { useOwnerIdentity } from "@/lib/wallet/useOwnerIdentity";
 import { useWallet } from "@/lib/wallet/useWallet";
@@ -51,7 +51,9 @@ import { OrderEntry, type PrefillRequest } from "@/components/OrderEntry";
 import { AccountDock, type Tab } from "@/components/AccountDock";
 import { TransferRecords } from "@/components/TransferRecords";
 import { holdClearableAtMs, type UnknownHold } from "@/lib/rollup/accountMemory";
-import { formatClockTime, formatDecimal, formatRelativeAge } from "@/lib/format";
+import { formatClockTime, formatDecimal } from "@/lib/format";
+import { marketDisplayName } from "@/lib/market-data/displayName";
+import { PriceHeadline } from "@/components/MarketContextBar";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 
 /**
@@ -948,8 +950,6 @@ function PhoneLayout({
   markStale: boolean;
   clientDurationMs: number | null;
 }) {
-  const priceDecimals = market ? priceDecimalsOf(market) : 2;
-  const age = ageMs(mark?.time, now);
   const views: { id: PhoneView; label: string }[] = mainnet
     ? [
         { id: "trade", label: "Trade" },
@@ -961,7 +961,7 @@ function PhoneLayout({
         { id: "market", label: "Market" },
       ];
   const chart = (
-    <div className={`flex flex-col ${mainnet ? "h-[320px]" : "h-[260px]"}`}>
+    <div className={`flex flex-col ${mainnet ? "h-[58dvh] min-h-[320px]" : "h-[260px]"}`}>
       <MarketChart
         market={market}
         interval={interval}
@@ -991,27 +991,14 @@ function PhoneLayout({
   );
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-      {/* The 48 px sticky bar: market, mark, change, always visible. */}
-      <div className="bg-surface border-line-subtle rounded-panel sticky top-0 z-10 flex h-12 shrink-0 items-center justify-between px-3 text-[13px]">
-        <span className="text-ink-strong font-medium">{market?.id ?? ""}</span>
-        <span className="tnum flex items-center gap-2">
-          <span className="text-ink">
-            {mark ? formatDecimal(mark.price, priceDecimals) : "Unavailable"}
-          </span>
-          {market?.change24hPercent !== null && market?.change24hPercent !== undefined && (
-            <span className={market.change24hPercent >= 0 ? "text-safe" : "text-danger"}>
-              {market.change24hPercent >= 0 ? "+" : ""}
-              {market.change24hPercent.toFixed(2)}%
-            </span>
-          )}
-          {mainnet && age !== null && (
-            <span className="text-faint text-[11px]">
-              {formatRelativeAge(age) === "just now"
-                ? "Updated just now"
-                : `Updated ${formatRelativeAge(age)} ago`}
-            </span>
-          )}
+      {/* The sticky bar: market, price, change and its age, always visible. */}
+      <div className="bg-surface border-line-subtle rounded-panel sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 px-3 py-2">
+        <span className="text-ink-strong text-[13px] font-medium">
+          {marketDisplayName(market?.id ?? "")}
         </span>
+        <div className="min-w-0 [&>div]:items-end [&>div>span:last-child]:justify-end">
+          <PriceHeadline market={market} mark={mark} now={now} size="compact" />
+        </div>
       </div>
       {/* One compact market selector: a single row of chips, not the full desktop watchlist. */}
       {!mainnet && (

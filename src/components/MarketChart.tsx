@@ -14,7 +14,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatClockTime, formatDecimal } from "@/lib/format";
+import { formatDecimal } from "@/lib/format";
 import type { ConnectionState } from "@/lib/market-data/socket";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
 import {
@@ -33,13 +33,6 @@ const UP = "#75bc97";
 const DOWN = "#f18d80";
 const MARK_LINE = "#e8e6e1";
 const MARK_LINE_STALE = "#b08a3a";
-
-const RANGE_PHRASE: Record<HistoryRange, string> = {
-  "1H": "past hour",
-  "1D": "past day",
-  "1W": "past week",
-  "1M": "past month",
-};
 
 type ChartMode = "area" | "candles";
 
@@ -81,7 +74,6 @@ export function MarketChart({
   mark,
   publicFills,
   ownSequences,
-  connectionState,
   loading,
   markStale = false,
 }: {
@@ -94,6 +86,7 @@ export function MarketChart({
   publicFills: PublicFill[];
   /** This trader's own fills' sequence numbers (mode-agnostic; see PublicTape.tsx). */
   ownSequences: ReadonlySet<number>;
+  /** Unused by the chart now: the header states the connection. */
   connectionState: ConnectionState;
   loading: boolean;
   /** Unused by the chart now: the reference history retries itself every minute. */
@@ -327,7 +320,6 @@ export function MarketChart({
 
   const noSeries = !hasSeries;
   const waiting = noSeries && (reference.status === "loading" || loading);
-  const frozen = connectionState !== "open";
 
   const caption = usingReference
     ? REFERENCE_LABEL
@@ -335,7 +327,6 @@ export function MarketChart({
       ? "History unavailable"
       : "Venue price history. Reference history unavailable";
 
-  const shownPrice = readout?.price ?? endPrice;
   const toggle = (active: boolean) =>
     `rounded-tile min-h-8 px-2.5 text-[12px] ${
       active ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
@@ -376,21 +367,17 @@ export function MarketChart({
           </button>
         </div>
       </div>
-      <div className="tnum flex h-5 items-center gap-2 px-1 text-[12px]" aria-live="off">
-        {noSeries || shownPrice === null ? null : readout ? (
-          <>
-            <span className="text-ink-strong">${formatDecimal(readout.price, priceDecimals)}</span>
-            <span className="text-faint">{formatChartTime(readout.time, range)}</span>
-          </>
-        ) : rangeChange === null ? null : (
-          <span style={{ color: trendColor }}>
-            {rangeChange < 0 ? "▼" : "▲"} {Math.abs(rangeChange).toFixed(2)}%{" "}
-            <span className="text-faint">{RANGE_PHRASE[range]}</span>
-          </span>
-        )}
-      </div>
       <div className="relative min-h-0 min-w-0 flex-1">
         <div ref={containerRef} className="h-full w-full" data-testid="market-chart" />
+        {readout && !noSeries && (
+          <div
+            className="tnum bg-surface/80 rounded-tile pointer-events-none absolute top-1 left-1 z-10 flex items-center gap-2 px-2 py-0.5 text-[12px]"
+            aria-live="off"
+          >
+            <span className="text-ink-strong">${formatDecimal(readout.price, priceDecimals)}</span>
+            <span className="text-faint">{formatChartTime(readout.time, range)}</span>
+          </div>
+        )}
         {noSeries && (
           <div
             role="status"
@@ -407,9 +394,6 @@ export function MarketChart({
       </div>
       <div className="text-faint flex items-center gap-3 px-1 pt-1 text-[11px]">
         <span>{caption}</span>
-        {frozen && mark && (
-          <span>Venue connection paused, last update {formatClockTime(new Date(mark.time))}</span>
-        )}
         {ownMarkers.length > 0 && (
           <span className="ml-auto flex items-center gap-1.5">
             <span

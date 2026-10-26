@@ -5,6 +5,7 @@ import {
   HISTORY_RANGES,
   parseProxyCandles,
   parseReferenceCandles,
+  priceRange,
   RANGE_SPECS,
   rangeStartPrice,
   referenceHistoryUrl,
@@ -140,6 +141,12 @@ describe("change helpers", () => {
     expect(rangeStartPrice(candles)).toBe(100);
     expect(changePercent(100, 105)).toBeCloseTo(5);
     expect(changePercent(100, 95)).toBeCloseTo(-5);
+  });
+
+  it("reads the low and high across the candles", () => {
+    const candles = parseReferenceCandles(NEWEST_FIRST) ?? [];
+    expect(priceRange(candles)).toEqual({ low: 99, high: 102 });
+    expect(priceRange([])).toBeNull();
   });
 
   it("has no change when the start price is unusable", () => {

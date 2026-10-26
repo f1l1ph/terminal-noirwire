@@ -1,5 +1,6 @@
 import { formatDecimal, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
 import type { MarketInfo } from "@/lib/market-data/types";
+import { marketDisplayName } from "@/lib/market-data/displayName";
 import { ageMs } from "@/lib/market-data/selectors";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
 
@@ -41,7 +42,7 @@ export function MarketSwitcher({
               selected ? "bg-elevated text-ink-strong" : "text-dim hover:bg-surface-raised"
             }`}
           >
-            <span className="text-[13px] font-medium">{market.id}</span>
+            <span className="text-[13px] font-medium">{marketDisplayName(market.id)}</span>
             <span className="tnum grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-1.5 text-[12px]">
               <span className="text-faint">
                 {price ? formatDecimal(price, priceDecimalsOf(market)) : UNAVAILABLE}

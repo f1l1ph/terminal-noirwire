@@ -54,6 +54,7 @@ import type {
   Side,
   SpotAssets,
 } from "@/lib/trading/types";
+import { marketDisplayName } from "@/lib/market-data/displayName";
 import type { OrderDescriptor } from "@/components/WitnessRail";
 import { OrderSummary, type SummaryRow } from "@/components/OrderSummary";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
@@ -882,7 +883,7 @@ export function OrderEntry({
 
       <div className="flex items-center justify-between gap-2">
         <p className="text-ink-strong text-[14px] font-medium">
-          {isPerp ? `${baseName} Perpetual` : market.id}
+          {isPerp ? `${baseName} Perpetual` : marketDisplayName(market.id)}
         </p>
         <select
           aria-label="Order type"
@@ -1210,7 +1211,7 @@ export function OrderEntry({
           >
             <div className="bg-surface border-line-strong rounded-panel w-full max-w-sm border p-5">
               <p className="text-ink-strong text-[14px] font-medium">
-                {frozen.draft.market} ·{" "}
+                {marketDisplayName(frozen.draft.market)} ·{" "}
                 {frozen.draft.type === "market"
                   ? "Market"
                   : limitSentAsIoc(frozen.draft.type, makersListed, frozen.draft.reduceOnly)

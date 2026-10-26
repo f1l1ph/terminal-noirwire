@@ -24,11 +24,8 @@ export function impliedInitialMarginBps(maxLeverage: number): number | null {
   return Math.round(10_000 / maxLeverage);
 }
 
-/** Estimated as half the implied initial margin, the common convention and, for this service's current markets, the actual value. */
-export function impliedMaintenanceMarginBps(maxLeverage: number): number | null {
-  const initial = impliedInitialMarginBps(maxLeverage);
-  return initial === null ? null : Math.round(initial / 2);
-}
+/** Maintenance margin ratio of every launched market (5%), in basis points: the one figure all liquidation estimates use. */
+export const MAINTENANCE_MARGIN_BPS = 500;
 
 export interface OrderCostEstimate {
   notional: bigint;
@@ -68,10 +65,9 @@ export function estimateOrderCost(params: {
   const initialMargin = isPerp ? divFixedPoint(notional, leverageFp) : notional;
 
   let liquidationPrice: bigint | null = null;
-  const maintenanceBps = impliedMaintenanceMarginBps(params.maxLeverage);
-  if (isPerp && maintenanceBps !== null && priceFp > 0n) {
+  if (isPerp && priceFp > 0n) {
     const leverageInverse = divFixedPoint(toFixedPoint("1"), leverageFp);
-    const maintenanceRate = bpsOfFixedPoint(toFixedPoint("1"), maintenanceBps);
+    const maintenanceRate = bpsOfFixedPoint(toFixedPoint("1"), MAINTENANCE_MARGIN_BPS);
     const buffer = leverageInverse - maintenanceRate;
     const delta = mulFixedPoint(priceFp, buffer);
     liquidationPrice = params.side === "buy" ? priceFp - delta : priceFp + delta;

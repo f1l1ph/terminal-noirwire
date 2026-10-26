@@ -2,10 +2,8 @@ import type { KeyValueStore } from "../wallet/index";
 
 /** The statements the trader accepts before the first order from a device. */
 export const REAL_MONEY_STATEMENTS = [
-  "This trades real USDC on Solana mainnet, in perpetual futures.",
-  "This is a new order book with a total deposit limit.",
-  "Every deposit and withdrawal needs your wallet and a little SOL.",
-  "Nobody at NoirWire can move your funds out for you, only your wallet can.",
+  "This is real money on Solana mainnet, and you can lose what you deposit.",
+  "Orders are private and final: there is no stop-loss, and NoirWire cannot reverse a trade.",
 ] as const;
 
 export const acknowledgementKey = (owner: string): string =>

@@ -15,6 +15,7 @@ import {
 import { SETTLE_WAIT_MS } from "@/lib/rollup/orderKeySetup";
 import type { AccountStatus, OpenAccountOutcome, OrderKeyState } from "@/lib/trading/types";
 import { btnGhost, btnPrimary } from "@/components/ui/styles";
+import { openWalletMenu } from "@/components/WalletWidget";
 
 const TONE_CLASS = { ok: "text-dim", wait: "text-warning", error: "text-danger" } as const;
 const DEPOSITS_ON = process.env.NEXT_PUBLIC_DEPOSITS === "on";
@@ -119,7 +120,16 @@ export function AccountSetup({
         return step.state === "done" && address ? (
           <span className="tnum">{formatShortAddress(address)}</span>
         ) : (
-          "Choose Phantom or Solflare with the Connect wallet button at the top."
+          <>
+            <p>Use Phantom or Solflare.</p>
+            <button
+              type="button"
+              className={`${btnPrimary} mt-1 h-11 w-full`}
+              onClick={openWalletMenu}
+            >
+              Connect wallet
+            </button>
+          </>
         );
       case "verify":
         if (step.state === "done") return null;

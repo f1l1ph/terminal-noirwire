@@ -129,6 +129,15 @@ export function rangeStartPrice(candles: ReferenceCandle[]): number | null {
   return candles[0]?.open ?? null;
 }
 
+/** The lowest low and highest high across the candles; null when there are none. */
+export function priceRange(candles: ReferenceCandle[]): { low: number; high: number } | null {
+  if (candles.length === 0) return null;
+  return {
+    low: Math.min(...candles.map((candle) => candle.low)),
+    high: Math.max(...candles.map((candle) => candle.high)),
+  };
+}
+
 /** Percent change from `from` to `to`; null when either is unusable. */
 export function changePercent(from: number | null, to: number): number | null {
   if (from === null || !Number.isFinite(from) || from <= 0 || !Number.isFinite(to)) return null;

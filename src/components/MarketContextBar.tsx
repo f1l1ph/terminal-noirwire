@@ -4,7 +4,8 @@ import { useState } from "react";
 import { formatDecimal, formatRelativeAge } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
-import { changePercent, rangeStartPrice } from "@/lib/market-data/reference-history";
+import { ASSUMED_TAKER_FEE_BPS } from "@/lib/trading/risk";
+import { changePercent, priceRange, rangeStartPrice } from "@/lib/market-data/reference-history";
 import { useReferenceHistory } from "@/lib/market-data/useReferenceHistory";
 import type { MarketInfo } from "@/lib/market-data/types";
 import { panel } from "@/components/ui/styles";
@@ -81,6 +82,15 @@ export function PriceHeadline({
   );
 }
 
+function BarStat({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex flex-col gap-0.5">
+      <span className="text-faint text-[11px]">{label}</span>
+      <span className="text-ink text-[13px]">{value}</span>
+    </span>
+  );
+}
+
 function hasAmount(value: string | null | undefined): boolean {
   const number = Number(value);
   return Number.isFinite(number) && number > 0;
@@ -104,6 +114,8 @@ export function MarketContextBar({
   quoteSymbol: string;
 }) {
   const [showDetails, setShowDetails] = useState(false);
+  const reference = useReferenceHistory("1D");
+  const dayRange = priceRange(reference.candles);
 
   if (!market) {
     return (
@@ -113,32 +125,42 @@ export function MarketContextBar({
     );
   }
   const sizeDecimals = sizeDecimalsOf(market);
+  const priceDecimals = priceDecimalsOf(market);
   const showVolume = hasAmount(market.volume24h);
   const showOpenInterest = market.kind === "perp" && hasAmount(market.openInterest);
+  const isPerp = market.kind === "perp";
 
   return (
-    <div className={`${panel} relative flex items-center gap-8 px-5 py-3`}>
+    <div className={`${panel} relative flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-3`}>
       <div className="flex min-w-0 flex-col gap-2">
         <span className="text-dim text-[12px] font-medium">SOL Perpetual</span>
         <PriceHeadline market={market} mark={mark} now={now} />
       </div>
-      <div className="text-dim tnum flex items-center gap-6 self-end pb-0.5 text-[12px]">
+      <div className="tnum mt-6 ml-auto flex flex-wrap items-start justify-end gap-x-8 gap-y-2 text-right">
+        {dayRange && (
+          <BarStat
+            label="24h range"
+            value={`${formatDecimal(dayRange.low, priceDecimals)} - ${formatDecimal(dayRange.high, priceDecimals)}`}
+          />
+        )}
+        {isPerp && <BarStat label="Max leverage" value={`${market.maxLeverage}x`} />}
+        {isPerp && <BarStat label="Taker fee" value={`${ASSUMED_TAKER_FEE_BPS / 100}%`} />}
         {showVolume && (
-          <span className="flex flex-col">
-            <span className="text-faint text-[11px]">24h volume</span>
-            {formatDecimal(market.volume24h, 2)} {quoteSymbol}
-          </span>
+          <BarStat
+            label="24h volume"
+            value={`${formatDecimal(market.volume24h, 2)} ${quoteSymbol}`}
+          />
         )}
         {showOpenInterest && (
-          <span className="flex flex-col">
-            <span className="text-faint text-[11px]">Open interest</span>
-            {formatDecimal(market.openInterest ?? 0, sizeDecimals)} {market.base}
-          </span>
+          <BarStat
+            label="Open interest"
+            value={`${formatDecimal(market.openInterest ?? 0, sizeDecimals)} ${market.base}`}
+          />
         )}
       </div>
       <button
         type="button"
-        className="text-faint tnum ml-auto self-start text-[11px] underline"
+        className="text-faint tnum absolute top-3 right-5 text-[11px] underline"
         onClick={() => setShowDetails((value) => !value)}
         aria-expanded={showDetails}
       >
@@ -148,9 +170,6 @@ export function MarketContextBar({
         <div className="bg-surface border-line-strong rounded-panel tnum absolute top-full right-4 z-10 mt-1 flex flex-col gap-1 border p-3 text-[12px] shadow-lg">
           <span className="text-dim">Tick {market.tickSize}</span>
           <span className="text-dim">Lot {market.lotSize}</span>
-          {market.kind === "perp" && (
-            <span className="text-dim">Max leverage {market.maxLeverage}x</span>
-          )}
         </div>
       )}
     </div>

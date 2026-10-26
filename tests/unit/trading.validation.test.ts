@@ -113,7 +113,7 @@ describe("validateOrder: price band around the mark", () => {
 
   it("explains the errors in plain language", () => {
     expect(describeFieldError("priceTooFarFromMark", PERP_MARKET)).toContain("10%");
-    expect(describeFieldError("markUnavailable", PERP_MARKET)).toContain("NSOL-PERP");
+    expect(describeFieldError("markUnavailable", PERP_MARKET)).toContain("price of SOL-PERP.");
     expect(describeFieldError("markStale", PERP_MARKET)).toContain("too old");
   });
 

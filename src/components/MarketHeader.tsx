@@ -1,3 +1,4 @@
+import { marketDisplayName } from "@/lib/market-data/displayName";
 import type { CandleInterval } from "@/lib/market-data/types";
 
 /**
@@ -14,9 +15,7 @@ export function MarketHeader({
 }) {
   return (
     <div className="flex h-6 items-center px-1">
-      <span className="text-dim text-[12px]">
-        {marketId === "NSOL-PERP" ? "SOL-PERP" : (marketId ?? "")}
-      </span>
+      <span className="text-dim text-[12px]">{marketDisplayName(marketId ?? "")}</span>
     </div>
   );
 }
