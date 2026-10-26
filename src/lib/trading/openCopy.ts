@@ -17,6 +17,20 @@ const notice = (
 ): OpenNotice => ({ tone, nothingSent, canRetry, text });
 
 /**
+ * A reason as the tail of "Nothing was sent: ...": any closing "Nothing was
+ * sent." and full stop dropped, and a lone capital lowered so the clause reads
+ * on from the colon (an acronym such as "RPC" keeps its capitals).
+ */
+function notSentClause(reason: string): string {
+  const bare = reason
+    .trim()
+    .replace(/\s*Nothing was sent\.?$/i, "")
+    .replace(/[.\s]+$/, "");
+  const startsLone = /^[A-Z][a-z]/.test(bare);
+  return startsLone ? `${bare.charAt(0).toLowerCase()}${bare.slice(1)}` : bare;
+}
+
+/**
  * What to tell the trader about the last attempt to open an account, in one
  * line. `status` is the owner's account as the view reads it right now: an
  * answer that left it doubtful whether the account opened is settled by that
@@ -34,9 +48,13 @@ export function describeOpenOutcome(
     case "notAvailable":
       return notice("error", "Accounts cannot be opened from here.", { canRetry: false });
     case "notSent":
-      return notice("error", `Nothing was sent. ${outcome.reason} You can try again.`, {
-        nothingSent: true,
-      });
+      return notice(
+        "error",
+        `Nothing was sent: ${notSentClause(outcome.reason)}. You can try again.`,
+        {
+          nothingSent: true,
+        },
+      );
     case "refused":
       break;
   }

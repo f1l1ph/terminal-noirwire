@@ -46,6 +46,21 @@ describe("describeOpenOutcome", () => {
     expect(describeOpenOutcome({ kind: "notSent", reason: "x" }, "absent").canRetry).toBe(true);
   });
 
+  it.each([
+    [
+      "your wallet changed the transaction (it added 2 instructions)",
+      "Nothing was sent: your wallet changed the transaction (it added 2 instructions). You can try again.",
+    ],
+    ["The wallet declined.", "Nothing was sent: the wallet declined. You can try again."],
+    [
+      "Your account could not be read, so it was not opened. Nothing was sent.",
+      "Nothing was sent: your account could not be read, so it was not opened. You can try again.",
+    ],
+    ["RPC is down", "Nothing was sent: RPC is down. You can try again."],
+  ])("words a not-sent reason once and cleanly: %s", (reason, line) => {
+    expect(describeOpenOutcome({ kind: "notSent", reason }, "absent").text).toBe(line);
+  });
+
   it("does not claim nothing was sent for a rejection it cannot place", () => {
     const notice = describeOpenOutcome(refused({ kind: "rejected", status: 400 }), "absent");
     expect(notice.nothingSent).toBe(false);

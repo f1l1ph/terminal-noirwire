@@ -1,6 +1,6 @@
 import { PublicKey, type Connection } from "@solana/web3.js";
 import { browserLocalStorage, bytesToHex, type KeyValueStore } from "../wallet/index";
-import { signChecked } from "../rollup/ownerSend";
+import { signChecked, SignedTransactionRefused } from "../rollup/ownerSend";
 import { isExpectedOpen, prepareOpen, submitOpen, type OpenRefusal } from "../rollup/openClient";
 import { orderSeedPersisted } from "../rollup/orderSeedStore";
 import type { OrderKeyStatus } from "../rollup/orderKeySetup";
@@ -554,7 +554,12 @@ export class RollupTradingClient implements TradingClient {
       return await this.openThroughGate(wallet, invite);
     } catch (error) {
       scrubError(error);
-      const reason = error instanceof Error ? error.message : "the account could not be opened";
+      const reason =
+        error instanceof SignedTransactionRefused
+          ? error.reason
+          : error instanceof Error
+            ? error.message
+            : "the account could not be opened";
       return { kind: "notSent", reason: redactToken(reason) };
     }
   }
