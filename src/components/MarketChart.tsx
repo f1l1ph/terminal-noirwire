@@ -152,7 +152,7 @@ export function MarketChart({
         attributionLogo: true,
       },
       grid: { horzLines: { color: "#1f2124" }, vertLines: { visible: false } },
-      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.08 } },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.2, bottom: 0.1 } },
       timeScale: {
         borderVisible: false,
         timeVisible: true,

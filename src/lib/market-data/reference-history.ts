@@ -60,17 +60,33 @@ function isPrice(value: unknown): value is number {
 }
 
 /**
+ * Whether a candle start (seconds) lies in the requested window: not after
+ * now plus one candle, not before the range's start minus one candle.
+ */
+function isTimeInWindow(time: unknown, range: HistoryRange, nowMs: number): time is number {
+  if (typeof time !== "number" || !Number.isSafeInteger(time) || time <= 0) return false;
+  const { granularitySec, spanSec } = RANGE_SPECS[range];
+  const nowSec = Math.floor(nowMs / 1000);
+  return time <= nowSec + granularitySec && time >= nowSec - spanSec - granularitySec;
+}
+
+/**
  * The source answers newest first with rows of [time, low, high, open,
  * close, volume]. Returns ascending candles, or null if the body is not
- * exactly that shape or has fewer than two candles.
+ * exactly that shape, has fewer than two candles, or has a candle outside
+ * the window `range` asks for at `nowMs`.
  */
-export function parseReferenceCandles(body: unknown): ReferenceCandle[] | null {
+export function parseReferenceCandles(
+  body: unknown,
+  range: HistoryRange,
+  nowMs: number,
+): ReferenceCandle[] | null {
   if (!Array.isArray(body) || body.length < 2 || body.length > MAX_CANDLES) return null;
   const byTime = new Map<number, ReferenceCandle>();
   for (const row of body) {
     if (!Array.isArray(row) || row.length < 6) return null;
     const [time, low, high, open, close, volume] = row as unknown[];
-    if (typeof time !== "number" || !Number.isInteger(time) || time <= 0) return null;
+    if (!isTimeInWindow(time, range, nowMs)) return null;
     if (!isPrice(low) || !isPrice(high) || !isPrice(open) || !isPrice(close)) return null;
     if (typeof volume !== "number" || !Number.isFinite(volume) || volume < 0) return null;
     if (low > high || open < low || open > high || close < low || close > high) return null;
@@ -90,9 +106,14 @@ export function isHistoryRange(value: unknown): value is HistoryRange {
 /**
  * The server route's answer, `{ candles: [{ time, open, high, low, close }] }`,
  * checked as strictly as the source's own rows: it is still outside data to
- * the page. Returns ascending candles, or null on any deviation.
+ * the page. Returns ascending candles, or null on any deviation, including a
+ * candle outside the window `range` asks for at `nowMs`.
  */
-export function parseProxyCandles(body: unknown): ReferenceCandle[] | null {
+export function parseProxyCandles(
+  body: unknown,
+  range: HistoryRange,
+  nowMs: number,
+): ReferenceCandle[] | null {
   if (typeof body !== "object" || body === null) return null;
   const rows = (body as { candles?: unknown }).candles;
   if (!Array.isArray(rows) || rows.length < 2 || rows.length > MAX_CANDLES) return null;
@@ -100,7 +121,7 @@ export function parseProxyCandles(body: unknown): ReferenceCandle[] | null {
   for (const row of rows) {
     if (typeof row !== "object" || row === null) return null;
     const { time, open, high, low, close } = row as Record<string, unknown>;
-    if (typeof time !== "number" || !Number.isInteger(time) || time <= 0) return null;
+    if (!isTimeInWindow(time, range, nowMs)) return null;
     if (!isPrice(low) || !isPrice(high) || !isPrice(open) || !isPrice(close)) return null;
     if (low > high || open < low || open > high || close < low || close > high) return null;
     if (candles.length > 0 && time <= candles[candles.length - 1].time) return null;
@@ -113,13 +134,14 @@ export async function fetchReferenceHistory(
   range: HistoryRange,
   signal?: AbortSignal,
   fetchImpl: typeof fetch = fetch,
+  nowMs: number = Date.now(),
 ): Promise<ReferenceCandle[]> {
   const response = await fetchImpl(`${REFERENCE_PROXY_PATH}?range=${range}`, {
     signal,
     credentials: "omit",
   });
   if (!response.ok) throw new Error(`reference history ${response.status}`);
-  const candles = parseProxyCandles(await response.json());
+  const candles = parseProxyCandles(await response.json(), range, nowMs);
   if (!candles) throw new Error("reference history malformed");
   return candles;
 }

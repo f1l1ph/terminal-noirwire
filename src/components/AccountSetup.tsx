@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react";
 import { formatShortAddress } from "@/lib/format";
 import {
+  depositHelp,
   describeOpenOutcome,
   KEYS_NOT_PERSISTED_NOTE,
   keysMayNotPersist,
@@ -18,32 +19,13 @@ import { btnGhost, btnPrimary } from "@/components/ui/styles";
 import { openWalletMenu } from "@/components/WalletWidget";
 
 const TONE_CLASS = { ok: "text-dim", wait: "text-warning", error: "text-danger" } as const;
-const DEPOSITS_ON = process.env.NEXT_PUBLIC_DEPOSITS === "on";
+const SEGMENT_CLASS = {
+  done: "bg-safe",
+  current: "bg-ink-strong",
+  upcoming: "bg-line-subtle",
+} as const;
 
-function StepMark({ step, index }: { step: SetupStep; index: number }) {
-  if (step.state === "done") {
-    return (
-      <span
-        aria-hidden="true"
-        className="bg-safe flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-(--color-base)"
-      >
-        ✓
-      </span>
-    );
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className={`flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] ${
-        step.state === "current"
-          ? "border-ink-strong text-ink-strong"
-          : "border-line-subtle text-faint"
-      }`}
-    >
-      {index + 1}
-    </span>
-  );
-}
+const STATE_WORD = { done: "done", current: "current", upcoming: "not started" } as const;
 
 /**
  * Mainnet only: the steps from a new visitor to a funded account, with the
@@ -61,6 +43,7 @@ export function AccountSetup({
   keys,
   now,
   funded = null,
+  depositsOpen,
 }: {
   /** The connected address; null before a wallet is connected. */
   address: string | null;
@@ -75,6 +58,8 @@ export function AccountSetup({
   now: number;
   /** Whether the trading account holds USDC; null while that is not known. */
   funded?: boolean | null;
+  /** Whether this build offers deposits (whether the Funds section renders). */
+  depositsOpen: boolean;
 }) {
   const notice = outcome ? describeOpenOutcome(outcome, status) : null;
   const keyStep = keysNotice(keys, now);
@@ -214,36 +199,38 @@ export function AccountSetup({
           </>
         );
       case "deposit":
-        return DEPOSITS_ON
-          ? "Add USDC from your wallet in the Funds section below the chart."
-          : "Add USDC to your trading account to place your first order.";
+        return depositHelp(depositsOpen);
     }
   }
 
+  const currentIndex = steps.findIndex((step) => step.id === current);
+  const currentStep = steps[currentIndex];
+
   return (
     <section aria-label="Get ready to trade" className="border-line-subtle border-b pb-2">
-      <h2 className="text-ink-strong text-[13px] font-medium">Get ready to trade</h2>
-      <ol className="mt-1.5 flex flex-col gap-1.5">
-        {steps.map((step, index) => (
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 className="text-ink-strong text-[13px] font-medium">Get ready to trade</h2>
+        <p className="text-faint tnum text-[11px]">
+          Step {currentIndex + 1} of {steps.length}
+        </p>
+      </div>
+      <ol className="mt-1.5 flex gap-1">
+        {steps.map((step) => (
           <li
             key={step.id}
+            title={step.label}
+            aria-label={`${step.label}, ${STATE_WORD[step.state]}`}
             aria-current={step.id === current ? "step" : undefined}
-            className={`flex items-start gap-2 ${step.state === "upcoming" ? "opacity-50" : ""}`}
-          >
-            <StepMark step={step} index={index} />
-            <div className="min-w-0 flex-1">
-              <p
-                className={`text-[13px] leading-5 ${
-                  step.state === "current" ? "text-ink-strong font-medium" : "text-ink"
-                }`}
-              >
-                {step.label}
-              </p>
-              <div className="text-dim text-[12px]">{detail(step)}</div>
-            </div>
-          </li>
+            className={`h-1 flex-1 rounded-full ${SEGMENT_CLASS[step.state]}`}
+          />
         ))}
       </ol>
+      {currentStep && (
+        <div className="mt-1.5">
+          <p className="text-ink-strong text-[13px] leading-5 font-medium">{currentStep.label}</p>
+          <div className="text-dim text-[12px]">{detail(currentStep)}</div>
+        </div>
+      )}
     </section>
   );
 }

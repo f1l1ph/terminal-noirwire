@@ -10,7 +10,10 @@ function request(query: string): Request {
   return new Request(`https://terminal.example/api/reference-history${query}`);
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe("GET /api/reference-history", () => {
   it("rejects a missing or unknown range with 400 and never calls upstream", async () => {
@@ -24,6 +27,7 @@ describe("GET /api/reference-history", () => {
   });
 
   it("returns only validated, ascending candles with the cache headers", async () => {
+    vi.useFakeTimers({ now: 1_700_000_400_000, toFake: ["Date"] });
     const upstream = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(UPSTREAM_ROWS)));
     vi.stubGlobal("fetch", upstream);
     const response = await GET(request("?range=1D"));
@@ -58,6 +62,26 @@ describe("GET /api/reference-history", () => {
       }),
     );
     expect((await GET(request("?range=1H"))).status).toBe(502);
+  });
+
+  it("answers 502 when upstream returns future-dated or far-past candles", async () => {
+    vi.useFakeTimers({ now: 1_700_000_400_000, toFake: ["Date"] });
+    for (const rows of [
+      [
+        [1_700_100_300, 100, 102, 101, 101.5, 12],
+        [1_700_100_000, 99, 101, 100, 100.5, 8],
+      ],
+      [
+        [1_600_000_300, 100, 102, 101, 101.5, 12],
+        [1_600_000_000, 99, 101, 100, 100.5, 8],
+      ],
+    ]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify(rows))),
+      );
+      expect((await GET(request("?range=1D"))).status).toBe(502);
+    }
   });
 
   it("answers 502 when upstream returns a malformed body", async () => {

@@ -3,13 +3,20 @@ import {
   changePercent,
   fetchReferenceHistory,
   HISTORY_RANGES,
-  parseProxyCandles,
-  parseReferenceCandles,
+  parseProxyCandles as parseProxyCandlesAt,
+  parseReferenceCandles as parseReferenceCandlesAt,
   priceRange,
   RANGE_SPECS,
   rangeStartPrice,
   referenceHistoryUrl,
+  type HistoryRange,
 } from "@/lib/market-data/reference-history";
+
+const NOW_MS = 1_700_000_400_000;
+const parseReferenceCandles = (body: unknown, range: HistoryRange = "1H", nowMs = NOW_MS) =>
+  parseReferenceCandlesAt(body, range, nowMs);
+const parseProxyCandles = (body: unknown, range: HistoryRange = "1H", nowMs = NOW_MS) =>
+  parseProxyCandlesAt(body, range, nowMs);
 
 const NEWEST_FIRST = [
   [1_700_000_300, 100, 102, 101, 101.5, 12],
@@ -63,6 +70,36 @@ describe("parseReferenceCandles", () => {
     const rows = Array.from({ length: 301 }, (_, i) => [1_700_000_000 + i * 60, 1, 2, 1, 2, 0]);
     expect(parseReferenceCandles(rows)).toBeNull();
   });
+
+  it("rejects candles dated after now plus one candle", () => {
+    const future = [...NEWEST_FIRST, [1_700_000_400 + 61, 99, 101, 100, 100.5, 8]];
+    expect(parseReferenceCandles(future)).toBeNull();
+    const edge = [...NEWEST_FIRST, [1_700_000_400 + 60, 99, 101, 100, 100.5, 8]];
+    expect(parseReferenceCandles(edge)).toHaveLength(3);
+  });
+
+  it("rejects candles from before the range start minus one candle", () => {
+    const old = [...NEWEST_FIRST, [1_700_000_400 - 3_600 - 61, 99, 101, 100, 100.5, 8]];
+    expect(parseReferenceCandles(old)).toBeNull();
+    const farBefore = [...NEWEST_FIRST, [1_000_000_000, 99, 101, 100, 100.5, 8]];
+    expect(parseReferenceCandles(farBefore)).toBeNull();
+    const edge = [...NEWEST_FIRST, [1_700_000_400 - 3_600 - 60, 99, 101, 100, 100.5, 8]];
+    expect(parseReferenceCandles(edge)).toHaveLength(3);
+  });
+
+  it("rejects a time beyond the safe integer range", () => {
+    const huge = [...NEWEST_FIRST, [2 ** 60, 99, 101, 100, 100.5, 8]];
+    expect(parseReferenceCandles(huge)).toBeNull();
+  });
+
+  it("measures the window against the requested range", () => {
+    const dayOld = [
+      [1_700_000_300 - 80_000, 99, 101, 100, 100.5, 8],
+      [1_700_000_300, 100, 102, 101, 101.5, 12],
+    ];
+    expect(parseReferenceCandles(dayOld, "1H")).toBeNull();
+    expect(parseReferenceCandles(dayOld, "1D")).toHaveLength(2);
+  });
 });
 
 describe("referenceHistoryUrl", () => {
@@ -109,15 +146,31 @@ describe("parseProxyCandles", () => {
     expect(parseProxyCandles({ candles: [a, { ...b, high: 90 }] })).toBeNull();
     expect(parseProxyCandles({ candles: [a, { ...b, time: 1.5 }] })).toBeNull();
   });
+
+  it("rejects future-dated and out-of-range candles", () => {
+    const [a, b] = PROXY_BODY.candles;
+    expect(parseProxyCandles({ candles: [a, { ...b, time: 1_700_000_400 + 61 }] })).toBeNull();
+    expect(parseProxyCandles({ candles: [{ ...a, time: 1_000_000_000 }, b] })).toBeNull();
+    expect(parseProxyCandles({ candles: [a, { ...b, time: 2 ** 60 }] })).toBeNull();
+    expect(parseProxyCandles(PROXY_BODY, "1H", NOW_MS)).toEqual(PROXY_BODY.candles);
+  });
 });
 
 describe("fetchReferenceHistory", () => {
   it("reads the same-origin route and returns validated candles", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(PROXY_BODY)));
-    const candles = await fetchReferenceHistory("1H", undefined, fetchImpl);
+    const candles = await fetchReferenceHistory("1H", undefined, fetchImpl, NOW_MS);
     expect(candles).toHaveLength(2);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/reference-history?range=1H");
+  });
+
+  it("throws when the route's candles are dated in the future", async () => {
+    const future = {
+      candles: PROXY_BODY.candles.map((candle) => ({ ...candle, time: candle.time + 100_000 })),
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(future)));
+    await expect(fetchReferenceHistory("1H", undefined, fetchImpl, NOW_MS)).rejects.toThrow();
   });
 
   it("throws on an HTTP error", async () => {

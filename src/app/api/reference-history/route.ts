@@ -29,7 +29,7 @@ export async function GET(request: Request): Promise<Response> {
       next: { revalidate: 60 },
     });
     if (!upstream.ok) throw new Error("upstream status");
-    const candles = parseReferenceCandles(await upstream.json());
+    const candles = parseReferenceCandles(await upstream.json(), range, minuteMs);
     if (!candles) throw new Error("upstream malformed");
     return json({ candles }, 200, CACHE_CONTROL);
   } catch {

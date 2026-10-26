@@ -694,6 +694,7 @@ export function Terminal() {
             onRecheck={trading.recheckAccount}
             keys={trading.orderKeys}
             now={now}
+            depositsOpen={FundsSection !== null}
           />
         ) : null
       }

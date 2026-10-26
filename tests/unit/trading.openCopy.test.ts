@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  depositHelp,
   describeOpenOutcome,
   keysMayNotPersist,
   keysNotice,
@@ -208,5 +209,17 @@ describe("keysMayNotPersist", () => {
     expect(keysMayNotPersist({ stage: "ready", seedPersisted: true })).toBe(false);
     expect(keysMayNotPersist({ stage: "ready", seedPersisted: null })).toBe(false);
     expect(keysMayNotPersist(null)).toBe(false);
+  });
+});
+
+describe("depositHelp", () => {
+  it("points to the Funds section only when deposits are open", () => {
+    expect(depositHelp(true)).toContain("Funds section");
+  });
+
+  it("says deposits are not open yet, and asks for nothing, when they are off", () => {
+    const text = depositHelp(false);
+    expect(text).toBe("Deposits open soon. You can explore the market until then.");
+    expect(text).not.toMatch(/add usdc|funds section/i);
   });
 });

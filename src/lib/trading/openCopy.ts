@@ -189,6 +189,13 @@ export function setupSteps(input: {
   return { steps, ready: currentId === undefined };
 }
 
+/** What the deposit step says to do; it never asks for an action the page cannot offer. */
+export function depositHelp(depositsOpen: boolean): string {
+  return depositsOpen
+    ? "Add USDC from your wallet in the Funds section below the chart."
+    : "Deposits open soon. You can explore the market until then.";
+}
+
 /** How far through the trading-key wait this device is, 0 to 1. */
 export function keysSettleFraction(secondsLeft: number, totalMs: number): number {
   const total = totalMs / 1000;
