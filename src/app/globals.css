@@ -55,6 +55,24 @@ h3 {
   }
 }
 
+/*
+ * Utility classes such as `outline-none` and the dock library's own
+ * stylesheet switch the ring off on fields, sliders and tab headers; keyboard
+ * focus is put back here, unlayered so it wins over both.
+ */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.range-brand:focus-visible,
+.dv-theme-noirwire .dv-tab:focus-visible {
+  outline: 2px solid var(--color-ink-strong) !important;
+  outline-offset: 2px;
+}
+
+.dv-theme-noirwire .dv-tab:focus-visible {
+  outline-offset: -2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -189,6 +207,20 @@ button:disabled {
   --dv-drag-over-border-color: var(--color-ink-strong);
   --dv-drag-over-border: 1px solid var(--color-ink-strong);
   --dv-edge-dock-indicator-color: color-mix(in oklab, var(--color-ink-strong) 55%, transparent);
+}
+
+/* Real-money workspace: rounded panels on the page ground, spaced rather than ruled. */
+.dv-theme-calm .dv-groupview {
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+}
+
+.dv-theme-calm {
+  --dv-tabs-and-actions-container-background-color: var(--color-surface);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--color-surface);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-surface);
+  --dv-tab-divider-color: transparent;
+  --dv-separator-border: transparent;
 }
 
 .dv-theme-noirwire .dv-default-tab-content {

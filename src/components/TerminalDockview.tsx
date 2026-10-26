@@ -21,23 +21,30 @@ import { PublicTape } from "@/components/PublicTape";
 import { VenuePulse } from "@/components/VenuePulse";
 import { PublicView } from "@/components/PublicView";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
+import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
+import { isMainnetBuild } from "@/lib/network";
 import {
   ACCOUNT_PANEL_ID,
   CHART_PANEL_ID,
+  MAINNET_MAX_TICKET_WIDTH,
+  MAINNET_MIN_TICKET_WIDTH,
+  MAINNET_PANEL_TITLES,
+  MAINNET_TOOLS_PANEL_IDS,
   MARKETS_PANEL_ID,
   MIN_CHART_HEIGHT,
   MIN_CHART_WIDTH,
   MIN_TICKET_WIDTH,
-  PANEL_IDS,
   PANEL_TITLES,
   PUBLIC_VIEW_PANEL_ID,
   TAPE_PANEL_ID,
   TICKET_PANEL_ID,
   VENUE_TIMING_PANEL_ID,
   WITNESS_PANEL_ID,
+  activePanelIds,
   clearStoredLayout,
   defaultPanelSizes,
   loadStoredLayout,
+  mainnetPanelSizes,
   saveStoredLayout,
   type DockviewDefaultSizes,
   type DockviewLayoutStorage,
@@ -49,6 +56,13 @@ const noirwireDockviewTheme: DockviewTheme = {
   className: "dv-theme-noirwire",
   colorScheme: "dark",
   tabGroupIndicator: "none",
+};
+
+/** The real-money workspace sets its panels apart by space instead of by lines. */
+const mainnetDockviewTheme: DockviewTheme = {
+  ...noirwireDockviewTheme,
+  className: "dv-theme-noirwire dv-theme-calm",
+  gap: 8,
 };
 
 const SAVE_DEBOUNCE_MS: number = 400;
@@ -80,6 +94,7 @@ function MarketsPanel() {
     <MarketSwitcher
       markets={data.markets}
       selectedId={data.selectedMarketId}
+      selectedMark={data.mark}
       onSelect={data.onSelectMarket}
       now={data.now}
     />
@@ -134,7 +149,12 @@ function TicketPanel() {
 
 function AccountPanel() {
   const data = useTerminalPanelData();
-  return <div className="h-full min-h-0 w-full">{data.accountDock}</div>;
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col">
+      <div className="shrink-0 px-3 pt-3 empty:hidden">{data.orderNotice}</div>
+      {data.accountDock}
+    </div>
+  );
 }
 
 function WitnessPanel() {
@@ -349,6 +369,97 @@ function buildDefaultLayout(api: DockviewApi, windowWidthPx: number, windowHeigh
   api.fromJSON(layout);
 }
 
+/** Brings the privacy tools into the account group as extra tabs, behind the account itself. */
+function addToolPanels(api: DockviewApi): void {
+  for (const id of MAINNET_TOOLS_PANEL_IDS) {
+    api.addPanel({
+      id,
+      component: id,
+      title: MAINNET_PANEL_TITLES[id],
+      renderer: "always",
+      position: { referencePanel: ACCOUNT_PANEL_ID, direction: "within" },
+      inactive: true,
+    });
+  }
+}
+
+function removeToolPanels(api: DockviewApi): void {
+  for (const id of MAINNET_TOOLS_PANEL_IDS) {
+    const panel = api.getPanel(id);
+    if (panel) api.removePanel(panel);
+  }
+}
+
+/** A group holding one panel needs no tab strip: the chart, the ticket and a lone account read as sections, not tabs. */
+function applyMainnetHeaders(api: DockviewApi, tools: boolean): void {
+  for (const id of [CHART_PANEL_ID, TICKET_PANEL_ID, ACCOUNT_PANEL_ID]) {
+    const panel = api.getPanel(id);
+    if (panel) panel.group.model.header.hidden = id === ACCOUNT_PANEL_ID ? !tools : true;
+  }
+}
+
+function syncToolPanels(api: DockviewApi, tools: boolean): void {
+  const present = !!api.getPanel(WITNESS_PANEL_ID);
+  if (tools && !present) addToolPanels(api);
+  if (!tools && present) removeToolPanels(api);
+  applyMainnetHeaders(api, tools);
+}
+
+/**
+ * The real-money arrangement: the chart wide on the left with the account
+ * beneath it, the order ticket in a fixed-width column on the right. Sizes are
+ * pinned in the serialized tree and loaded in one pass, as in the default
+ * layout above.
+ */
+function buildMainnetLayout(
+  api: DockviewApi,
+  windowWidthPx: number,
+  windowHeightPx: number,
+  tools: boolean,
+): void {
+  const sizes = mainnetPanelSizes(windowWidthPx, windowHeightPx);
+  api.addPanel({
+    id: CHART_PANEL_ID,
+    component: CHART_PANEL_ID,
+    title: MAINNET_PANEL_TITLES[CHART_PANEL_ID],
+    renderer: "always",
+    minimumWidth: MIN_CHART_WIDTH,
+    minimumHeight: MIN_CHART_HEIGHT,
+  });
+  api.addPanel({
+    id: TICKET_PANEL_ID,
+    component: TICKET_PANEL_ID,
+    title: MAINNET_PANEL_TITLES[TICKET_PANEL_ID],
+    renderer: "always",
+    position: { referencePanel: CHART_PANEL_ID, direction: "right" },
+    initialWidth: sizes.ticketWidth,
+    minimumWidth: MAINNET_MIN_TICKET_WIDTH,
+    maximumWidth: MAINNET_MAX_TICKET_WIDTH,
+  });
+  api.addPanel({
+    id: ACCOUNT_PANEL_ID,
+    component: ACCOUNT_PANEL_ID,
+    title: MAINNET_PANEL_TITLES[ACCOUNT_PANEL_ID],
+    renderer: "always",
+    position: { referencePanel: CHART_PANEL_ID, direction: "below" },
+    initialHeight: sizes.accountHeight,
+  });
+  if (tools) addToolPanels(api);
+
+  const layout = api.toJSON();
+  const root = layout.grid.root;
+  if (root.type === "branch") {
+    const rootChildren = root.data as GridNode[];
+    sizeChildContaining(rootChildren, TICKET_PANEL_ID, sizes.ticketWidth);
+    const chartColumn = rootChildren.find((child) => subtreeHasPanel(child, CHART_PANEL_ID));
+    if (chartColumn && chartColumn.type === "branch") {
+      sizeChildContaining(chartColumn.data as GridNode[], ACCOUNT_PANEL_ID, sizes.accountHeight);
+    }
+  }
+  api.fromJSON(layout);
+  applyMainnetHeaders(api, tools);
+}
+
 /**
  * The real docking board (dockview-react). Dynamically imported with
  * `ssr: false` by `DesktopWorkspace` - this file, and only this file,
@@ -366,6 +477,18 @@ export function TerminalDockview({ resetSignal }: { resetSignal: number }) {
   const apiRef = useRef<DockviewApi | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetSignalRef = useRef(resetSignal);
+  const mainnet = isMainnetBuild();
+  const [privacyTools] = usePrivacyTools();
+  const tools = mainnet && privacyTools;
+  const toolsRef = useRef(tools);
+
+  const buildDefault = useCallback(
+    (api: DockviewApi) => {
+      if (mainnet) buildMainnetLayout(api, window.innerWidth, window.innerHeight, toolsRef.current);
+      else buildDefaultLayout(api, window.innerWidth, window.innerHeight);
+    },
+    [mainnet],
+  );
 
   const scheduleSave = useCallback((api: DockviewApi) => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -378,7 +501,10 @@ export function TerminalDockview({ resetSignal }: { resetSignal: number }) {
     (event: DockviewReadyEvent) => {
       const { api } = event;
       apiRef.current = api;
-      const saved = loadStoredLayout(browserLayoutStorage(), PANEL_IDS);
+      const saved = loadStoredLayout(
+        browserLayoutStorage(),
+        activePanelIds(mainnet, toolsRef.current),
+      );
       let restored = false;
       if (saved) {
         try {
@@ -393,12 +519,22 @@ export function TerminalDockview({ resetSignal }: { resetSignal: number }) {
       }
       if (!restored) {
         api.clear();
-        buildDefaultLayout(api, window.innerWidth, window.innerHeight);
+        buildDefault(api);
+      } else if (mainnet) {
+        applyMainnetHeaders(api, toolsRef.current);
       }
       api.onDidLayoutChange(() => scheduleSave(api));
     },
-    [scheduleSave],
+    [scheduleSave, buildDefault, mainnet],
   );
+
+  // Switching the privacy tools on or off adds or removes their tabs in
+  // place, so nothing else in the workspace is remounted or moved.
+  useEffect(() => {
+    toolsRef.current = tools;
+    const api = apiRef.current;
+    if (api && mainnet) syncToolPanels(api, tools);
+  }, [tools, mainnet]);
 
   // The "Reset layout" link in the shell header bumps `resetSignal`; this
   // never fires on the initial mount (the ref starts equal to the prop).
@@ -409,8 +545,8 @@ export function TerminalDockview({ resetSignal }: { resetSignal: number }) {
     if (!api) return;
     clearStoredLayout(browserLayoutStorage());
     api.clear();
-    buildDefaultLayout(api, window.innerWidth, window.innerHeight);
-  }, [resetSignal]);
+    buildDefault(api);
+  }, [resetSignal, buildDefault]);
 
   useEffect(
     () => () => {
@@ -423,7 +559,7 @@ export function TerminalDockview({ resetSignal }: { resetSignal: number }) {
     <DockviewReact
       components={PANEL_COMPONENTS}
       defaultTabComponent={MaximizableTab}
-      theme={noirwireDockviewTheme}
+      theme={mainnet ? mainnetDockviewTheme : noirwireDockviewTheme}
       disableFloatingGroups
       // Pointer events for every input, not only touch/pen: it drives the
       // drag gesture directly off the pointer position (no native-DnD ghost

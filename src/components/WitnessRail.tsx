@@ -39,7 +39,7 @@ export interface RecentMarketActivity {
   summary: string;
 }
 
-const STEP_LABELS: Record<RailStepType, string> = {
+export const STEP_LABELS: Record<RailStepType, string> = {
   submitted: "Submitted",
   confirmed: "Confirmed",
   unknown: "Checking with the venue",
@@ -50,7 +50,7 @@ const STEP_LABELS: Record<RailStepType, string> = {
   rejected: "Rejected",
 };
 
-function describeOrder(order: OrderDescriptor): string {
+export function describeOrder(order: OrderDescriptor): string {
   const direction =
     order.kind === "perp"
       ? order.side === "buy"
@@ -143,6 +143,7 @@ export function WitnessRail({
   // network's own number is not mistaken for anything else, so it gets no
   // prefix word at all (third design review, item 4).
   const networkWord = isLocalNetwork(network) ? "local " : "";
+  const title = isMainnetBuild() ? "Your private orders" : "Witness rail";
   // Review 3, must-fix 5: a reused wallet that already has funds or a
   // position before this session's first order must be named as such, not
   // narrated as the result of the next order.
@@ -155,7 +156,7 @@ export function WitnessRail({
   if (!order || steps.length === 0) {
     return (
       <div className={`${bordered ? panel : ""} flex min-h-0 flex-1 flex-col p-3`}>
-        <p className={sectionLabel}>Witness rail</p>
+        <p className={sectionLabel}>{title}</p>
         <RecentActivity markets={recentMarkets} onSelect={onSelectMarket} />
         {hasAccountHistory ? (
           <>
@@ -188,7 +189,7 @@ export function WitnessRail({
           8): the order's own description and its CURRENT result are always
           on screen, whatever the detail history below is scrolled to. */}
       <div className="shrink-0">
-        <p className={sectionLabel}>Witness rail</p>
+        <p className={sectionLabel}>{title}</p>
         <RecentActivity markets={recentMarkets} onSelect={onSelectMarket} />
         <p className="text-ink mt-1 text-[13px] font-medium">{describeOrder(order)}</p>
 

@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   LAYOUT_STORAGE_KEY,
   LAYOUT_VERSION,
+  MAINNET_MAX_TICKET_WIDTH,
+  MAINNET_MIN_TICKET_WIDTH,
   PANEL_IDS,
+  activePanelIds,
+  mainnetPanelSizes,
   clearStoredLayout,
   defaultPanelSizes,
   isValidStoredLayout,
@@ -152,5 +156,69 @@ describe("loadStoredLayout / saveStoredLayout / clearStoredLayout", () => {
     const storage = fakeStorage();
     saveStoredLayout(storage, validLayout);
     expect(Object.keys(storage.data)).toEqual([LAYOUT_STORAGE_KEY]);
+  });
+});
+
+describe("activePanelIds", () => {
+  it("keeps every panel on a test build, whatever the tools setting", () => {
+    expect(activePanelIds(false, false)).toEqual(PANEL_IDS);
+    expect(activePanelIds(false, true)).toEqual(PANEL_IDS);
+  });
+
+  it("holds only the chart, ticket and account on mainnet with the tools off", () => {
+    expect([...activePanelIds(true, false)].sort()).toEqual(["account", "chart", "ticket"]);
+  });
+
+  it("adds the four privacy tool panels, and no markets list, with the tools on", () => {
+    const ids = activePanelIds(true, true);
+    expect([...ids].sort()).toEqual(
+      ["account", "chart", "publicView", "tape", "ticket", "venueTiming", "witness"].sort(),
+    );
+    expect(ids).not.toContain("markets");
+  });
+});
+
+describe("a saved layout from before the panel set changed", () => {
+  const oldPanels = Object.fromEntries(PANEL_IDS.map((id) => [id, {}]));
+  const oldLayout = { grid: { root: {} }, panels: oldPanels };
+
+  it("is not restored on mainnet, so the removed markets and tool panels stay gone", () => {
+    const raw = { version: LAYOUT_VERSION, layout: oldLayout };
+    expect(isValidStoredLayout(raw, activePanelIds(true, false))).toBe(false);
+    expect(isValidStoredLayout(raw, activePanelIds(true, true))).toBe(false);
+  });
+
+  it("is rejected by its old version number even when the panels match", () => {
+    const raw = { version: LAYOUT_VERSION - 1, layout: oldLayout };
+    expect(isValidStoredLayout(raw, PANEL_IDS)).toBe(false);
+  });
+
+  it("is restored when the saved panels are exactly the ones in use", () => {
+    const panels = Object.fromEntries(activePanelIds(true, false).map((id) => [id, {}]));
+    const raw = { version: LAYOUT_VERSION, layout: { grid: { root: {} }, panels } };
+    expect(isValidStoredLayout(raw, activePanelIds(true, false))).toBe(true);
+  });
+});
+
+describe("mainnetPanelSizes", () => {
+  it("keeps the ticket column within its allowed range", () => {
+    for (const width of [1024, 1440, 1800, 2560]) {
+      const { ticketWidth } = mainnetPanelSizes(width, 900);
+      expect(ticketWidth).toBeGreaterThanOrEqual(MAINNET_MIN_TICKET_WIDTH);
+      expect(ticketWidth).toBeLessThanOrEqual(MAINNET_MAX_TICKET_WIDTH);
+    }
+  });
+
+  it("leaves the chart about two thirds of the width or more at 1024 and 1440", () => {
+    for (const width of [1024, 1440]) {
+      const { ticketWidth } = mainnetPanelSizes(width, 900);
+      expect((width - ticketWidth) / width).toBeGreaterThanOrEqual(0.62);
+    }
+  });
+
+  it("shortens the account section on a short window", () => {
+    expect(mainnetPanelSizes(1440, 768).accountHeight).toBeLessThan(
+      mainnetPanelSizes(1440, 900).accountHeight,
+    );
   });
 });
