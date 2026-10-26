@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import type { Wallet } from "@wallet-standard/base";
 import { formatShortAddress } from "@/lib/format";
 import { isMainnetBuild } from "@/lib/network";
+import { redactToken } from "@/lib/rollup/redact";
 import { useStandardWallet } from "@/lib/wallet/standardWallet";
 import {
   browserLocalStorage,
@@ -151,6 +152,14 @@ function useDismissOnOutside(
 }
 
 const CONNECT_FAILED = "Could not connect. Check the wallet and try again.";
+const MAX_REASON_LENGTH = 160;
+
+/** The generic failure plus the wallet's own reason (a rejection, a locked wallet), so a refusal can be told from a fault. */
+function connectFailure(error: unknown): string {
+  const reason =
+    error instanceof Error ? redactToken(error.message).trim().slice(0, MAX_REASON_LENGTH) : "";
+  return reason ? `${CONNECT_FAILED} The wallet said: ${reason}` : CONNECT_FAILED;
+}
 
 /** Phantom, Solflare and any other Wallet Standard wallet that signs for Solana mainnet: connect, show and copy the address, disconnect. */
 function ExternalWalletWidget() {
@@ -169,8 +178,8 @@ function ExternalWalletWidget() {
     try {
       await connect(wallet);
       setOpen(false);
-    } catch {
-      setProblem(CONNECT_FAILED);
+    } catch (error) {
+      setProblem(connectFailure(error));
     }
   }
 

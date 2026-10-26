@@ -8,13 +8,13 @@ import {
   recheckOffer,
 } from "@/lib/trading/openCopy";
 import type { AccountStatus, OpenAccountOutcome, OrderKeyState } from "@/lib/trading/types";
-import { btnGhost, btnPrimary, input } from "@/components/ui/styles";
+import { btnGhost, btnPrimary } from "@/components/ui/styles";
 
 const TONE_CLASS = { ok: "text-dim", wait: "text-warning", error: "text-danger" } as const;
 
 /**
- * Mainnet only: the connected address, opening the account with the invite
- * NoirWire issued for it, and where this device's trading keys stand.
+ * Mainnet only: the connected address, opening the account for an address
+ * on the invite list, and where this device's trading keys stand.
  */
 export function AccountSetup({
   address,
@@ -32,13 +32,12 @@ export function AccountSetup({
   needsInvite: boolean;
   opening: boolean;
   outcome: OpenAccountOutcome | null;
-  onOpen: (invite?: string) => void;
+  onOpen: () => void;
   /** Runs the account check (and any key setup a failed attempt left undone) again. */
   onRecheck: () => Promise<void>;
   keys: OrderKeyState | null;
   now: number;
 }) {
-  const [invite, setInvite] = useState("");
   const [copied, setCopied] = useState<"yes" | "no" | null>(null);
   const notice = outcome ? describeOpenOutcome(outcome, status) : null;
   const keyStep = keysNotice(keys, now);
@@ -64,27 +63,12 @@ export function AccountSetup({
         </button>
       </div>
 
-      {needsInvite && (
-        <div className="flex flex-col gap-1">
-          <label className="text-faint text-[12px]" htmlFor="open-invite">
-            Invite code for this address
-          </label>
-          <input
-            id="open-invite"
-            className={input}
-            autoComplete="off"
-            spellCheck={false}
-            value={invite}
-            onChange={(event) => setInvite(event.target.value.trim())}
-          />
-        </div>
-      )}
       {(needsInvite || notice?.tone === "wait") && status !== "open" && (
         <button
           type="button"
           className={`${btnPrimary} h-10 w-full`}
-          disabled={opening || (needsInvite && invite.length === 0)}
-          onClick={() => onOpen(invite.length > 0 ? invite : undefined)}
+          disabled={opening}
+          onClick={() => onOpen()}
         >
           {opening ? "Opening…" : "Open account"}
         </button>

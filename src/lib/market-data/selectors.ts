@@ -1,10 +1,16 @@
+import { isMainnetBuild } from "@/lib/network";
 import { MIN_LATENCY_SAMPLE_SIZE, type StatsResponse } from "./types";
 
 export function candlesLoadingKey(market: string, interval: string): string {
   return `${market}:${interval}`;
 }
 
-export const STALE_MARK_MS = 10_000;
+/**
+ * Mainnet's price crank refreshes the mark about once a minute and the
+ * program accepts a mark up to 90 s old, so mainnet allows 75 s: an order
+ * placed at the limit still lands inside the program's window.
+ */
+export const STALE_MARK_MS = isMainnetBuild() ? 75_000 : 10_000;
 const STALE_STATS_MS = 30_000;
 
 /** How far ahead of the local clock a server timestamp may be before it is not trusted. */

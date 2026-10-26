@@ -31,7 +31,7 @@ export function TerminalShell({
 }) {
   return (
     <div className="bg-base flex h-dvh min-h-0 flex-col overflow-hidden">
-      <header className="border-line-subtle flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4">
+      <header className="border-line-subtle relative z-20 flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4">
         <div className="flex items-center gap-2">
           <Mark size={18} title="NoirWire" />
           <span className="text-ink-strong text-[13px] font-semibold tracking-tight">NoirWire</span>
