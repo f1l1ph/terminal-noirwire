@@ -8,8 +8,7 @@
  */
 
 const REFERENCE_ORIGIN = "https://api.exchange.coinbase.com";
-export const REFERENCE_SOURCE_LABEL = "Coinbase";
-export const REFERENCE_LABEL = `SOL/USD reference price, ${REFERENCE_SOURCE_LABEL}`;
+export const REFERENCE_LABEL = "SOL/USD reference price, Coinbase";
 
 /** A refreshed range is not fetched again within this window. */
 export const REFERENCE_REFRESH_MS = 60_000;
@@ -59,6 +58,19 @@ function isPrice(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value < MAX_PRICE;
 }
 
+/** The candle if its four prices are real and agree with each other (low is the lowest, high the highest), else null. */
+function consistentCandle(
+  time: number,
+  open: unknown,
+  high: unknown,
+  low: unknown,
+  close: unknown,
+): ReferenceCandle | null {
+  if (!isPrice(low) || !isPrice(high) || !isPrice(open) || !isPrice(close)) return null;
+  if (low > high || open < low || open > high || close < low || close > high) return null;
+  return { time, open, high, low, close };
+}
+
 /**
  * Whether a candle start (seconds) lies in the requested window: not after
  * now plus one candle, not before the range's start minus one candle.
@@ -87,17 +99,17 @@ export function parseReferenceCandles(
     if (!Array.isArray(row) || row.length < 6) return null;
     const [time, low, high, open, close, volume] = row as unknown[];
     if (!isTimeInWindow(time, range, nowMs)) return null;
-    if (!isPrice(low) || !isPrice(high) || !isPrice(open) || !isPrice(close)) return null;
+    const candle = consistentCandle(time, open, high, low, close);
+    if (!candle) return null;
     if (typeof volume !== "number" || !Number.isFinite(volume) || volume < 0) return null;
-    if (low > high || open < low || open > high || close < low || close > high) return null;
-    byTime.set(time, { time, open, high, low, close });
+    byTime.set(time, candle);
   }
   const candles = [...byTime.values()].sort((a, b) => a.time - b.time);
   return candles.length >= 2 ? candles : null;
 }
 
 /** The terminal's own server route; browsers never contact the price source themselves. */
-export const REFERENCE_PROXY_PATH = "/api/reference-history";
+const REFERENCE_PROXY_PATH = "/api/reference-history";
 
 export function isHistoryRange(value: unknown): value is HistoryRange {
   return typeof value === "string" && (HISTORY_RANGES as string[]).includes(value);
@@ -122,10 +134,10 @@ export function parseProxyCandles(
     if (typeof row !== "object" || row === null) return null;
     const { time, open, high, low, close } = row as Record<string, unknown>;
     if (!isTimeInWindow(time, range, nowMs)) return null;
-    if (!isPrice(low) || !isPrice(high) || !isPrice(open) || !isPrice(close)) return null;
-    if (low > high || open < low || open > high || close < low || close > high) return null;
+    const candle = consistentCandle(time, open, high, low, close);
+    if (!candle) return null;
     if (candles.length > 0 && time <= candles[candles.length - 1].time) return null;
-    candles.push({ time, open, high, low, close });
+    candles.push(candle);
   }
   return candles;
 }

@@ -15,7 +15,6 @@ import {
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDecimal } from "@/lib/format";
-import type { ConnectionState } from "@/lib/market-data/socket";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
 import {
   changePercent,
@@ -79,22 +78,15 @@ export function MarketChart({
 }: {
   market: MarketInfo | undefined;
   /** The venue's own candles: drawn only when the reference history is unavailable and they hold at least two. */
-  interval: string;
   candles: Candle[];
   /** The one current price. The chart ends at it and draws a dashed line there. */
   mark: { price: string; time: number } | null;
   publicFills: PublicFill[];
   /** This trader's own fills' sequence numbers (mode-agnostic; see PublicTape.tsx). */
   ownSequences: ReadonlySet<number>;
-  /** Unused by the chart now: the header states the connection. */
-  connectionState: ConnectionState;
   loading: boolean;
-  /** Unused by the chart now: the reference history retries itself every minute. */
-  fetchFailed: boolean;
   /** Past the freshness window: the dashed mark line turns amber. */
   markStale?: boolean;
-  /** Unused by the chart now. */
-  onRetry: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);

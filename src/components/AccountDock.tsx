@@ -10,7 +10,12 @@ import {
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { marketDisplayName } from "@/lib/market-data/displayName";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
-import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
+import {
+  ASSUMED_TAKER_FEE_BPS,
+  displayOrderCost,
+  estimateOrderCost,
+  MAINTENANCE_MARGIN_BPS,
+} from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
 import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
@@ -263,7 +268,7 @@ function PositionsTable({
               />
               <PositionStat
                 label="Liquidation (est.)"
-                title="Estimate: a 5% maintenance margin, computed on this device. Not confirmed by the exchange."
+                title={`Estimate: a ${MAINTENANCE_MARGIN_BPS / 100}% maintenance margin, computed on this device. Not confirmed by the exchange.`}
                 value={
                   liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE
                 }
@@ -579,9 +584,7 @@ function MarginTable({
       </table>
       <p className={`${sectionLabel} mt-2`}>Estimate, not a guarantee</p>
       <p className="text-faint mt-1 text-[11px] leading-relaxed">
-        These figures are worked out on this device from your entry price. They assume a 5%
-        maintenance margin as the liquidation threshold and a 0.05% trading fee. The exchange
-        decides the real threshold.
+        {`These figures are worked out on this device from your entry price. They assume a ${MAINTENANCE_MARGIN_BPS / 100}% maintenance margin as the liquidation threshold and a ${ASSUMED_TAKER_FEE_BPS / 100}% trading fee. The exchange decides the real threshold.`}
       </p>
     </>
   );

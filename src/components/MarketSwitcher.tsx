@@ -1,13 +1,8 @@
-import { formatDecimal, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
+import { formatDecimal, formatUpdatedAge, UNAVAILABLE } from "@/lib/format";
 import type { MarketInfo } from "@/lib/market-data/types";
 import { marketDisplayName } from "@/lib/market-data/displayName";
 import { ageMs } from "@/lib/market-data/selectors";
 import { priceDecimalsOf } from "@/lib/market-data/precision";
-
-function updatedText(age: number): string {
-  const relative = formatRelativeAge(age);
-  return relative === "just now" ? "Updated just now" : `Updated ${relative} ago`;
-}
 
 export function MarketSwitcher({
   markets,
@@ -61,7 +56,7 @@ export function MarketSwitcher({
                   : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
               </span>
               <span className="text-faint col-span-2 text-left">
-                {age === null ? "" : updatedText(age)}
+                {age === null ? "" : formatUpdatedAge(age)}
               </span>
             </span>
           </button>
