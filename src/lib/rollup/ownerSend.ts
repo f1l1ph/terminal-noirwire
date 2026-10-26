@@ -31,8 +31,31 @@ export async function signChecked(
     ? signer.signTransaction(built, chain)
     : signer.signTransaction(built));
   const reason = signedDiffers(built, builtMessage, signed, signer.publicKey);
-  if (reason) throw new SignedTransactionRefused(reason);
+  if (reason) {
+    if (process.env.NODE_ENV !== "production") {
+      logRefusedCapture(reason, chain, builtMessage, signed);
+    }
+    throw new SignedTransactionRefused(reason);
+  }
   return signed;
+}
+
+/** Development builds only: what the wallet handed back, for building an exact acceptance rule. */
+function logRefusedCapture(
+  reason: string,
+  chain: MainnetChain | undefined,
+  builtMessage: Uint8Array,
+  signed: Transaction,
+) {
+  const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+  console.info("wallet changed the transaction: capture", {
+    reason,
+    chain,
+    builtMessageBase64: base64(builtMessage),
+    signedTransactionBase64: base64(
+      signed.serialize({ requireAllSignatures: false, verifySignatures: false }),
+    ),
+  });
 }
 
 const CONFIRM_TIMEOUT_MS = 60_000;
