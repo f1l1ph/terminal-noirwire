@@ -136,16 +136,29 @@ describe("placedToResult: outcome status mapping", () => {
     expect(mapped.reason).toBe("Part filled; the rest found no buyers and was cancelled.");
   });
 
-  it("describes a fill-time check failure as margin or a market limit, not margin alone", () => {
+  it("describes a fill-time check failure as margin, the open-interest cap or the USDC guard", () => {
     const placed = placedResult({
       cancelled: 1_000n,
       status: RESULT_STATUS_CODE.remainderCancelledFillCheck,
     });
     const mapped = placedToResult(placed, UNITS, 6);
     expect(mapped.status).toBe("cancelled");
-    expect(mapped.reason).toBe(
-      "Nothing filled. The rest was cancelled: it failed a check at fill time (margin or a market limit).",
-    );
+    expect(mapped.reason).toMatch(/^Nothing filled\. The rest was cancelled/);
+    expect(mapped.reason).toMatch(/margin may be too low/);
+    expect(mapped.reason).toMatch(/open-interest limit/);
+    expect(mapped.reason).toMatch(/USDC price guard/);
+    expect(mapped.reason).toMatch(/Nothing was charged/);
+  });
+
+  it("does not say nothing filled when a fill-time check stops the rest of a part fill", () => {
+    const placed = placedResult({
+      filled: 400n,
+      cancelled: 600n,
+      status: RESULT_STATUS_CODE.remainderCancelledFillCheck,
+    });
+    const mapped = placedToResult(placed, UNITS, 6);
+    expect(mapped.status).toBe("partiallyFilled");
+    expect(mapped.reason).not.toMatch(/Nothing filled/);
   });
 
   it.each([
@@ -173,11 +186,19 @@ describe("placedToResult: outcome status mapping", () => {
     expect(mapped.reason).toMatch(/post-only/);
   });
 
-  it("maps a generic venue refusal to rejected, naming the code", () => {
+  it("maps a refusal it has no sentence for to rejected, without a code number", () => {
     const placed = placedResult({ status: RESULT_STATUS_CODE.refused, code: 3 });
     const mapped = placedToResult(placed, UNITS, 6);
     expect(mapped.status).toBe("rejected");
-    expect(mapped.reason).toContain("code 3");
+    expect(mapped.reason).toMatch(/Nothing was charged and nothing filled/);
+    expect(mapped.reason).not.toMatch(/code|\b3\b/);
+  });
+
+  it("does not show a status number for an outcome it does not recognise", () => {
+    const placed = placedResult({ status: 99 });
+    const mapped = placedToResult(placed, UNITS, 6);
+    expect(mapped.status).toBe("rejected");
+    expect(mapped.reason).not.toMatch(/99|status/);
   });
 
   it("maps an expired (never confirmed) order to rejected, not placed, carrying only sentAt", () => {
@@ -244,10 +265,10 @@ describe("thrownToResult: OrderInvalid and TransactionFailed map to the rejected
     expect(reason).not.toMatch(/program error/);
   });
 
-  it("names a thrown code below 6000 by its number only: it may be another program's", () => {
+  it("does not read a thrown code below 6000 as this program's: it may be another program's", () => {
     const reason = thrownToResult(failedWith(38), { maxPriceAgeSeconds: 90 })?.reason ?? "";
-    expect(reason).toMatch(/program error 38\b/);
-    expect(reason).not.toMatch(/price/);
+    expect(reason).toMatch(/Nothing was charged and nothing filled/);
+    expect(reason).not.toMatch(/price|program error|\b38\b/);
   });
 
   it("suggests Reduce only on a reduce-only perpetual market", () => {
@@ -290,8 +311,10 @@ describe("thrownToResult: OrderInvalid and TransactionFailed map to the rejected
     );
   });
 
-  it("keeps the program error number for a refusal it has no sentence for", () => {
-    expect(thrownToResult(failedWith(6022))?.reason).toMatch(/program error 6022/);
+  it("gives a refusal it has no sentence for the plain fallback, never the number", () => {
+    const reason = thrownToResult(failedWith(6003))?.reason ?? "";
+    expect(reason).toMatch(/Nothing was charged and nothing filled/);
+    expect(reason).not.toMatch(/6003|program error/);
   });
 
   it("returns null for an ordinary error, letting the caller's own handling take over", () => {
@@ -306,6 +329,57 @@ describe("cancelToResult", () => {
     ).toEqual({
       cancelled: 3,
     });
+  });
+
+  it("says the order already filled or expired when a cancel cancels nothing", () => {
+    const mapped = cancelToResult({
+      ...result({ cancelled: 0n, kind: 3 }),
+      sentAt: 0,
+      resultAt: 1,
+    });
+    expect(mapped.cancelled).toBe(0);
+    expect(mapped.reason).toBe(
+      "Nothing to cancel: the order already filled, expired or was cancelled.",
+    );
+  });
+
+  it("reads the program's no-such-order refusal the same way", () => {
+    const mapped = cancelToResult(
+      result({ cancelled: 0n, kind: 3, status: RESULT_STATUS_CODE.refused, code: 50 }),
+    );
+    expect(mapped.reason).toMatch(/^Nothing to cancel/);
+  });
+
+  it("gives a cancel the program refused for another reason that reason's sentence", () => {
+    const mapped = cancelToResult(
+      result({ cancelled: 0n, kind: 3, status: RESULT_STATUS_CODE.refused, code: 123 }),
+    );
+    expect(mapped.reason).toMatch(/trading keys are no longer the ones on your account/);
+  });
+
+  it("gives a cancel refused with a code it has no sentence for a plain fallback", () => {
+    const mapped = cancelToResult(
+      result({ cancelled: 0n, kind: 3, status: RESULT_STATUS_CODE.refused, code: 3 }),
+    );
+    expect(mapped.reason).toBe(
+      "The exchange did not accept the cancel. Your orders are unchanged. Try again in a moment.",
+    );
+  });
+});
+
+describe("cancelErrorToResult: a cancel the program refused on chain", () => {
+  const failedWith = (code: number) =>
+    new TransactionFailed("sig", { InstructionError: [0, { Custom: code }] });
+
+  it("turns a failed cancel transaction into a zero with the refusal's sentence", () => {
+    const mapped = cancelErrorToResult(failedWith(6123), Date.now());
+    expect(mapped?.cancelled).toBe(0);
+    expect(mapped?.reason).toMatch(/trading keys are no longer the ones on your account/);
+  });
+
+  it("falls back to a plain line for a code below 6000 or one it has no sentence for", () => {
+    expect(cancelErrorToResult(failedWith(50), Date.now())?.reason).toMatch(/did not accept/);
+    expect(cancelErrorToResult(failedWith(6003), Date.now())?.reason).toMatch(/did not accept/);
   });
 });
 

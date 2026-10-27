@@ -15,6 +15,7 @@ import {
 } from "@/lib/trading/openCopy";
 import { SETTLE_WAIT_MS } from "@/lib/rollup/orderKeySetup";
 import type { AccountStatus, OpenAccountOutcome, OrderKeyState } from "@/lib/trading/types";
+import { useWalletLamports } from "@/components/hooks/useWalletLamports";
 import { btnGhost, btnPrimary } from "@/components/ui/styles";
 import { openWalletMenu } from "@/components/WalletWidget";
 
@@ -67,6 +68,7 @@ export function AccountSetup({
   const [checking, setChecking] = useState(false);
   const { steps, ready } = setupSteps({ connected: address !== null, status, keys, funded });
   const current = steps.find((step) => step.state === "current")?.id ?? null;
+  const walletLamports = useWalletLamports(address, current === "deposit" && depositsOpen);
 
   if (ready) {
     return (
@@ -202,7 +204,7 @@ export function AccountSetup({
           </>
         );
       case "deposit":
-        return depositHelp(depositsOpen);
+        return depositHelp(depositsOpen, walletLamports);
     }
   }
 

@@ -6,10 +6,15 @@ import type {
   Side,
   TransferResult,
 } from "../trading/types";
+import {
+  describeProgramError,
+  describeTransactionError,
+  PROGRAM_ERROR,
+  type RefusalContext,
+} from "./refusals";
 import type { MarketUnits } from "./units";
 import { lotsToSize } from "./units";
 import {
-  ACCESS_ERROR,
   ALL_KEYS_BUSY_MESSAGE,
   OrderInvalid,
   OutcomeUnknown,
@@ -25,120 +30,18 @@ const EXPIRED_NOT_PLACED_REASON =
   "Expired, not placed. The venue never ran this order; its order key is free again.";
 const ALL_SLOTS_BUSY_REASON =
   "All four of this wallet's order-key slots are busy right now. Wait for one to free up, then try again.";
+const NOTHING_TO_CANCEL_REASON =
+  "Nothing to cancel: the order already filled, expired or was cancelled.";
+const ORDER_REFUSED_REASON =
+  "The exchange refused this order. Nothing was charged and nothing filled. Try again in a moment.";
+const CANCEL_REFUSED_REASON =
+  "The exchange did not accept the cancel. Your orders are unchanged. Try again in a moment.";
+const UNRECOGNISED_RESULT_REASON =
+  "The exchange gave an answer this terminal does not recognise. Check your open orders and positions before trying again.";
 
 /** `keys.take()`'s own synchronous refusal, thrown before anything is sent, when every slot is already lent to another in-flight call. */
 function isAllKeysBusy(error: unknown): boolean {
   return error instanceof Error && error.message === ALL_KEYS_BUSY_MESSAGE;
-}
-
-/**
- * The program's error list (`programs/noirwire-orderbook/src/errors.rs` in
- * the order book repository). A failed transaction reports 6000 plus the
- * number; a refusal written to the view's result ring carries the number
- * alone. Only the refusals a trader can meet on an ordinary order are named.
- * A failed transaction's code below 6000 is not one of these: it is any
- * instruction's own custom error, possibly another program's.
- */
-const WIRE_ERROR_OFFSET = 6000;
-const PROGRAM_ERROR = {
-  exchangePaused: 30,
-  marketPaused: 31,
-  marketReduceOnly: 32,
-  insufficientMargin: 24,
-  priceOutsideBand: 37,
-  stalePrice: 38,
-  reduceOnlyWouldIncrease: 43,
-  positionCapExceeded: 48,
-  oracleDislocated: 77,
-  instructionExpired: 133,
-  priceTooOld: 79,
-  quoteGuardTripped: 81,
-  seatBlocked: ACCESS_ERROR.seatBlocked - WIRE_ERROR_OFFSET,
-  makerNotListed: ACCESS_ERROR.makerNotListed - WIRE_ERROR_OFFSET,
-  takerNotListed: ACCESS_ERROR.takerNotListed - WIRE_ERROR_OFFSET,
-} as const;
-
-/** What this session knows about the order's own market, used to word a refusal. */
-export interface RefusalContext {
-  /** The market's own price age limit (`maxPriceAge`), when this session read it. */
-  maxPriceAgeSeconds?: number;
-  /** Whether the market is a perpetual; reduce-only orders exist only there. */
-  isPerp?: boolean;
-  /** The order's own side, which names who was missing when nothing matched. */
-  side?: Side;
-}
-
-function knownPriceAgeLimit({ maxPriceAgeSeconds }: RefusalContext): number | null {
-  return maxPriceAgeSeconds !== undefined && maxPriceAgeSeconds > 0 ? maxPriceAgeSeconds : null;
-}
-
-/**
- * The stale-feed refusal is raised for the order's own market and for any
- * other market where the account holds a position, so it never pins the
- * blame on this market's limit alone.
- */
-function stalePriceReason(market: RefusalContext): string {
-  const limit = knownPriceAgeLimit(market);
-  const ownLimit = limit === null ? "" : ` (this market accepts prices up to ${limit} seconds old)`;
-  return `A price this order is checked against is too old: this market's${ownLimit}, or that of another market where this account holds a position. Wait for a fresh price and try again. No fill occurred.`;
-}
-
-function priceTooOldReason(market: RefusalContext): string {
-  const limit = knownPriceAgeLimit(market);
-  const age =
-    limit === null
-      ? "too old for this market to accept new orders"
-      : `older than the ${limit} seconds this market accepts`;
-  return `The market's price is ${age}. Wait for a fresh price and try again. No fill occurred.`;
-}
-
-/**
- * A plain sentence for a program refusal, by its number in the program's
- * error list (a result ring's code), or null for one this terminal has no
- * sentence for.
- */
-function describeProgramError(number: number, market: RefusalContext = {}): string | null {
-  switch (number) {
-    case PROGRAM_ERROR.stalePrice:
-      return stalePriceReason(market);
-    case PROGRAM_ERROR.priceTooOld:
-      return priceTooOldReason(market);
-    case PROGRAM_ERROR.oracleDislocated:
-      return "The on-chain price is too far from the market, so trading is paused for safety until it catches up. Try again shortly. No fill occurred.";
-    case PROGRAM_ERROR.priceOutsideBand:
-      return "This price is too far from the market price. Move it closer, or use a market order. No fill occurred.";
-    case PROGRAM_ERROR.insufficientMargin:
-      return "Your collateral would fall below the margin this order needs. Lower the size or leverage, or add collateral. No fill occurred.";
-    case PROGRAM_ERROR.reduceOnlyWouldIncrease:
-      return "A reduce-only order can only shrink your position, and this one would not. Check the side and that you still hold the position. No fill occurred.";
-    case PROGRAM_ERROR.positionCapExceeded:
-      return "This order could take your position past this market's position limit. Lower the size. No fill occurred.";
-    case PROGRAM_ERROR.instructionExpired:
-      return "The order reached the venue after its time limit and was not run. Try again. No fill occurred.";
-    case PROGRAM_ERROR.exchangePaused:
-      return "The venue is paused, so it takes no orders right now. No fill occurred.";
-    case PROGRAM_ERROR.marketPaused:
-      return "This market is paused, so it takes no orders right now. No fill occurred.";
-    case PROGRAM_ERROR.marketReduceOnly:
-      return market.isPerp
-        ? "This market only takes orders that shrink a position right now. Use Reduce only to close or reduce one. No fill occurred."
-        : "This market only takes orders that shrink a position right now, which a spot order cannot be, so it takes no orders. No fill occurred.";
-    case PROGRAM_ERROR.quoteGuardTripped:
-      return "The venue's USDC price guard has tripped, so perpetuals only take orders that shrink a position right now. No fill occurred.";
-    case PROGRAM_ERROR.seatBlocked:
-      return "This account is blocked on this venue: it can cancel, reduce and move funds, but not open new orders. No fill occurred.";
-    case PROGRAM_ERROR.makerNotListed:
-      return "This market only lets listed makers rest orders, and this account is not one. No fill occurred.";
-    case PROGRAM_ERROR.takerNotListed:
-      return "This market only lets listed takers place orders that match, and this account is not one. No fill occurred.";
-    default:
-      return null;
-  }
-}
-
-/** `describeProgramError` for a failed transaction's code, which names this program's error only from 6000 up. */
-function describeTransactionError(code: number, market: RefusalContext): string | null {
-  return code >= WIRE_ERROR_OFFSET ? describeProgramError(code - WIRE_ERROR_OFFSET, market) : null;
 }
 
 /**
@@ -280,8 +183,7 @@ export function thrownToResult(
       reason:
         error.code === null
           ? "Refused by the venue. No fill occurred."
-          : (describeTransactionError(error.code, market) ??
-            `Refused by the venue (program error ${error.code}). No fill occurred.`),
+          : (describeTransactionError(error.code, market) ?? ORDER_REFUSED_REASON),
     };
   }
   if (isAllKeysBusy(error)) {
@@ -373,6 +275,11 @@ function noMatchReason(filledAny: boolean, side: Side | undefined): string {
   return `No ${others} at your price right now, so nothing filled and nothing was charged. The market maker may be refreshing its quotes. Try again in a few seconds.`;
 }
 
+/** Matching stops at the first fill the taker cannot take: too little margin, the market's open-interest cap, or the USDC guard. */
+function fillCheckReason(filledAny: boolean): string {
+  return `${nothingFilledLead(filledAny)}The rest was cancelled because the next fill failed a check: your margin may be too low, this market's open-interest limit may be reached, or the USDC price guard may be on. Lower the size, add collateral or try again later. Nothing was charged for the part that did not fill.`;
+}
+
 function describeStatus(
   result: OrderResult,
   filledSize: string,
@@ -404,22 +311,34 @@ function describeStatus(
     case RESULT_STATUS_CODE.remainderCancelledFillCheck:
       return {
         status: filledAny ? "partiallyFilled" : "cancelled",
-        reason: `${nothingFilledLead(filledAny)}The rest was cancelled: it failed a check at fill time (margin or a market limit).`,
+        reason: fillCheckReason(filledAny),
       };
     case RESULT_STATUS_CODE.refused:
       return {
         status: "rejected",
-        reason:
-          describeProgramError(result.code, market) ??
-          `Refused by the venue (code ${result.code}). No fill occurred.`,
+        reason: describeProgramError(result.code, market) ?? ORDER_REFUSED_REASON,
       };
     default:
-      return { status: "rejected", reason: `Unrecognised outcome (status ${result.status}).` };
+      return { status: "rejected", reason: UNRECOGNISED_RESULT_REASON };
   }
 }
 
+/**
+ * A cancel that cancelled something is `{ cancelled }`. One that cancelled
+ * nothing says why: the order is gone (filled, expired or cancelled before),
+ * or the program refused the cancel with a code of its own.
+ */
 export function cancelToResult(result: OrderResult & Partial<Timing>): CancelResult {
-  return { cancelled: Number(result.cancelled) };
+  const cancelled = Number(result.cancelled);
+  if (cancelled > 0) return { cancelled };
+  const refusedForAnotherReason =
+    result.status === RESULT_STATUS_CODE.refused && result.code !== PROGRAM_ERROR.orderNotFound;
+  return {
+    cancelled,
+    reason: refusedForAnotherReason
+      ? (describeProgramError(result.code) ?? CANCEL_REFUSED_REASON)
+      : NOTHING_TO_CANCEL_REASON,
+  };
 }
 
 /**
@@ -427,7 +346,8 @@ export function cancelToResult(result: OrderResult & Partial<Timing>): CancelRes
  * throws onto a `CancelResult` the caller can render without a raw error
  * reaching the UI: `OutcomeUnknown` becomes a pending result that resolves
  * once the rollup's own clock has passed the call's expiry; every slot
- * busy becomes an immediate, certain zero with a plain reason. Any other
+ * busy becomes an immediate, certain zero with a plain reason; a program
+ * refusal that landed on chain becomes a zero with its sentence. Any other
  * error is the caller's to handle (typically a session problem `withSession`
  * already retries once).
  */
@@ -450,6 +370,13 @@ export function cancelErrorToResult(error: unknown, expiresAtMs: number): Cancel
   }
   if (isAllKeysBusy(error)) {
     return { cancelled: 0, reason: ALL_SLOTS_BUSY_REASON };
+  }
+  if (error instanceof TransactionFailed) {
+    const reason =
+      error.code === null
+        ? CANCEL_REFUSED_REASON
+        : (describeTransactionError(error.code, {}) ?? CANCEL_REFUSED_REASON);
+    return { cancelled: 0, reason };
   }
   return null;
 }

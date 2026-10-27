@@ -371,22 +371,37 @@ describe("refusal mapping", () => {
     expect(outcome.kind).toBe("tryLater");
   });
 
-  it("maps the day's limit to tryLater", async () => {
-    const outcome = await refusedWith(
-      503,
-      "today's new accounts are all given out: try again tomorrow, it resets at 00:00 UTC",
-      "submit",
-    );
-    expect(outcome.kind).toBe("tryLater");
+  it.each([
+    "today's new accounts are all given out: try again tomorrow, it resets at 00:00 UTC",
+    "daily limit reached: no more new accounts can be opened today, try again tomorrow",
+  ])("maps the day's limit %j to dailyCapReached on either step", async (reason) => {
+    expect((await refusedWith(503, reason, "prepare")).kind).toBe("dailyCapReached");
+    expect((await refusedWith(503, reason, "submit")).kind).toBe("dailyCapReached");
   });
 
-  it("maps the per-address limit to tooManyToday", async () => {
+  it.each([
+    "this network address has opened its account for today: try again tomorrow, it resets at 00:00 UTC",
+    "this network address has opened its account for today",
+  ])("maps the per-address limit %j to addressLimit", async (reason) => {
+    expect((await refusedWith(429, reason, "prepare")).kind).toBe("addressLimit");
+  });
+
+  it.each([
+    "the service is still starting, try again in a few seconds",
+    "the service is waking up, try again in a few seconds",
+    "the rollup cannot be reached right now, try again",
+    "the gate could not write its seat record, so it signed nothing. Nothing changed: try again, and tell the operator if it keeps happening",
+  ])("maps the busy or starting reason %j to tryLater on submit", async (reason) => {
+    expect((await refusedWith(503, reason, "submit")).kind).toBe("tryLater");
+  });
+
+  it("maps the gate's request throttle, with its seconds, to tryLater", async () => {
     const outcome = await refusedWith(
       429,
-      "this network address has opened its account for today",
+      "too many requests from this address: wait 12 s and try again",
       "prepare",
     );
-    expect(outcome.kind).toBe("tooManyToday");
+    expect(outcome.kind).toBe("tryLater");
   });
 
   it("maps a short request throttle to tryLater, not the day's limit", async () => {
