@@ -32,6 +32,9 @@ export function blockhashOf(raw: Uint8Array): string {
   return blockhash;
 }
 
+/** The connections that carry a hook now. */
+const hooked = new WeakSet<object>();
+
 /** How many of the withdrawal's signed transactions were handed to the connection's real broadcast. */
 export interface DispatchCount {
   dispatched: number;
@@ -44,8 +47,10 @@ export interface DispatchCount {
  * counts transactions that may be running and never one a failed `onSigned`
  * stopped. The trading client signs with a key held in this browser and sends
  * through this connection, so the signed bytes are on record before any node
- * can have them. Returns the function that gives the connection back as it
- * was; it awaits nothing.
+ * can have them. Returns the function that gives the connection back exactly
+ * as it was; it awaits nothing. A connection carries one hook at a time:
+ * asking for a second throws before anything is installed, so the caller
+ * dispatches nothing.
  */
 export function hookKeyedWithdrawals(
   connection: Pick<Connection, "sendRawTransaction">,
@@ -53,6 +58,10 @@ export function hookKeyedWithdrawals(
   onSigned: (raw: Uint8Array) => Promise<void>,
   count: DispatchCount,
 ): () => void {
+  if (hooked.has(connection)) {
+    throw new Error("Another withdrawal is already being watched on this connection");
+  }
+  hooked.add(connection);
   const own = Object.getOwnPropertyDescriptor(connection, "sendRawTransaction");
   const send = connection.sendRawTransaction.bind(connection);
   connection.sendRawTransaction = async (raw, options) => {
@@ -63,6 +72,7 @@ export function hookKeyedWithdrawals(
     return send(raw, options);
   };
   return () => {
+    if (!hooked.delete(connection)) return;
     if (own) Object.defineProperty(connection, "sendRawTransaction", own);
     else delete (connection as Partial<typeof connection>).sendRawTransaction;
   };

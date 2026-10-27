@@ -126,6 +126,24 @@ describe("hookKeyedWithdrawals", () => {
     expect(count.dispatched).toBe(0);
   });
 
+  it("refuses a second hook while one is installed, and restores exactly the original once", async () => {
+    const rollup = rollupOf();
+    const before = rollup.sendRawTransaction;
+    const first = hookKeyedWithdrawals(rollup, PROGRAM, async () => {}, { dispatched: 0 });
+    const hookedSend = rollup.sendRawTransaction;
+    expect(() => hookKeyedWithdrawals(rollup, PROGRAM, async () => {}, { dispatched: 0 })).toThrow(
+      "already being watched",
+    );
+    expect(rollup.sendRawTransaction).toBe(hookedSend);
+    first();
+    first();
+    expect(rollup.sendRawTransaction).toBe(before);
+    expect(Object.getOwnPropertyNames(rollup)).not.toContain("sendRawTransaction");
+    const again = hookKeyedWithdrawals(rollup, PROGRAM, async () => {}, { dispatched: 0 });
+    again();
+    expect(rollup.sendRawTransaction).toBe(before);
+  });
+
   it("gives the connection back as it was, with nothing to await", async () => {
     const rollup = rollupOf();
     const before = rollup.sendRawTransaction;

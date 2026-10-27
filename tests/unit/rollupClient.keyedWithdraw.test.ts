@@ -189,6 +189,28 @@ describe("the order key withdrawal's pre-send hook", () => {
     expect(ran).toBe(false);
   });
 
+  it("sends nothing from a second call that overlaps the first, and leaves the connection original", async () => {
+    const wire = connection();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let calls = 0;
+    const trading = clientTrading([{ reader: wire.reader }], async (reader) => {
+      calls += 1;
+      await gate;
+      await dispatchWithdrawal(reader, calls);
+      return {};
+    });
+    const first = trading.withdrawByKey(WALLET, 1n, async () => {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = await trading.withdrawByKey(WALLET, 1n, async () => {}).catch((e: unknown) => e);
+    expect(second).toBeInstanceOf(NotDispatched);
+    release();
+    expect(await first).toEqual({ kind: "withdrawn" });
+    expect(calls).toBe(1);
+    expect(wire.sent).toHaveLength(1);
+    expect(wire.reader.sendRawTransaction).toBe(wire.original);
+  });
+
   it("is not involved when no hook is asked for", async () => {
     const wire = connection();
     const trading = clientTrading([{ reader: wire.reader }], async (reader) => {
