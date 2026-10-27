@@ -1094,6 +1094,8 @@ export class RollupTradingClient implements TradingClient {
         market: binding.marketId,
         size: lotsToSize(binding.units, slot.base, binding.sizeDecimals),
         entryPrice,
+        quote: quoteAtomsToAmount(slot.quote),
+        maintenanceMarginBps: session.maintenanceMarginBps?.get(binding.numericId),
       };
     }
 
