@@ -10,7 +10,7 @@ import {
   type StatsResponse,
 } from "@/lib/sim-api/schema";
 
-class MarketDataRequestError extends Error {
+export class MarketDataRequestError extends Error {
   constructor(
     message: string,
     public readonly url: string,
@@ -19,6 +19,13 @@ class MarketDataRequestError extends Error {
     super(message);
     this.name = "MarketDataRequestError";
   }
+}
+
+/** Whether a request failed because the service could not be reached or was busy (no answer, 5xx, 429), as opposed to refusing or answering something malformed. */
+export function isServiceUnreachable(error: unknown): boolean {
+  if (!(error instanceof MarketDataRequestError)) return false;
+  const { status } = error;
+  return status === undefined || status >= 500 || status === 429;
 }
 
 async function getJson(baseUrl: string, path: string): Promise<unknown> {

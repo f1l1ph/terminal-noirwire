@@ -2,6 +2,7 @@ import { z } from "zod";
 import { keepLastKnown, loadLastKnown } from "../lastKnown";
 import { marketInfoSchema, type MarketInfo } from "../sim-api/schema";
 import type { KeyValueStore } from "../wallet/index";
+import { isServiceUnreachable } from "./client";
 import { loadWithRetry } from "./retry";
 import type { MarketDataStore } from "./store";
 
@@ -34,9 +35,11 @@ interface MarketListOptions {
 }
 
 /**
- * Asks for the market list until it arrives. The first failure puts the
- * last list this browser kept (if any) into the store, so trading can start;
- * the live list replaces it the moment it answers, and is kept in its place.
+ * Asks for the market list until it arrives. The first time the service
+ * cannot be reached or is busy, the last list this browser kept (if any) goes
+ * into the store, so trading can start; a refusal or a malformed answer is
+ * never covered over. The live list replaces it the moment it answers, and
+ * is kept in its place.
  */
 export async function loadMarketList({
   store,
@@ -50,15 +53,16 @@ export async function loadMarketList({
   const markets = await loadWithRetry(() => fetchMarkets(simUrl), {
     isCancelled,
     sleep,
-    onFailure: () => {
-      if (triedKept) return;
-      triedKept = true;
-      const kept = loadLastKnown(storage, MARKETS_NAME, simUrl, keptMarketsSchema);
-      if (kept && kept.length > 0 && store.getState().markets.length === 0) {
-        store.setMarketsFromKept(kept);
-      } else {
-        store.setMarketsUnreachable(true);
+    onFailure: (error) => {
+      if (!triedKept && isServiceUnreachable(error)) {
+        triedKept = true;
+        const kept = loadLastKnown(storage, MARKETS_NAME, simUrl, keptMarketsSchema);
+        if (kept && kept.length > 0 && store.getState().markets.length === 0) {
+          store.setMarketsFromKept(kept);
+          return;
+        }
       }
+      store.setMarketsUnreachable(true);
     },
   });
   if (!markets || isCancelled()) return;

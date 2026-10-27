@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { keepLastKnown, loadLastKnown } from "@/lib/lastKnown";
+import { MarketDataRequestError } from "@/lib/market-data/client";
 import { loadMarketList, settingsOnly } from "@/lib/market-data/marketList";
 import { MarketDataStore } from "@/lib/market-data/store";
 import { fetchDeployment, type PublicDeployment } from "@/lib/rollup/deployment";
@@ -48,6 +49,8 @@ const MARKET: MarketInfo = {
 
 const SIM = "https://sim-one.example";
 const OTHER_SIM = "https://sim-two.example";
+
+const unreachable = new MarketDataRequestError("down", `${SIM}/v1/markets`);
 
 describe("last known copy", () => {
   const schema = z.object({ n: z.number() });
@@ -135,7 +138,7 @@ describe("market list", () => {
     await loadMarketList({
       ...options(down, storage, async () => {
         attempts += 1;
-        throw new Error("down");
+        throw unreachable;
       }),
       isCancelled: () => attempts >= 2,
     });
@@ -146,6 +149,41 @@ describe("market list", () => {
     expect(down.getState().marksByMarket).toEqual({});
   });
 
+  it.each([
+    ["a refusal", new MarketDataRequestError("refused", `${SIM}/v1/markets`, 403)],
+    ["a malformed answer", new Error("bad shape")],
+  ])("never covers %s with the kept list", async (_name, failure) => {
+    const storage = memoryStore();
+    keepLastKnown(storage, "markets", SIM, settingsOnly([MARKET]));
+    const store = new MarketDataStore();
+    let attempts = 0;
+    await loadMarketList({
+      ...options(store, storage, async () => {
+        attempts += 1;
+        throw failure;
+      }),
+      isCancelled: () => attempts >= 2,
+    });
+    expect(store.getState().markets).toEqual([]);
+    expect(store.getState().marketsFromKept).toBe(false);
+    expect(store.getState().marketsUnreachable).toBe(true);
+  });
+
+  it("uses the kept list for a busy service", async () => {
+    const storage = memoryStore();
+    keepLastKnown(storage, "markets", SIM, settingsOnly([MARKET]));
+    const store = new MarketDataStore();
+    let attempts = 0;
+    await loadMarketList({
+      ...options(store, storage, async () => {
+        attempts += 1;
+        throw new MarketDataRequestError("busy", `${SIM}/v1/markets`, 429);
+      }),
+      isCancelled: () => attempts >= 2,
+    });
+    expect(store.getState().marketsFromKept).toBe(true);
+  });
+
   it("replaces the kept list on screen and in storage when the live one arrives", async () => {
     const storage = memoryStore();
     keepLastKnown(storage, "markets", SIM, settingsOnly([{ ...MARKET, maxLeverage: 5 }]));
@@ -154,7 +192,7 @@ describe("market list", () => {
     await loadMarketList(
       options(store, storage, async () => {
         calls += 1;
-        if (calls === 1) throw new Error("down");
+        if (calls === 1) throw unreachable;
         return [MARKET];
       }),
     );
@@ -173,7 +211,7 @@ describe("market list", () => {
     await loadMarketList({
       ...options(store, storage, async () => {
         attempts += 1;
-        throw new Error("down");
+        throw unreachable;
       }),
       isCancelled: () => attempts >= 2,
     });
@@ -192,7 +230,7 @@ describe("market list", () => {
     await loadMarketList({
       ...options(down, broken, async () => {
         attempts += 1;
-        throw new Error("down");
+        throw unreachable;
       }),
       isCancelled: () => attempts >= 2,
     });
