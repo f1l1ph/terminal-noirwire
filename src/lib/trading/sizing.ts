@@ -1,3 +1,4 @@
+import { QUOTE_DECIMALS } from "../rollup/markets";
 import { divFixedPoint, FIXED_POINT_SCALE, fromFixedPoint, toFixedPoint } from "./decimal";
 import { ASSUMED_TAKER_FEE_BPS, estimateOrderCost, impliedInitialMarginBps } from "./risk";
 import type { Side } from "./types";
@@ -106,6 +107,13 @@ function ceilDiv(numerator: bigint, denominator: bigint): bigint {
 
 const BPS = 10_000n;
 
+/** One quote atom at the fixed-point scale: the venue charges fees in whole atoms. */
+const QUOTE_ATOM = FIXED_POINT_SCALE / 10n ** BigInt(QUOTE_DECIMALS);
+
+function ceilToQuoteAtom(amount: bigint): bigint {
+  return ceilDiv(amount, QUOTE_ATOM) * QUOTE_ATOM;
+}
+
 /**
  * A perp order the way the venue judges it. A resting order counts in full as
  * a bid or ask. A reduce-only order is capped to the position and judged as
@@ -145,7 +153,7 @@ function perpFunds(params: {
   const marginBps = BigInt(impliedInitialMarginBps(params.maxLeverage) ?? 10_000);
   const marginQuote = ceilDiv(grown * mark * marginBps, FIXED_POINT_SCALE * BPS);
   const notional = ceilDiv(quantity * price, FIXED_POINT_SCALE);
-  const fee = ceilDiv(notional * BigInt(ASSUMED_TAKER_FEE_BPS), BPS);
+  const fee = ceilToQuoteAtom(ceilDiv(notional * BigInt(ASSUMED_TAKER_FEE_BPS), BPS));
   return fundsOutcome(
     fee + marginQuote,
     marginQuote,

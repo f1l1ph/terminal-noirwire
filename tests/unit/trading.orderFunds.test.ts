@@ -225,6 +225,20 @@ describe("orderFunds against an open position", () => {
     expect(orderFunds({ ...base, availableQuote: "100.495" }).shortfall).toBeNull();
   });
 
+  it("rounds the fee up to a whole quote atom, as the venue charges it", () => {
+    const funds = orderFunds({
+      ...PERP,
+      maxLeverage: 5,
+      side: "buy",
+      quantity: "0.067",
+      price: "150.01",
+      markPrice: "150.001",
+      availableQuote: "2.015039",
+    });
+    expect(funds.requiredQuote).toBe(toFixedPoint("2.0100134") + toFixedPoint("0.005026"));
+    expect(funds.shortfall).not.toBeNull();
+  });
+
   it("charges a reduce-only close that resting asks would turn into growth", () => {
     const base = {
       ...PERP,
@@ -256,9 +270,9 @@ describe("orderFunds against an open position", () => {
 
   it("rounds margin and fee up so the form is never looser at the boundary", () => {
     const base = { ...PERP, side: "buy", quantity: "1", price: "33.333333333" } as const;
-    expect(orderFunds({ ...base, availableQuote: "3.350000000" }).shortfall).not.toBeNull();
-    const exact = orderFunds({ ...base, availableQuote: "3.350000001" });
-    expect(exact.requiredQuote).toBe(toFixedPoint("3.350000001"));
+    expect(orderFunds({ ...base, availableQuote: "3.350000333" }).shortfall).not.toBeNull();
+    const exact = orderFunds({ ...base, availableQuote: "3.350000334" });
+    expect(exact.requiredQuote).toBe(toFixedPoint("3.333333334") + toFixedPoint("0.016667"));
     expect(exact.shortfall).toBeNull();
   });
 
