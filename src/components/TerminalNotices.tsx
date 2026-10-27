@@ -4,7 +4,7 @@ import { useDepositInProgress } from "@/components/hooks/useDepositInProgress";
 
 export const PRICES_DOWN_NOTICE = "Prices are not loading. Your funds are safe; we keep retrying.";
 export const PRICES_DOWN_KEPT_SETTINGS_NOTICE =
-  "Price service unreachable. Using the last market settings this browser saw, so you can see positions, cancel orders and withdraw. Closing needs a live price. Retrying.";
+  "Price service unreachable. Using the last market settings this browser saw, so you can see positions, cancel orders, withdraw, and close once a price arrives. New positions wait until it is back. Retrying.";
 export const DEPOSIT_IN_PROGRESS_NOTICE =
   "Deposit in progress: keep this browser open until it finishes";
 export const TRADING_IN_OTHER_TAB_NOTICE =
