@@ -23,6 +23,10 @@ export interface Attention {
   keyed: boolean;
 }
 
+/** Whether a deposit is between its first step and its last: its record is written before the first send and removed when it finishes. */
+export const depositInProgress = (records: readonly OperationRecord[]): boolean =>
+  records.some((record) => operationOf(record) === "deposit");
+
 /** The actions a record may offer. A resend is never one of them: resuming runs the flow, which judges every earlier send first. */
 export type RecordAction = "copy-signature" | "dismiss" | "resume" | "return";
 

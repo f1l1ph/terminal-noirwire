@@ -155,21 +155,70 @@ describe("audit: the sim service decides how a typed order is scaled on chain", 
   });
 });
 
+const noWait = async () => {};
+
 describe("audit: deployment cache", () => {
   it("a transient /v1/deployment failure is not cached for the life of the page", async () => {
     let calls = 0;
     const body = deploymentWith(9);
     const fetchFn = (async () => {
       calls += 1;
-      if (calls === 1) throw new TypeError("network blip");
+      if (calls <= 3) throw new TypeError("network blip");
       return new Response(JSON.stringify(body), { status: 200 });
     }) as typeof fetch;
 
-    await fetchDeployment("https://sim-cache.example", {}, fetchFn).catch(() => null);
-    const second = await fetchDeployment("https://sim-cache.example", {}, fetchFn).then(
+    await fetchDeployment("https://sim-cache.example", {}, fetchFn, noWait).catch(() => null);
+    const second = await fetchDeployment("https://sim-cache.example", {}, fetchFn, noWait).then(
       (value) => value.network,
       () => "still failing",
     );
     expect(second).toBe("devnet");
+  });
+
+  it("asks again, with growing waits, when the service is unreachable or busy", async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const body = deploymentWith(9);
+    const fetchFn = (async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("network blip");
+      if (calls === 2) return new Response("busy", { status: 503 });
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    const described = await fetchDeployment(
+      "https://sim-retry.example",
+      {},
+      fetchFn,
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+    expect(described.network).toBe("devnet");
+    expect(calls).toBe(3);
+    expect(waits).toEqual([1_000, 2_000]);
+  });
+
+  it("gives up after three tries and says what the service answered", async () => {
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls += 1;
+      return new Response("down", { status: 502 });
+    }) as typeof fetch;
+    await expect(fetchDeployment("https://sim-down.example", {}, fetchFn, noWait)).rejects.toThrow(
+      /answered 502/,
+    );
+    expect(calls).toBe(3);
+  });
+
+  it("does not repeat an answer that will not change", async () => {
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls += 1;
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    await expect(
+      fetchDeployment("https://sim-missing.example", {}, fetchFn, noWait),
+    ).rejects.toThrow(/answered 404/);
+    expect(calls).toBe(1);
   });
 });

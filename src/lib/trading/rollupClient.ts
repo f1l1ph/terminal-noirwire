@@ -45,6 +45,7 @@ import {
   SIDE_CODE,
   randomSecret,
   VIEW_NOT_READABLE_MESSAGE,
+  type Placed,
   type View,
 } from "../rollup/sdk";
 import {
@@ -129,6 +130,8 @@ const DEFAULT_EXPIRY_SECONDS = 5;
  * a pushed result while a read is in flight, a full round trip on devnet.
  */
 const RESULT_PUSH_WAIT_MS = 1_500;
+/** Shown when the package gave up before it sent anything: no hold, the form is free to try again. */
+const NOT_SENT_REASON = "Nothing was sent. The order could not be prepared just now. Try again.";
 
 export interface RollupTradingClientOptions {
   simUrl: string;
@@ -740,9 +743,10 @@ export class RollupTradingClient implements TradingClient {
         untrackSecret(this.storage, wallet.address, secret);
         throw new Error("Could not record this order on this device first, so it was not sent.");
       }
-      let result: PlaceOrderResult;
+      let result: PlaceOrderResult | null = null;
+      let placed: Placed | null = null;
       try {
-        const placed = await session.client.placeOrder(
+        placed = await session.client.placeOrder(
           binding.numericId,
           {
             side: SIDE_CODE[order.side],
@@ -756,23 +760,12 @@ export class RollupTradingClient implements TradingClient {
           },
           { expirySeconds: DEFAULT_EXPIRY_SECONDS, pushWaitMs: RESULT_PUSH_WAIT_MS },
         );
-        this.releaseUnknownOutcome(wallet, order.market);
-        result = placedToResult(
-          placed,
-          binding.units,
-          binding.sizeDecimals,
-          expiresAtMs,
-          refusalContext,
-        );
-        if (placed.outcome !== "unknown") this.emitState(session, placed.view);
       } catch (error) {
         // OrderInvalid (refused before signing), TransactionFailed (landed
         // and refused), or every order-key slot busy: all map to the
         // ordinary rejected state, like a book-dependent refusal, rather
         // than reaching the submit button's generic error path.
         // OutcomeUnknown (sent, and may still run) becomes a pending result.
-        // Whatever is left is not proven to have happened before the send,
-        // whatever its text says, so it is never retried.
         const mapped =
           thrownToResult(error, refusalContext) ??
           placeUnknownToResult(
@@ -782,10 +775,38 @@ export class RollupTradingClient implements TradingClient {
             expiresAtMs,
             refusalContext,
           );
-        if (!mapped) throw new OrderOutcomeUnknownError(hold);
+        // The package wraps every failure after its send begins in
+        // `OutcomeUnknown` or `TransactionFailed`. Anything else it throws
+        // (a market or blockhash read, a refused signature, no connection)
+        // came before the transaction left, so nothing is held for it.
+        if (!mapped) untrackSecret(this.storage, wallet.address, secret);
         this.releaseUnknownOutcome(wallet, order.market);
-        result = mapped;
+        result = mapped ?? {
+          orderId: "",
+          tag: "",
+          status: "rejected",
+          filledSize: "0",
+          remainingSize: "0",
+          reason: NOT_SENT_REASON,
+        };
       }
+      if (placed) {
+        // The order ran: failing to read its result back leaves the market held.
+        try {
+          result = placedToResult(
+            placed,
+            binding.units,
+            binding.sizeDecimals,
+            expiresAtMs,
+            refusalContext,
+          );
+          if (placed.outcome !== "unknown") this.emitState(session, placed.view);
+        } catch {
+          throw new OrderOutcomeUnknownError(hold);
+        }
+        this.releaseUnknownOutcome(wallet, order.market);
+      }
+      if (!result) throw new OrderOutcomeUnknownError(hold);
       session.saveKeyCheckpoint();
       // `tag` is the handle the witness rail uses to find this order's own
       // fills (Terminal.tsx tracks it as `trackedTag`, matched against

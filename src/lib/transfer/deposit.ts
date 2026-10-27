@@ -189,7 +189,7 @@ async function carryOn(
   if (record.depositKey !== env.depositKey.publicKey.toBase58()) {
     return refuse(
       "deposit-key-missing",
-      "This deposit was made with a deposit key this browser no longer holds, so it cannot be finished from here. Nothing was sent.",
+      `The key that finishes this deposit (transfer ${id}) is no longer stored in this browser, so the deposit cannot be finished from here. The USDC has already left your wallet and sits under that key. Do not deposit again. Contact support and give them this transfer id. Nothing new was sent.`,
     );
   }
   const judged = await reconciled(env, id, record.sends, answer);
@@ -286,14 +286,14 @@ function strandedBy(id: string, error: string): DepositOutcome {
   const code = errorCode(error);
   const why =
     code === CUSTODY_CAP_REACHED
-      ? "The custody cap refused the deposit."
+      ? "The exchange is at its deposit limit right now."
       : code === NO_SEAT
-        ? "The wallet has no open account on the exchange."
-        : `The deposit was refused: ${error}.`;
+        ? "Your wallet has no open account on the exchange."
+        : "The exchange did not accept the last step.";
   return {
     status: "stranded",
     id,
-    message: `${why} The tokens moved into the rollup stay safe in this browser's deposit key there: deposit again by hand to put them in your account.`,
+    message: `${why} Your USDC left your wallet and is safe: it is held by this browser's deposit key. You do not need to send more.`,
   };
 }
 

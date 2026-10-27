@@ -44,7 +44,7 @@ const KIND_COPY: Record<Attention["kind"], string> = {
   "not-landed":
     "It did not go through, and nothing moved by it. You can dismiss this and start again.",
   unknown:
-    "We cannot tell what happened to it. Wait, or contact support with the signature. It cannot be dismissed.",
+    "We cannot tell what happened to it. Wait, or contact support with the transfer id and the signature. It cannot be dismissed.",
 };
 
 /**
@@ -181,8 +181,8 @@ export function TransferRecords({
   if (unreadable) {
     return (
       <p role="alert" className="text-danger border-line-subtle border-b p-3 text-[12px]">
-        Transfers on record in this browser could not be read. Do not start a transfer from here
-        until they can.
+        This browser could not read its saved transfers, so a new transfer cannot start. Reload the
+        page. If it keeps happening, allow site data for this page or use a regular browser window.
       </p>
     );
   }
@@ -237,6 +237,7 @@ export function TransferRecords({
               Transfers are switched off in this build, so nothing more can be done here.
             </p>
           )}
+          <p className="tnum text-faint mt-1 text-[11px]">Transfer id {item.id}</p>
           {item.signature && (
             <p className="tnum text-faint mt-1 text-[11px]">
               Signature <span title={item.signature}>{shortSignature(item.signature)}</span>

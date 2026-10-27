@@ -42,7 +42,7 @@ const REFUSALS: Record<Refusal, string> = {
   "legacy-deposit":
     "This deposit was begun by an earlier version of the app. Return it to your wallet under transfers that need attention, then deposit again. Nothing was sent.",
   "deposit-key-missing":
-    "This deposit was made with a key this browser no longer holds, so it cannot be finished from here. Nothing was sent.",
+    "The key that finishes this deposit is no longer stored in this browser, so it cannot be finished from here. Do not deposit again. Contact support and give them the transfer id. Nothing new was sent.",
   "deposit-landed": "The deposit already went through. Nothing was sent.",
   "rollup-short": "Your rollup balance holds less than that. Nothing was sent.",
   "nothing-to-dismiss": "No transfer is waiting to be dismissed.",
@@ -87,7 +87,9 @@ export function outcomeLine(
         text:
           outcome.reason === "insufficient-sol"
             ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
-            : REFUSALS[outcome.reason],
+            : outcome.reason === "deposit-key-missing"
+              ? outcome.message
+              : REFUSALS[outcome.reason],
       };
     case "waiting":
       return {

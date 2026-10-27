@@ -107,7 +107,7 @@ function unknownFrom(attempt: Promise<unknown>): Promise<OrderOutcomeUnknownErro
   );
 }
 
-/** One page load: a fresh client over `storage`, whose SDK `placeOrder` is counted and always fails after sending. */
+/** One page load: a fresh client over `storage`, whose SDK `placeOrder` is counted and always answers that the order ran, with no result to read. */
 function pageLoad(storage: ReturnType<typeof memoryStorage>) {
   let sends = 0;
   const unused = async () => {
@@ -118,7 +118,7 @@ function pageLoad(storage: ReturnType<typeof memoryStorage>) {
     subscribeView: () => async () => {},
     placeOrder: async () => {
       sends += 1;
-      throw new Error("socket closed");
+      return { outcome: "placed" } as never;
     },
     cancelOrder: unused,
     cancelAll: unused,

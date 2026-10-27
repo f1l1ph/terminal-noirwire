@@ -38,6 +38,7 @@ import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
 import { TerminalShell } from "@/components/TerminalShell";
+import { TerminalNotices } from "@/components/TerminalNotices";
 import { DesktopWorkspace } from "@/components/DesktopWorkspace";
 import { PhoneLayout, type PhoneView } from "@/components/PhoneLayout";
 import {
@@ -875,6 +876,12 @@ export function Terminal() {
       wallet={wallet}
       footer={footer}
       onResetLayout={isDesktop && !mainnet ? resetLayout : undefined}
+      notices={
+        <TerminalNotices
+          owner={ownerIdentity?.address ?? null}
+          pricesUnreachable={allData.marketsUnreachable}
+        />
+      }
     >
       {content}
     </TerminalShell>
