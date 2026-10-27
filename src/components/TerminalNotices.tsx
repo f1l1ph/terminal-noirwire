@@ -5,6 +5,8 @@ import { useDepositInProgress } from "@/components/hooks/useDepositInProgress";
 export const PRICES_DOWN_NOTICE = "Prices are not loading. Your funds are safe; we keep retrying.";
 export const DEPOSIT_IN_PROGRESS_NOTICE =
   "Deposit in progress: keep this browser open until it finishes";
+export const TRADING_IN_OTHER_TAB_NOTICE =
+  "Trading is open in another tab on this account. You can still look around here, but orders and cancels are off so the two tabs do not clash.";
 
 /**
  * Lines that stay on screen while they are true, above the workspace: the
@@ -14,14 +16,29 @@ export const DEPOSIT_IN_PROGRESS_NOTICE =
 export function TerminalNotices({
   owner,
   pricesUnreachable,
+  tradingElsewhere,
+  onUseThisTab,
 }: {
   owner: string | null;
   pricesUnreachable: boolean;
+  tradingElsewhere: boolean;
+  onUseThisTab: () => void;
 }) {
   const depositOpen = useDepositInProgress(owner);
-  if (!pricesUnreachable && !depositOpen) return null;
+  if (!pricesUnreachable && !depositOpen && !tradingElsewhere) return null;
   return (
     <div className="flex shrink-0 flex-col gap-1 px-3 sm:px-4">
+      {tradingElsewhere && (
+        <p
+          role="status"
+          className="border-line text-warning rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
+        >
+          <span>{TRADING_IN_OTHER_TAB_NOTICE}</span>
+          <button type="button" onClick={onUseThisTab} className="text-ink underline">
+            Use this tab
+          </button>
+        </p>
+      )}
       {pricesUnreachable && (
         <p
           role="status"

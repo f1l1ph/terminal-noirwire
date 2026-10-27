@@ -15,11 +15,16 @@ import { openAndFund } from "../rollup/fundingClient";
 import {
   cancelErrorToResult,
   cancelToResult,
+  KEYS_IN_USE_ELSEWHERE_REASON,
   placedToResult,
   placeUnknownToResult,
+  POSITION_ALREADY_REDUCED_REASON,
+  refusalNumberOf,
+  resultRefusalNumber,
   thrownToResult,
   transferErrorToResult,
 } from "../rollup/outcome";
+import { PROGRAM_ERROR } from "../rollup/refusals";
 import { pinnedBaseDecimals } from "../rollup/markets";
 import {
   loadHolds,
@@ -154,6 +159,12 @@ interface MarketBinding {
   priceDecimals: number;
   isPerp: boolean;
   quoteTokenSymbol: string;
+}
+
+/** One keyed call's result with the program's refusal number when the call was refused, so a refusal that ran nothing can be told from the rest. */
+interface KeyedAttempt<T> {
+  value: T;
+  refusal: number | null;
 }
 
 interface RestingRead {
@@ -711,111 +722,194 @@ export class RollupTradingClient implements TradingClient {
     const held = this.heldOrder(wallet, order.market);
     if (held) throw new OrderOutcomeUnknownError(held);
     return this.withSession(wallet, async (session) => {
-      const binding = this.bindings(session).get(order.market);
-      if (!binding) throw new Error(`${order.market} was not found on chain`);
-      const price = priceToChainAtoms(binding.units, order.price);
-      const size = sizeToLots(binding.units, order.size);
-      const makersListedNow = await this.makersListedNow(session, binding.numericId);
-      const secret = randomSecret();
-      const expiry = expiryFor(order.goodFor, this.now);
-      const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      const refusalContext = {
-        maxPriceAgeSeconds: session.maxPriceAgeSeconds?.get(binding.numericId),
-        isPerp: binding.isPerp,
-        side: order.side,
-      };
-      // Tracked before the send, so an order that lands after this call
-      // gave up on it still has its fills recognised as this trader's own.
-      trackSecret(this.storage, wallet.address, order.market, secret);
-      // From here the order may be on the venue: it counts as sent, and the
-      // market stays held, in storage too, until a result proves otherwise.
-      const hold: UnknownHold = {
-        market: order.market,
-        side: order.side,
-        type: order.type,
-        size: order.size,
-        price: order.price,
-        tag: bytesToHex(secret),
-        sentAtMs: this.now(),
-        orderExpiresAtMs: expiry === undefined ? null : Number(expiry) * 1000,
-      };
-      if (!this.holdOrder(wallet, hold)) {
-        untrackSecret(this.storage, wallet.address, secret);
-        throw new Error("Could not record this order on this device first, so it was not sent.");
+      const attempt = await this.runWithKeyResync(
+        session,
+        () => this.placeOnce(wallet, session, order),
+        (result) => ({ ...result, reason: KEYS_IN_USE_ELSEWHERE_REASON }),
+      );
+      if (order.reduceOnly && attempt.refusal === PROGRAM_ERROR.reduceOnlyWouldIncrease) {
+        return this.explainReduceRefusal(session, order, attempt.value);
       }
-      let result: PlaceOrderResult | null = null;
-      let placed: Placed | null = null;
-      try {
-        placed = await session.client.placeOrder(
-          binding.numericId,
-          {
-            side: SIDE_CODE[order.side],
-            orderType:
-              ORDER_TYPE_CODE[wireOrderType(order.type, makersListedNow, order.reduceOnly)],
-            price,
-            size,
-            reduceOnly: !!order.reduceOnly,
-            expiry,
-            secret,
-          },
-          { expirySeconds: DEFAULT_EXPIRY_SECONDS, pushWaitMs: RESULT_PUSH_WAIT_MS },
-        );
-      } catch (error) {
-        // OrderInvalid (refused before signing), TransactionFailed (landed
-        // and refused), or every order-key slot busy: all map to the
-        // ordinary rejected state, like a book-dependent refusal, rather
-        // than reaching the submit button's generic error path.
-        // OutcomeUnknown (sent, and may still run) becomes a pending result.
-        const mapped =
-          thrownToResult(error, refusalContext) ??
-          placeUnknownToResult(
-            error,
-            binding.units,
-            binding.sizeDecimals,
-            expiresAtMs,
-            refusalContext,
-          );
-        // The package wraps every failure after its send begins in
-        // `OutcomeUnknown` or `TransactionFailed`. Anything else it throws
-        // (a market or blockhash read, a refused signature, no connection)
-        // came before the transaction left, so nothing is held for it.
-        if (!mapped) untrackSecret(this.storage, wallet.address, secret);
-        this.releaseUnknownOutcome(wallet, order.market);
-        result = mapped ?? {
-          orderId: "",
-          tag: "",
-          status: "rejected",
-          filledSize: "0",
-          remainingSize: "0",
-          reason: NOT_SENT_REASON,
-        };
-      }
-      if (placed) {
-        // The order ran: failing to read its result back leaves the market held.
-        try {
-          result = placedToResult(
-            placed,
-            binding.units,
-            binding.sizeDecimals,
-            expiresAtMs,
-            refusalContext,
-          );
-          if (placed.outcome !== "unknown") this.emitState(session, placed.view);
-        } catch {
-          throw new OrderOutcomeUnknownError(hold);
-        }
-        this.releaseUnknownOutcome(wallet, order.market);
-      }
-      if (!result) throw new OrderOutcomeUnknownError(hold);
-      session.saveKeyCheckpoint();
-      // `tag` is the handle the witness rail uses to find this order's own
-      // fills (Terminal.tsx tracks it as `trackedTag`, matched against
-      // `OwnFillRecord.tag`). Dev mode's tag is the venue-assigned number;
-      // rollup mode has none, so the order's own secret (hex) plays the
-      // same role here - `ownFills.ts` sets the exact same string on every
-      // fill it derives for this secret.
-      return { ...result, tag: bytesToHex(secret) };
+      return attempt.value;
     });
+  }
+
+  /**
+   * Another tab or device that used an order key leaves this one holding a
+   * dead key, which the program refuses as NotOrderKey. The refusal ran
+   * nothing, so one resync from the view and one more try is safe; a second
+   * refusal means the other tab or device is still trading on the account.
+   */
+  private async runWithKeyResync<T>(
+    session: RollupSession,
+    run: () => Promise<KeyedAttempt<T>>,
+    inUseElsewhere: (value: T) => T,
+  ): Promise<KeyedAttempt<T>> {
+    let attempt = await run();
+    if (attempt.refusal !== PROGRAM_ERROR.notOrderKey) return attempt;
+    if (await this.resyncKeys(session)) attempt = await run();
+    return attempt.refusal === PROGRAM_ERROR.notOrderKey
+      ? { ...attempt, value: inUseElsewhere(attempt.value) }
+      : attempt;
+  }
+
+  private async resyncKeys(session: RollupSession): Promise<boolean> {
+    if (!session.resyncKeys) return false;
+    try {
+      session.resyncKeys(await session.client.view());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * A reduce-only order is refused when there is nothing left to reduce. The
+   * account view only changes when the program is asked to sync it, so a
+   * position closed by liquidation still shows until then: sync, read again,
+   * and say so when the position is gone or smaller than it was shown.
+   */
+  private async explainReduceRefusal(
+    session: RollupSession,
+    order: NewOrderInput,
+    refused: PlaceOrderResult,
+  ): Promise<PlaceOrderResult> {
+    const shown = this.lastViews.get(session.owner.publicKey.toBase58());
+    const before = shown
+      ? this.mapViewFrom(shown.session, shown.view).positions[order.market]
+      : null;
+    const binding = this.bindings(session).get(order.market);
+    try {
+      if (binding) {
+        try {
+          await session.client.syncView(binding.numericId, DEFAULT_EXPIRY_SECONDS);
+          session.saveKeyCheckpoint();
+        } catch {
+          // The read below still shows whatever the view holds now.
+        }
+      }
+      const view = await session.client.view();
+      this.emitState(session, view);
+      const after = this.mapViewFrom(session, view).positions[order.market];
+      const reduced =
+        !after || (before && Math.abs(Number(after.size)) < Math.abs(Number(before.size)));
+      return reduced ? { ...refused, reason: POSITION_ALREADY_REDUCED_REASON } : refused;
+    } catch {
+      return refused;
+    }
+  }
+
+  private async placeOnce(
+    wallet: WalletIdentity,
+    session: RollupSession,
+    order: NewOrderInput,
+  ): Promise<KeyedAttempt<PlaceOrderResult>> {
+    const binding = this.bindings(session).get(order.market);
+    if (!binding) throw new Error(`${order.market} was not found on chain`);
+    const price = priceToChainAtoms(binding.units, order.price);
+    const size = sizeToLots(binding.units, order.size);
+    const makersListedNow = await this.makersListedNow(session, binding.numericId);
+    const secret = randomSecret();
+    const expiry = expiryFor(order.goodFor, this.now);
+    const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
+    const refusalContext = {
+      maxPriceAgeSeconds: session.maxPriceAgeSeconds?.get(binding.numericId),
+      isPerp: binding.isPerp,
+      side: order.side,
+    };
+    // Tracked before the send, so an order that lands after this call
+    // gave up on it still has its fills recognised as this trader's own.
+    trackSecret(this.storage, wallet.address, order.market, secret);
+    // From here the order may be on the venue: it counts as sent, and the
+    // market stays held, in storage too, until a result proves otherwise.
+    const hold: UnknownHold = {
+      market: order.market,
+      side: order.side,
+      type: order.type,
+      size: order.size,
+      price: order.price,
+      tag: bytesToHex(secret),
+      sentAtMs: this.now(),
+      orderExpiresAtMs: expiry === undefined ? null : Number(expiry) * 1000,
+    };
+    if (!this.holdOrder(wallet, hold)) {
+      untrackSecret(this.storage, wallet.address, secret);
+      throw new Error("Could not record this order on this device first, so it was not sent.");
+    }
+    let result: PlaceOrderResult | null = null;
+    let placed: Placed | null = null;
+    let refusal: number | null = null;
+    try {
+      placed = await session.client.placeOrder(
+        binding.numericId,
+        {
+          side: SIDE_CODE[order.side],
+          orderType: ORDER_TYPE_CODE[wireOrderType(order.type, makersListedNow, order.reduceOnly)],
+          price,
+          size,
+          reduceOnly: !!order.reduceOnly,
+          expiry,
+          secret,
+        },
+        { expirySeconds: DEFAULT_EXPIRY_SECONDS, pushWaitMs: RESULT_PUSH_WAIT_MS },
+      );
+    } catch (error) {
+      // OrderInvalid (refused before signing), TransactionFailed (landed
+      // and refused), or every order-key slot busy: all map to the
+      // ordinary rejected state, like a book-dependent refusal, rather
+      // than reaching the submit button's generic error path.
+      // OutcomeUnknown (sent, and may still run) becomes a pending result.
+      const mapped =
+        thrownToResult(error, refusalContext) ??
+        placeUnknownToResult(
+          error,
+          binding.units,
+          binding.sizeDecimals,
+          expiresAtMs,
+          refusalContext,
+        );
+      // The package wraps every failure after its send begins in
+      // `OutcomeUnknown` or `TransactionFailed`. Anything else it throws
+      // (a market or blockhash read, a refused signature, no connection)
+      // came before the transaction left, so nothing is held for it.
+      if (!mapped) untrackSecret(this.storage, wallet.address, secret);
+      refusal = refusalNumberOf(error);
+      this.releaseUnknownOutcome(wallet, order.market);
+      result = mapped ?? {
+        orderId: "",
+        tag: "",
+        status: "rejected",
+        filledSize: "0",
+        remainingSize: "0",
+        reason: NOT_SENT_REASON,
+      };
+    }
+    if (placed) {
+      // The order ran: failing to read its result back leaves the market held.
+      try {
+        result = placedToResult(
+          placed,
+          binding.units,
+          binding.sizeDecimals,
+          expiresAtMs,
+          refusalContext,
+        );
+        if (placed.outcome !== "unknown") this.emitState(session, placed.view);
+        if (placed.outcome === "placed") refusal = resultRefusalNumber(placed.result);
+      } catch {
+        throw new OrderOutcomeUnknownError(hold);
+      }
+      this.releaseUnknownOutcome(wallet, order.market);
+    }
+    if (!result) throw new OrderOutcomeUnknownError(hold);
+    session.saveKeyCheckpoint();
+    // `tag` is the handle the witness rail uses to find this order's own
+    // fills (Terminal.tsx tracks it as `trackedTag`, matched against
+    // `OwnFillRecord.tag`). Dev mode's tag is the venue-assigned number;
+    // rollup mode has none, so the order's own secret (hex) plays the
+    // same role here - `ownFills.ts` sets the exact same string on every
+    // fill it derives for this secret.
+    return { value: { ...result, tag: bytesToHex(secret) }, refusal };
   }
 
   /** The held order for this wallet and market: from memory, else from storage (a reload, a second tab). */
@@ -855,19 +949,26 @@ export class RollupTradingClient implements TradingClient {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      try {
-        const result = await session.client.cancelOrder(
-          binding.numericId,
-          BigInt(orderId),
-          DEFAULT_EXPIRY_SECONDS,
-        );
-        session.saveKeyCheckpoint();
-        return cancelToResult(result);
-      } catch (error) {
-        const mapped = cancelErrorToResult(error, expiresAtMs);
-        if (!mapped) throw error;
-        return mapped;
-      }
+      const attempt = await this.runWithKeyResync(
+        session,
+        async (): Promise<KeyedAttempt<CancelResult>> => {
+          try {
+            const result = await session.client.cancelOrder(
+              binding.numericId,
+              BigInt(orderId),
+              DEFAULT_EXPIRY_SECONDS,
+            );
+            session.saveKeyCheckpoint();
+            return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
+          } catch (error) {
+            const mapped = cancelErrorToResult(error, expiresAtMs);
+            if (!mapped) throw error;
+            return { value: mapped, refusal: refusalNumberOf(error) };
+          }
+        },
+        (result) => ({ ...result, reason: KEYS_IN_USE_ELSEWHERE_REASON }),
+      );
+      return attempt.value;
     });
   }
 
@@ -876,15 +977,25 @@ export class RollupTradingClient implements TradingClient {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      try {
-        const result = await session.client.cancelAll(binding.numericId, DEFAULT_EXPIRY_SECONDS);
-        session.saveKeyCheckpoint();
-        return cancelToResult(result);
-      } catch (error) {
-        const mapped = cancelErrorToResult(error, expiresAtMs);
-        if (!mapped) throw error;
-        return mapped;
-      }
+      const attempt = await this.runWithKeyResync(
+        session,
+        async (): Promise<KeyedAttempt<CancelResult>> => {
+          try {
+            const result = await session.client.cancelAll(
+              binding.numericId,
+              DEFAULT_EXPIRY_SECONDS,
+            );
+            session.saveKeyCheckpoint();
+            return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
+          } catch (error) {
+            const mapped = cancelErrorToResult(error, expiresAtMs);
+            if (!mapped) throw error;
+            return { value: mapped, refusal: refusalNumberOf(error) };
+          }
+        },
+        (result) => ({ ...result, reason: KEYS_IN_USE_ELSEWHERE_REASON }),
+      );
+      return attempt.value;
     });
   }
 
@@ -900,23 +1011,32 @@ export class RollupTradingClient implements TradingClient {
         return { kind: "error", message: "No spot market to transfer into." };
       }
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      try {
-        await session.client.transferBetweenBalances(
-          !toSpot,
-          quoteIndex,
-          amountToQuoteAtoms(amount),
-          DEFAULT_EXPIRY_SECONDS,
-        );
-        session.saveKeyCheckpoint();
-        return { kind: "ok" };
-      } catch (error) {
-        const mapped = transferErrorToResult(error, expiresAtMs);
-        if (mapped) return mapped;
-        return {
-          kind: "error",
-          message: error instanceof Error ? error.message : "The venue refused the transfer.",
-        };
-      }
+      const attempt = await this.runWithKeyResync(
+        session,
+        async (): Promise<KeyedAttempt<TransferResult>> => {
+          try {
+            const result = await session.client.transferBetweenBalances(
+              !toSpot,
+              quoteIndex,
+              amountToQuoteAtoms(amount),
+              DEFAULT_EXPIRY_SECONDS,
+            );
+            session.saveKeyCheckpoint();
+            return { value: { kind: "ok" }, refusal: resultRefusalNumber(result) };
+          } catch (error) {
+            const mapped = transferErrorToResult(error, expiresAtMs);
+            return {
+              value: mapped ?? {
+                kind: "error",
+                message: error instanceof Error ? error.message : "The venue refused the transfer.",
+              },
+              refusal: refusalNumberOf(error),
+            };
+          }
+        },
+        (): TransferResult => ({ kind: "error", message: KEYS_IN_USE_ELSEWHERE_REASON }),
+      );
+      return attempt.value;
     });
   }
 
