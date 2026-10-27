@@ -24,6 +24,12 @@ export const MAX_MOVE_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(MO
 export const MAX_SETUP_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(SETUP_INSTRUCTIONS));
 export const MAX_EXIT_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(EXIT_INSTRUCTIONS));
 
+/** What the exit's steps on Solana cost their fee payer, in lamports: the transaction fee and the rent of the accounts the token program makes, and the priority fee of the token account's setup and of the exit. */
+export const SOLANA_EXIT_LAMPORTS =
+  10_000_000 + MAX_SETUP_PRIORITY_LAMPORTS + MAX_EXIT_PRIORITY_LAMPORTS;
+/** What a deposit costs its fee payer, the owner: the move into the rollup also pays the balance account's rent and the mint's escrow account, so three times the exit's, the rent of the deposit key's token account on its first deposit, and the priority fee of the move (the deposit into the seat is a rollup send and has none). */
+export const ROUND_TRIP_LAMPORTS = 35_000_000 + MAX_MOVE_PRIORITY_LAMPORTS;
+
 /**
  * `instructions` with the transaction's own compute budget in front: the unit
  * limit, then the unit price. A transaction that carries both is left alone by

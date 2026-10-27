@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hexToBytes, ownerDataKeys } from "../wallet/index";
 import { isMainnetBuild } from "../network";
-import { redactToken } from "../rollup/redact";
+import { userMessageLine } from "../userMessage";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
 import { createLatestReads } from "./latestRead";
@@ -192,8 +192,7 @@ export function useTrading(
         for (const order of next.openOrders) addOwnTag(order.tag);
       },
       (error) => {
-        if (active)
-          setAccountError(identity.address, error.message || "Could not read the account");
+        if (active) setAccountError(identity.address, userMessageLine(error));
       },
     );
     return () => {
@@ -406,8 +405,7 @@ export function useTrading(
       try {
         outcome = await client.openAccount(wallet, invite);
       } catch (error) {
-        const reason = error instanceof Error ? error.message : "The account could not be opened.";
-        outcome = { kind: "notSent", reason: redactToken(reason) };
+        outcome = { kind: "notSent", reason: userMessageLine(error) };
       }
       const nowOpen = outcome.kind === "opened" || outcome.kind === "alreadyOpen";
       if (nowOpen) statusReads.begin(wallet.address);

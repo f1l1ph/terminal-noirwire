@@ -65,6 +65,9 @@ const DEPLOYMENT: PublicDeployment = {
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 const ORDER = { market: "NSOL-PERP", side: "sell", type: "market", price: "100.00", size: "1" };
 
+/** The package says the order ran, with no result to read: the order left, so the market stays held. */
+const SENT_BUT_UNREADABLE = { outcome: "placed" } as never;
+
 function trading(placeOrder: TraderClientLike["placeOrder"], failFirstBuildWith?: Error) {
   const map = new Map<string, string>();
   const storage = {
@@ -185,23 +188,46 @@ describe("placeOrder: retries only what was never sent", () => {
     expect(final.reason).toMatch(/Landed late/);
   });
 
-  it("surfaces a post-dispatch error as an unknown outcome, one signing attempt, one secret", async () => {
-    for (const message of ["socket closed", "401 Missing token query param"]) {
+  it("surfaces an order that ran but could not be read back as an unknown outcome, one signing attempt, one secret", async () => {
+    let calls = 0;
+    const { rollup, storage, builds } = trading(async () => {
+      calls += 1;
+      return SENT_BUT_UNREADABLE;
+    });
+    const failure = await rollup
+      .placeOrder(WALLET, ORDER as never)
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(OrderOutcomeUnknownError);
+    expect((failure as Error).message).toMatch(/outcome unknown.*check open orders/i);
+    expect(calls).toBe(1);
+    expect(builds()).toBe(1);
+    const tracked = loadTrackedSecrets(storage, WALLET.address);
+    expect(tracked).toHaveLength(1);
+    expect((failure as OrderOutcomeUnknownError).secretHex).toBe(tracked[0].secretHex);
+  });
+
+  it("refuses with nothing held and nothing tracked when the package fails before it sends", async () => {
+    for (const message of [
+      "fetch failed",
+      "429 Too Many Requests",
+      "failed to get recent blockhash",
+      "401 Missing token query param",
+      "User rejected the request",
+      "market 0 does not exist",
+    ]) {
       let calls = 0;
-      const { rollup, storage, builds } = trading(async () => {
+      const { rollup, storage } = trading(async () => {
         calls += 1;
         throw new Error(message);
       });
-      const failure = await rollup
-        .placeOrder(WALLET, ORDER as never)
-        .catch((error: unknown) => error);
-      expect(failure).toBeInstanceOf(OrderOutcomeUnknownError);
-      expect((failure as Error).message).toMatch(/outcome unknown.*check open orders/i);
-      expect(calls).toBe(1);
-      expect(builds()).toBe(1);
-      const tracked = loadTrackedSecrets(storage, WALLET.address);
-      expect(tracked).toHaveLength(1);
-      expect((failure as OrderOutcomeUnknownError).secretHex).toBe(tracked[0].secretHex);
+      const result = await rollup.placeOrder(WALLET, ORDER as never);
+      expect(result.status).toBe("rejected");
+      expect(result.reason).toMatch(/^Nothing was sent\./);
+      expect(result.reason).not.toContain(message);
+      expect(await rollup.readUnknownOutcome(WALLET, ORDER.market)).toBeNull();
+      expect(loadTrackedSecrets(storage, WALLET.address)).toHaveLength(0);
+      await rollup.placeOrder(WALLET, ORDER as never);
+      expect(calls).toBe(2);
     }
   });
 
@@ -209,7 +235,7 @@ describe("placeOrder: retries only what was never sent", () => {
     let calls = 0;
     const { rollup, storage } = trading(async () => {
       calls += 1;
-      throw new Error("socket closed");
+      return SENT_BUT_UNREADABLE;
     });
     const first = await rollup.placeOrder(WALLET, ORDER as never).catch((error: unknown) => error);
     const second = await rollup.placeOrder(WALLET, ORDER as never).catch((error: unknown) => error);
@@ -226,7 +252,7 @@ describe("placeOrder: retries only what was never sent", () => {
     let calls = 0;
     const { rollup } = trading(async () => {
       calls += 1;
-      throw new Error("socket closed");
+      return SENT_BUT_UNREADABLE;
     });
     await rollup.placeOrder(WALLET, ORDER as never).catch(() => {});
     rollup.releaseUnknownOutcome(WALLET, ORDER.market);

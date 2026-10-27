@@ -26,10 +26,13 @@ export interface MarketDataState {
   candlesLoading: Record<string, boolean>;
   stats: StatsResponse | null;
   connectionState: ConnectionState;
+  /** True while the market list has failed to load and is being asked for again; cleared when it arrives. */
+  marketsUnreachable: boolean;
 }
 
 function emptyState(): MarketDataState {
   return {
+    marketsUnreachable: false,
     markets: [],
     marksByMarket: {},
     tapeByMarket: {},
@@ -68,7 +71,12 @@ export class MarketDataStore {
         marksByMarket[market.id] = { price: market.markPrice, time: market.markPriceUpdatedAtMs };
       }
     }
-    this.setState({ markets, marksByMarket });
+    this.setState({ markets, marksByMarket, marketsUnreachable: false });
+  }
+
+  setMarketsUnreachable(marketsUnreachable: boolean): void {
+    if (this.state.marketsUnreachable === marketsUnreachable) return;
+    this.setState({ marketsUnreachable });
   }
 
   /** Newest first, whichever way round the service lists them: its rollup venue answers oldest first. */

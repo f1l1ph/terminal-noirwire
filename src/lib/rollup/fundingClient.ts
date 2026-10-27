@@ -2,6 +2,7 @@ import { PublicKey, Transaction, type TransactionInstruction } from "@solana/web
 import { z } from "zod";
 import type { FundOutcome } from "../trading/types";
 import type { OwnerSigner } from "../wallet/ownerSigner";
+import { userMessageLine } from "../userMessage";
 import { signChecked } from "./ownerSend";
 import { PACKAGE_PROGRAM_ID, programInstructions, type CustodyToken } from "./sdk";
 import { amountToQuoteAtoms } from "./units";
@@ -19,6 +20,7 @@ const submitResponseSchema = z.object({
 
 const errorResponseSchema = z.object({ error: z.string() });
 
+const FUND_UNREACHABLE = "Could not reach the funding service. Try again in a moment.";
 const UNEXPECTED_TRANSACTION =
   "The service's funding transaction was not the expected one, so this wallet did not sign it.";
 
@@ -113,7 +115,7 @@ export async function openAndFund(
       body: JSON.stringify({ owner: ownerAddress, orderKeys: orderKeyPublicKeys }),
     });
   } catch {
-    return { kind: "error", message: `Could not reach the simulation service at ${simUrl}` };
+    return { kind: "error", message: FUND_UNREACHABLE };
   }
   if (!prepareResponse.ok) return await asFundOutcome(prepareResponse);
   const prepared = prepareResponseSchema.parse(await prepareResponse.json());
@@ -139,7 +141,7 @@ export async function openAndFund(
   } catch (error) {
     return {
       kind: "error",
-      message: error instanceof Error ? error.message : UNEXPECTED_TRANSACTION,
+      message: userMessageLine(error, { nothingSent: true }),
     };
   }
   const submitted = signed
@@ -154,7 +156,7 @@ export async function openAndFund(
       body: JSON.stringify({ owner: ownerAddress, transaction: submitted }),
     });
   } catch {
-    return { kind: "error", message: `Could not reach the simulation service at ${simUrl}` };
+    return { kind: "error", message: FUND_UNREACHABLE };
   }
   if (!submitResponse.ok) return await asFundOutcome(submitResponse);
   const funded = submitResponseSchema.parse(await submitResponse.json());
@@ -188,6 +190,6 @@ async function asFundOutcome(response: Response): Promise<FundOutcome> {
   }
   return {
     kind: "error",
-    message: reason ?? `the service answered ${response.status}`,
+    message: reason ?? "The funding service could not do that. Try again in a moment.",
   };
 }
