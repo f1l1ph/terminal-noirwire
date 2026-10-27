@@ -95,6 +95,8 @@ export default function FundsSection({
 
   const makeEnv = useCallback(async (): Promise<TransferEnv> => {
     if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
+    if (!ownerAuthKnown)
+      throw new Error("Still loading the account settings. Try again in a moment.");
     const rollup = await rollupReader();
     return createMainnetTransferEnv({
       signer,
@@ -105,7 +107,7 @@ export default function FundsSection({
       accountOpen: async () => accountOpenRef.current,
       ...(withdrawByKey ? { withdrawByKey } : {}),
     });
-  }, [signer, rollupReader, solana, withdrawByKey]);
+  }, [signer, rollupReader, solana, withdrawByKey, ownerAuthKnown]);
 
   const freeCollateral =
     collateral && !isAvailableUnknown(collateral)
