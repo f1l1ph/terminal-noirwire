@@ -132,3 +132,43 @@ describe("the wallet session", () => {
     expect(session.isCurrent(signer)).toBe(false);
   });
 });
+
+describe("why a session ended", () => {
+  it("names a switch and keeps the previous address", async () => {
+    const account = accountOf(Keypair.generate());
+    const fake = pendingWallet(account);
+    const { session } = await connected(fake);
+    fake.emit({ accounts: [accountOf(Keypair.generate())] });
+    expect(session.snapshot().ended).toEqual({ reason: "switched", address: account.address });
+  });
+
+  it("names a lock when the wallet reports no accounts", async () => {
+    const account = accountOf(Keypair.generate());
+    const fake = pendingWallet(account);
+    const { session } = await connected(fake);
+    fake.emit({ accounts: [] });
+    expect(session.snapshot().ended).toEqual({ reason: "locked", address: account.address });
+    expect(session.snapshot().connected).toBeNull();
+  });
+
+  it("says nothing when the user disconnects", async () => {
+    const fake = pendingWallet(accountOf(Keypair.generate()));
+    const { session } = await connected(fake);
+    await session.disconnect();
+    expect(session.snapshot().ended).toBeNull();
+  });
+
+  it("clears on dismiss and on the next connect", async () => {
+    const fake = pendingWallet(accountOf(Keypair.generate()));
+    const { session } = await connected(fake);
+    fake.emit({ accounts: [] });
+    session.dismissEnded();
+    expect(session.snapshot().ended).toBeNull();
+    fake.emit({ accounts: [] });
+    const again = session.connect(fake.wallet);
+    expect(session.snapshot().ended).toBeNull();
+    fake.finish();
+    await again;
+    expect(session.snapshot().ended).toBeNull();
+  });
+});
