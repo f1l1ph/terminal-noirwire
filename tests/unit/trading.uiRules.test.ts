@@ -114,6 +114,17 @@ describe("limitsGate: mainnet orders wait for the market account's limits", () =
     );
   });
 
+  it("pauses orders when a reread fails after a good read, even though the old limits are still held", () => {
+    // First read: a 400 bps band. The chain then changes and the reread fails.
+    expect(limitsGate(true, limits, "ready")).toBeNull();
+    expect(limitsGate(true, limits, "failed")).toBe("failed");
+    expect(limitsGate(true, limits, "loading")).toBe("loading");
+  });
+
+  it("needs an entry for the selected market, not only a finished read", () => {
+    expect(limitsGate(true, undefined, "ready")).toBe("loading");
+  });
+
   it("lets the order through once the limits are known, and never gates a test build", () => {
     expect(limitsGate(true, limits, "ready")).toBeNull();
     expect(limitsGate(false, undefined, "failed")).toBeNull();

@@ -55,15 +55,18 @@ export type LimitsState = "loading" | "ready" | "failed";
 /**
  * Why a mainnet order cannot be reviewed or sent for want of the market
  * account's own limits (its price band, minimums and ratios), or null when
- * they are known or the build is not mainnet. Without them the form could
- * pass an order the program refuses.
+ * they have been read and this market has an entry, or the build is not
+ * mainnet. Limits held over from an earlier read never count: anything but a
+ * finished read pauses orders. Without them the form could pass an order the
+ * program refuses.
  */
 export function limitsGate(
   mainnet: boolean,
   limits: unknown,
   state: LimitsState,
 ): "loading" | "failed" | null {
-  if (!mainnet || limits) return null;
+  if (!mainnet) return null;
+  if (state === "ready" && limits) return null;
   return state === "failed" ? "failed" : "loading";
 }
 

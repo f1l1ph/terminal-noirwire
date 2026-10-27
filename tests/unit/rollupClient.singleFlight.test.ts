@@ -153,6 +153,18 @@ describe("one sign-in at a time per owner", () => {
       "The exchange stopped accepting your sign-in. Sign in again to continue.",
     );
 
+    // A later subscription (a remount) must not start a session or prompt the wallet.
+    const subscribeErrors: Error[] = [];
+    const unsubscribe = rollup.subscribe(
+      WALLET,
+      () => {},
+      (error) => subscribeErrors.push(error),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(builds()).toBe(2);
+    expect(subscribeErrors.map((error) => error.name)).toEqual(["SessionRefused"]);
+    unsubscribe();
+
     await rollup.signInAgain(WALLET);
     expect(stopped).toEqual([false, true, false]);
     expect(builds()).toBe(3);

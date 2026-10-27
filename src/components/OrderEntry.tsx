@@ -54,7 +54,12 @@ import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
 import { userMessageLine } from "@/lib/userMessage";
-import { describeFieldError, markMovedMaterially, validateOrder } from "@/lib/trading/validation";
+import {
+  describeFieldError,
+  markMovedMaterially,
+  priceOutsideBand,
+  validateOrder,
+} from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
 import {
   availableLabel,
@@ -84,6 +89,9 @@ import {
   input,
   rangeBrand,
 } from "@/components/ui/styles";
+
+export const BOUND_MOVED_NOTE =
+  "The market moved, so the worst price changed. Check the new price before you confirm.";
 
 export const CLOSING_ONLY_NOTICE =
   "Price service unreachable. Only orders that close a position can be placed until it is back.";
@@ -268,6 +276,7 @@ export function OrderEntry({
   const [openAfterPrefill, setOpenAfterPrefill] = useState(false);
   const [showAck, setShowAck] = useState(false);
   const [ackedBy, setAckedBy] = useState<string | null>(null);
+  const [boundNote, setBoundNote] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const amountInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
@@ -838,38 +847,31 @@ export function OrderEntry({
     return null;
   })();
 
-  /**
-   * A close's worst price sits at the edge of the crossing band around the
-   * mark it was built from, so it is built again from the mark as it is now,
-   * just before sending. Any other order keeps the price that was reviewed.
-   */
-  function withFreshBound(draft: NewOrderInput): NewOrderInput {
-    if (!market || !mark || !limits || draft.type !== "market" || draft.reduceOnly !== true) {
-      return draft;
-    }
-    try {
-      const price = marketOrderBound({
-        markPrice: mark.price,
-        side: draft.side,
-        tick: market.tickSize,
-        priceDecimals,
-        bandBps: limits.bandBps,
-        reduceOnly: true,
-      });
-      return { ...draft, price };
-    } catch {
-      return draft;
-    }
-  }
+  // A close's worst price sits at the edge of the crossing band around the
+  // mark it was built from. It is never changed under the owner: the reviewed
+  // price is the one that is sent. If the mark has moved so that price is now
+  // outside the band, nothing is sent and the review opens again with the
+  // price built from the mark as it is now.
+  const boundLeftBand =
+    showConfirm &&
+    frozen !== null &&
+    limits !== undefined &&
+    mark !== null &&
+    frozen.draft.type === "market" &&
+    frozen.draft.reduceOnly === true &&
+    priceOutsideBand(frozen.draft.side, frozen.draft.price, mark.price, limits.bandBps);
+  useEffect(() => {
+    if (!boundLeftBand) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setShowConfirm(false);
+    setPriceOverride(null);
+    setBoundNote(BOUND_MOVED_NOTE);
+    setOpenAfterPrefill(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [boundLeftBand]);
 
-  async function runSubmit(reviewed: FrozenOrder) {
+  async function runSubmit(order: FrozenOrder) {
     if (!market || submittingRef.current) return;
-    const draftNow = withFreshBound(reviewed.draft);
-    const order: FrozenOrder = {
-      ...reviewed,
-      draft: draftNow,
-      descriptor: { ...reviewed.descriptor, price: draftNow.price },
-    };
     // The full check again, on the frozen order and the mark as it is now.
     const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed, limits);
     const marginExpired = unknownCollateralBlocks({
@@ -969,6 +971,7 @@ export function OrderEntry({
 
   function closeReview() {
     setShowConfirm(false);
+    setBoundNote(null);
     if (frozen && !frozen.priceTyped) setPriceOverride(null);
   }
 
@@ -1398,6 +1401,7 @@ export function OrderEntry({
           baseName={baseName}
           quoteUnit={quoteUnit}
           reviewInvalid={reviewInvalid}
+          note={boundNote}
           blocker={confirmBlocker}
           canSubmit={canSubmit}
           submitLabel={submitLabel}

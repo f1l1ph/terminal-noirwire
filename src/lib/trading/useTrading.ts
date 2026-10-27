@@ -281,21 +281,31 @@ export function useTrading(
     return () => setFlows((prev) => withoutOpenOutcome(prev, walletKey));
   }, [walletKey]);
 
-  /** Reads the market limits; a read that fails is recorded as failed, never left looking like one still running. */
+  const [limitsReads] = useState(createLatestReads);
+  /**
+   * Reads the market limits. What was known is dropped first and again if the
+   * read fails, so limits from an earlier session are never used while the
+   * current ones are unread; only the newest read's answer counts.
+   */
   const readLimits = useCallback(
-    (identity: WalletIdentity, current: () => boolean, onFailed?: () => void) => {
-      client.marketLimits?.(identity).then(
+    (identity: WalletIdentity, onFailed?: () => void) => {
+      if (!client.marketLimits) return;
+      const owner = identity.address;
+      const ticket = limitsReads.begin(owner);
+      const current = () => limitsReads.isCurrent(owner, ticket, currentOwnerRef.current);
+      patchFlow(owner, { limits: NO_LIMITS, limitsState: "loading" });
+      client.marketLimits(identity).then(
         (limits) => {
-          if (current()) patchFlow(identity.address, { limits, limitsState: "ready" });
+          if (current()) patchFlow(owner, { limits, limitsState: "ready" });
         },
         () => {
           if (!current()) return;
-          patchFlow(identity.address, { limitsState: "failed" });
+          patchFlow(owner, { limits: NO_LIMITS, limitsState: "failed" });
           onFailed?.();
         },
       );
     },
-    [client, patchFlow],
+    [client, patchFlow, limitsReads],
   );
 
   useEffect(() => {
@@ -319,7 +329,7 @@ export function useTrading(
       },
       () => {},
     );
-    readLimits(wallet, () => active);
+    readLimits(wallet);
     client.sessionDeployment?.(wallet).then(
       (deployment) => {
         if (active) patchFlow(wallet.address, { deployment });
@@ -343,24 +353,14 @@ export function useTrading(
   const limitsFailures = useRef(0);
   const [limitsRetry, setLimitsRetry] = useState(0);
   useEffect(() => {
-    if (limitsState !== "failed") {
-      limitsFailures.current = 0;
-      return;
-    }
+    if (limitsState === "ready") limitsFailures.current = 0;
+    if (limitsState !== "failed") return;
     if (!wallet || limitsFailures.current >= LIMITS_RETRY_ATTEMPTS) return;
-    let active = true;
     const timer = setTimeout(() => {
       limitsFailures.current += 1;
-      readLimits(
-        wallet,
-        () => active,
-        () => setLimitsRetry((count) => count + 1),
-      );
+      readLimits(wallet, () => setLimitsRetry((count) => count + 1));
     }, LIMITS_RETRY_MS);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
+    return () => clearTimeout(timer);
   }, [limitsState, limitsRetry, wallet, readLimits]);
 
   /** Runs the account check again, and with it the sign-in and key setup a failed attempt left undone. */
@@ -383,7 +383,7 @@ export function useTrading(
         },
         () => {},
       );
-      readLimits(wallet, () => currentOwnerRef.current === owner);
+      readLimits(wallet);
       client.sessionDeployment?.(wallet).then(
         (deployment) => {
           if (currentOwnerRef.current === owner) patchFlow(owner, { deployment });

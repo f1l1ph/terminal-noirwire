@@ -1,7 +1,56 @@
 import { describe, expect, it } from "vitest";
 import { marketOrderBound } from "@/lib/trading/marketBound";
+import { priceOutsideBand } from "@/lib/trading/validation";
 
 const base = { markPrice: "150.000000", tick: "0.01", priceDecimals: 2 };
+
+describe("a reviewed close bound against a mark that moves while the dialog is open", () => {
+  const reviewed = marketOrderBound({
+    markPrice: "150.00",
+    side: "buy",
+    tick: "0.01",
+    priceDecimals: 2,
+    bandBps: 400,
+    reduceOnly: true,
+  });
+
+  it("builds the reviewed bound at the band edge", () => {
+    expect(reviewed).toBe("156.00");
+  });
+
+  it("still stands after a move under 50 bps either way when it is inside the band", () => {
+    expect(priceOutsideBand("buy", reviewed, "150.60", 400)).toBe(false);
+    expect(priceOutsideBand("buy", reviewed, "150.00", 400)).toBe(false);
+  });
+
+  it("falls outside the band when the mark moves the other way, which reopens the review", () => {
+    expect(priceOutsideBand("buy", reviewed, "149.40", 400)).toBe(true);
+    const next = marketOrderBound({
+      markPrice: "149.40",
+      side: "buy",
+      tick: "0.01",
+      priceDecimals: 2,
+      bandBps: 400,
+      reduceOnly: true,
+    });
+    expect(next).toBe("155.37");
+    expect(priceOutsideBand("buy", next, "149.40", 400)).toBe(false);
+  });
+
+  it("holds for a sell the other way round", () => {
+    const sell = marketOrderBound({
+      markPrice: "150.00",
+      side: "sell",
+      tick: "0.01",
+      priceDecimals: 2,
+      bandBps: 400,
+      reduceOnly: true,
+    });
+    expect(sell).toBe("144.00");
+    expect(priceOutsideBand("sell", sell, "149.40", 400)).toBe(false);
+    expect(priceOutsideBand("sell", sell, "150.60", 400)).toBe(true);
+  });
+});
 
 describe("marketOrderBound", () => {
   it("sits 1% past the mark when no band is known", () => {

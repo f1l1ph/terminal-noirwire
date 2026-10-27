@@ -71,6 +71,26 @@ function priceDeviationError(
   return distanceError(price, markPrice) ?? crossingBandError(price, markPrice, side, bandBps);
 }
 
+/**
+ * Whether `priceText` is outside the crossing band around `markText` for
+ * this side: a price the program would refuse. False when either price
+ * cannot be read, which other checks catch.
+ */
+export function priceOutsideBand(
+  side: Side,
+  priceText: string,
+  markText: string,
+  bandBps: number,
+): boolean {
+  try {
+    return (
+      crossingBandError(toFixedPoint(priceText), toFixedPoint(markText), side, bandBps) !== null
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** The program refuses a bid more than `bandBps` above the mark and an ask more than `bandBps` below it. */
 function crossingBandError(
   price: bigint,

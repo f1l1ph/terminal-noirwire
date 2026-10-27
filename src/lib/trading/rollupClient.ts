@@ -358,6 +358,7 @@ export class RollupTradingClient implements TradingClient {
 
   /** The wallet's session, or a new one when the signer it was built for is no longer the wallet's. */
   private ensureOpen(wallet: WalletIdentity): OpenSession {
+    if (this.refused.has(wallet.address)) throw new SessionRefusedError();
     const existing = this.sessions.get(wallet.address);
     if (existing && existing.signer !== wallet.signer) return this.replaceSession(wallet, existing);
     if (existing) {
@@ -367,7 +368,7 @@ export class RollupTradingClient implements TradingClient {
     return this.openSession(wallet);
   }
 
-  private ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
+  private async ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
     return this.ensureOpen(wallet).session;
   }
 
