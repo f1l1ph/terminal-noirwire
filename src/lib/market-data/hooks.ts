@@ -2,9 +2,13 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { fetchCandles, fetchMarkets, fetchStats, fetchTape } from "./client";
+import { loadWithRetry } from "./retry";
 import { MarketSocket, type WebSocketLike } from "./socket";
 import { MarketDataStore, type MarketDataState } from "./store";
 import type { CandleInterval } from "./types";
+
+/** The tape, candles and stats are asked for this many times before the live stream is left to fill them in; the market list is asked for until it arrives. */
+const SECONDARY_ATTEMPTS = 6;
 
 export function useMarketDataState(store: MarketDataStore): MarketDataState {
   return useSyncExternalStore(
@@ -16,7 +20,8 @@ export function useMarketDataState(store: MarketDataStore): MarketDataState {
 
 /**
  * Wires one MarketDataStore to the simulation service: fetches markets,
- * tape and candles once, then keeps everything live over one websocket
+ * tape and candles (asking again, with growing waits, while the service
+ * does not answer), then keeps everything live over one websocket
  * with reconnect and backoff. sim-noirwire's stream is scoped to one
  * market per connection (`WS /v1/stream?market=`), so switching the
  * selected market closes the old socket and opens a new one; `stats`
@@ -32,11 +37,13 @@ export function useMarketDataConnection(
 ): void {
   useEffect(() => {
     let cancelled = false;
-    fetchMarkets(simUrl)
-      .then((markets) => {
-        if (!cancelled) store.setMarkets(markets);
-      })
-      .catch(() => {});
+    const isCancelled = () => cancelled;
+    void loadWithRetry(() => fetchMarkets(simUrl), {
+      isCancelled,
+      onFailure: () => store.setMarketsUnreachable(true),
+    }).then((markets) => {
+      if (markets && !cancelled) store.setMarkets(markets);
+    });
     return () => {
       cancelled = true;
     };
@@ -44,20 +51,18 @@ export function useMarketDataConnection(
 
   useEffect(() => {
     let cancelled = false;
-    fetchTape(simUrl, selectedMarket)
-      .then((tape) => {
-        if (!cancelled) store.setInitialTape(selectedMarket, tape);
-      })
-      .catch(() => {});
+    const options = { isCancelled: () => cancelled, maxAttempts: SECONDARY_ATTEMPTS };
+    void loadWithRetry(() => fetchTape(simUrl, selectedMarket), options).then((tape) => {
+      if (tape && !cancelled) store.setInitialTape(selectedMarket, tape);
+    });
     store.setCandlesLoading(selectedMarket, interval, true);
-    fetchCandles(simUrl, selectedMarket, interval)
-      .then((candles) => {
-        if (!cancelled) store.setInitialCandles(selectedMarket, interval, candles);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) store.setCandlesLoading(selectedMarket, interval, false);
-      });
+    void loadWithRetry(() => fetchCandles(simUrl, selectedMarket, interval), options).then(
+      (candles) => {
+        if (cancelled) return;
+        if (candles) store.setInitialCandles(selectedMarket, interval, candles);
+        store.setCandlesLoading(selectedMarket, interval, false);
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -65,11 +70,12 @@ export function useMarketDataConnection(
 
   useEffect(() => {
     let cancelled = false;
-    fetchStats(simUrl)
-      .then((stats) => {
-        if (!cancelled) store.setStats(stats);
-      })
-      .catch(() => {});
+    void loadWithRetry(() => fetchStats(simUrl), {
+      isCancelled: () => cancelled,
+      maxAttempts: SECONDARY_ATTEMPTS,
+    }).then((stats) => {
+      if (stats && !cancelled) store.setStats(stats);
+    });
     return () => {
       cancelled = true;
     };

@@ -345,6 +345,10 @@ describe("deposit steps", () => {
     });
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "refused", reason: "deposit-key-missing" });
+    const message = (outcome as { message: string }).message;
+    expect(message).toContain("transfer old");
+    expect(message).toMatch(/Contact support/);
+    expect(message).toMatch(/Do not deposit again/);
   });
 
   it("pays a later deposit into the same key, counting what it already held", async () => {
@@ -624,6 +628,10 @@ describe("deposit steps", () => {
     world.rollup.script({ fate: "fail" });
     const stranded = await deposit(world.env, { amount: AMOUNT });
     expect(stranded).toMatchObject({ status: "stranded" });
+    const strandedMessage = (stranded as { message: string }).message;
+    expect(strandedMessage).toMatch(/safe/);
+    expect(strandedMessage).toMatch(/do not need to send more/);
+    expect(strandedMessage).not.toMatch(/Custom|InstructionError|deposit again by hand/);
     expect(world.rollup.token(world.keyAccount)).toBe(ATOMS);
     expect(world.record()?.seat).toBeUndefined();
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });

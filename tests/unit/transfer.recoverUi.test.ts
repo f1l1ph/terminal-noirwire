@@ -54,7 +54,7 @@ describe("a stranded key-based deposit has a way out in the records", () => {
     const attention = attentionOf(record, null);
     const again = await resumeRecord(world.env, attention, 0n, flows, 6);
     expect(again).toMatchObject({ status: "stranded" });
-    expect(lineOf(again as Awaited<ReturnType<typeof deposit>>)).toMatch(/custody cap/);
+    expect(lineOf(again as Awaited<ReturnType<typeof deposit>>)).toMatch(/deposit limit/);
     expect(world.rollup.sent).toHaveLength(2);
     const [kept] = [...world.rows.values()];
     expect(actionsOf(attentionOf(kept, null))).toContain("resume");
@@ -107,7 +107,7 @@ describe("a balance left in the deposit key", () => {
     world.rollup.script({ fate: "fail" });
     const refused = await recoverDepositKey(world.env);
     expect(refused).toMatchObject({ status: "stranded" });
-    expect(lineOf(refused)).toMatch(/custody cap/);
+    expect(lineOf(refused)).toMatch(/deposit limit/);
     expect(world.rollup.sent).toHaveLength(1);
     expect(await depositKeyLeftover(world.env)).toBe(ATOMS);
     expect(world.rows.size).toBe(0);

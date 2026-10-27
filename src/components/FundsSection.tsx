@@ -11,6 +11,8 @@ import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { depositKeyLeftover } from "@/lib/transfer/leftover";
 import { loadOrCreateDepositKey } from "@/lib/transfer/depositKeyStore";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
+import { createJournal, indexedDbStorage } from "@/lib/transfer/journal";
+import { checkDepositStorage } from "@/lib/transfer/storageGuard";
 import { createMainnetTransferEnv, mainnetTransferPins } from "@/lib/transfer/mainnetEnv";
 import {
   ROUND_TRIP_LAMPORTS,
@@ -167,6 +169,7 @@ export default function FundsSection({
   const [text, setText] = useState("");
   const [phase, setPhase] = useState<Phase | null>(null);
   const [result, setResult] = useState<OutcomeLine | null>(null);
+  const [storageCaution, setStorageCaution] = useState(false);
   const [funds, setFunds] = useState<WalletFunds>({ usdc: null, lamports: null });
 
   const readFunds = useCallback(async (): Promise<WalletFunds | null> => {
@@ -208,6 +211,17 @@ export default function FundsSection({
     setResult(null);
     setPhase("preparing");
     try {
+      if (kind === "deposit") {
+        const stored = await checkDepositStorage({
+          storage: typeof navigator === "undefined" ? undefined : navigator.storage,
+          openRecords: () => createJournal(indexedDbStorage()).unfinished(owner as string),
+        });
+        setStorageCaution(stored.ok && !stored.persisted);
+        if (!stored.ok) {
+          setResult({ tone: "error", text: stored.reason });
+          return;
+        }
+      }
       const transfer = withProgress(await makeEnv(), setPhase);
       const amount = atomsText(check.atoms, QUOTE_DECIMALS);
       const outcome =
@@ -361,6 +375,12 @@ export default function FundsSection({
             {phase && (
               <p role="status" className="text-dim mt-2 text-[12px]">
                 {PHASE_LINES[phase]}
+              </p>
+            )}
+            {storageCaution && kind === "deposit" && (
+              <p role="status" className="text-warning mt-2 text-[12px]">
+                Your browser has not promised to keep this app&apos;s data. Until the deposit shows
+                Done, do not clear site data, close private windows or switch browsers.
               </p>
             )}
             {result && (
