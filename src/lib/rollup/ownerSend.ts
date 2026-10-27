@@ -103,16 +103,38 @@ export async function sendOwnerSigned(
   const latest = await connection.getLatestBlockhash("confirmed");
   const built = new Transaction({ feePayer: signer.publicKey, ...latest }).add(...instructions);
   const signed = await signChecked(signer, built);
-  const signature = await connection.sendRawTransaction(signed.serialize(), {
-    skipPreflight: true,
-  });
+  return sendRawAndConfirm(connection, signed.serialize(), { now, sleep });
+}
+
+/** A transaction that landed and failed: `err` is the status the network reported. */
+export class SentTransactionFailed extends Error {
+  readonly err: unknown;
+
+  constructor(err: unknown) {
+    super(redactToken(JSON.stringify(err)));
+    this.name = "SentTransactionFailed";
+    this.err = err;
+  }
+}
+
+/**
+ * Sends `raw` and waits for its status, asked for less and less often down to
+ * once a second. Rejects with `SentTransactionFailed` when it landed and
+ * failed, and when it was not confirmed in time.
+ */
+export async function sendRawAndConfirm(
+  connection: Connection,
+  raw: Uint8Array,
+  { now = Date.now, sleep = wait }: SendTiming = {},
+): Promise<string> {
+  const signature = await connection.sendRawTransaction(raw, { skipPreflight: true });
   const deadline = now() + CONFIRM_TIMEOUT_MS;
   let pollMs = STATUS_POLL_MS.first;
   while (now() < deadline) {
     const { value } = await connection.getSignatureStatus(signature);
     if (value && value.confirmationStatus !== "processed") {
       if (!value.err) return signature;
-      throw new Error(redactToken(JSON.stringify(value.err)));
+      throw new SentTransactionFailed(value.err);
     }
     await sleep(pollMs);
     pollMs = Math.min(STATUS_POLL_MS.slowest, pollMs * STATUS_POLL_MS.growth);

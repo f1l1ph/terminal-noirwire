@@ -14,6 +14,16 @@ const prepareResponseSchema = z.object({
   expiresAtMs: z.number().finite(),
 });
 
+/** What the service answers when it asks for a signed message instead of a signed transaction. */
+const messagePrepareResponseSchema = z.object({
+  expiresAt: z.number().int().positive(),
+  expiresAtMs: z.number().finite(),
+});
+
+/** The least time a signed message must still be good for, and the most the program lets it run ahead, with a little for clock skew. */
+const MESSAGE_MIN_VALIDITY_LEFT_MS = 15_000;
+const MESSAGE_MAX_AHEAD_MS = 125_000;
+
 const submitResponseSchema = z.object({ reference: z.string().min(1) });
 
 const errorResponseSchema = z.object({ error: z.string() });
@@ -40,6 +50,9 @@ export type OpenRefusal =
 
 export type PrepareOpenOutcome =
   { kind: "prepared"; transaction: Transaction; expiresAtMs: number } | OpenRefusal;
+
+export type PrepareOpenMessageOutcome =
+  { kind: "prepared"; expiresAt: bigint; expiresAtMs: number } | OpenRefusal;
 
 export type SubmitOpenOutcome = { kind: "submitted"; reference: string } | OpenRefusal;
 
@@ -146,6 +159,21 @@ export function isExpectedOpen(
   return null;
 }
 
+/**
+ * Why a prepared expiry must not be signed for, or null when the message has
+ * time enough left for the wallet and is not further ahead than the program
+ * allows. The expiry is the rollup's clock as the service read it; `nowMs` is
+ * this device's own clock, so the window carries a little slack for skew.
+ */
+export function isExpectedOpenWindow(expiresAtMs: number, nowMs: number): string | null {
+  if (!Number.isFinite(expiresAtMs)) return "the prepared expiry is not a time";
+  const left = expiresAtMs - nowMs;
+  if (left < MESSAGE_MIN_VALIDITY_LEFT_MS) return "the prepared request is about to expire";
+  if (left > MESSAGE_MAX_AHEAD_MS)
+    return "the prepared request expires later than the program allows";
+  return null;
+}
+
 async function errorReasonOf(response: Response): Promise<string> {
   const body = await response.json().catch(() => null);
   const parsed = errorResponseSchema.safeParse(body);
@@ -235,6 +263,73 @@ export async function prepareOpen(
   } catch {
     return { kind: "badAnswer" };
   }
+}
+
+/**
+ * Step one on a deployment that opens accounts from a signed message: the same
+ * request as `prepareOpen`, answered with the expiry the owner's message must
+ * carry (the rollup's clock, unix seconds). Nothing comes back to sign: the
+ * caller builds the message itself.
+ */
+export async function prepareOpenMessage(
+  {
+    simUrl,
+    owner,
+    orderKeys,
+    invite,
+  }: { simUrl: string; owner: string; orderKeys: string[]; invite?: string },
+  fetchFn: typeof fetch = fetch,
+): Promise<PrepareOpenMessageOutcome> {
+  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "notInvited" };
+  const response = await post(
+    simUrl,
+    "/v1/open/prepare",
+    invite === undefined ? { owner, orderKeys } : { owner, orderKeys, invite },
+    fetchFn,
+  );
+  if (!response) return { kind: "unreachable" };
+  if (!response.ok) {
+    return openRefusalOf(response.status, await errorReasonOf(response), "prepare");
+  }
+  const parsed = messagePrepareResponseSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) return { kind: "badAnswer" };
+  return {
+    kind: "prepared",
+    expiresAt: BigInt(parsed.data.expiresAt),
+    expiresAtMs: parsed.data.expiresAtMs,
+  };
+}
+
+/**
+ * Step two on a deployment that opens accounts from a signed message
+ * (`POST /v1/open/submit`): the owner's 64-byte signature and the expiry it was
+ * made for. The service rebuilds the message, checks the signature and sends
+ * the open itself. An unanswered request may still have reached the rollup, so
+ * it reads as `mayBeOpen`.
+ */
+export async function submitOpenMessage(
+  {
+    simUrl,
+    owner,
+    signature,
+    expiresAt,
+  }: { simUrl: string; owner: string; signature: Uint8Array; expiresAt: bigint },
+  fetchFn: typeof fetch = fetch,
+): Promise<SubmitOpenOutcome> {
+  const response = await post(
+    simUrl,
+    "/v1/open/submit",
+    { owner, signature: Buffer.from(signature).toString("base64"), expiresAt: Number(expiresAt) },
+    fetchFn,
+  );
+  if (!response) return { kind: "mayBeOpen" };
+  if (!response.ok) {
+    return openRefusalOf(response.status, await errorReasonOf(response), "submit");
+  }
+  const parsed = submitResponseSchema.safeParse(await response.json().catch(() => null));
+  return parsed.success
+    ? { kind: "submitted", reference: parsed.data.reference }
+    : { kind: "mayBeOpen" };
 }
 
 /**

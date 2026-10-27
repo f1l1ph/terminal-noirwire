@@ -1,13 +1,24 @@
 import { PublicKey, type Connection } from "@solana/web3.js";
 import { browserLocalStorage, bytesToHex, type KeyValueStore } from "../wallet/index";
 import { signChecked, SignedTransactionRefused } from "../rollup/ownerSend";
-import { isExpectedOpen, prepareOpen, submitOpen, type OpenRefusal } from "../rollup/openClient";
+import {
+  isExpectedOpen,
+  isExpectedOpenWindow,
+  prepareOpen,
+  prepareOpenMessage,
+  submitOpen,
+  submitOpenMessage,
+  type OpenRefusal,
+} from "../rollup/openClient";
+import { messageDeclined, OwnerActionRefused, signOwnerAction } from "../rollup/ownerMessages";
 import { orderSeedPersisted } from "../rollup/orderSeedStore";
 import type { OrderKeyStatus } from "../rollup/orderKeySetup";
 import { redactToken, scrubError } from "../rollup/redact";
 import { TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
 import {
+  fetchDeployment,
   quoteSymbolOf,
+  usesOwnerMessages,
   type DeploymentOverrides,
   type PublicDeployment,
 } from "../rollup/deployment";
@@ -46,10 +57,13 @@ import {
 import {
   connectionTo,
   ORDER_TYPE_CODE,
+  ownerActionText,
   programAddresses,
   SIDE_CODE,
   randomSecret,
+  TransactionFailed,
   VIEW_NOT_READABLE_MESSAGE,
+  WithdrawalUnknown,
   type Placed,
   type View,
 } from "../rollup/sdk";
@@ -73,11 +87,13 @@ import type {
   Balance,
   CancelResult,
   FundOutcome,
+  KeyWithdrawal,
   MarketSettingsLookup,
   NewOrderInput,
   OpenAccountOutcome,
   OpenOrder,
   OrderKeyState,
+  OwnerAuth,
   PlaceOrderResult,
   Position,
   PrivacyCheck,
@@ -521,6 +537,46 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
+  async ownerAuth(): Promise<OwnerAuth> {
+    const deployment = await fetchDeployment(
+      this.options.simUrl,
+      this.options.overrides,
+      this.fetchFn,
+    );
+    return usesOwnerMessages(deployment) ? "message" : "transaction";
+  }
+
+  /**
+   * The seat's free collateral to the owner's own token account, signed by one
+   * of this device's order keys. A refusal and a packet too large for the
+   * exchange's market count both leave the key live and move nothing; a send
+   * the client stopped waiting for is settled by the view, and one that an
+   * owner key replacement made unprovable is reported as such, never as done.
+   */
+  async withdrawByKey(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal> {
+    return this.withSession(wallet, async (session): Promise<KeyWithdrawal> => {
+      try {
+        if (!session.client.withdrawByKey) {
+          throw new Error("This session cannot withdraw by order key");
+        }
+        await session.client.withdrawByKey(session.collateralToken, atoms);
+      } catch (error) {
+        if (error instanceof TransactionFailed) return { kind: "refused", code: error.code };
+        if (error instanceof WithdrawalUnknown) {
+          const settled = await error.settled;
+          if (settled === null) return { kind: "didNotRun" };
+          if ("undetermined" in settled) return { kind: "undetermined" };
+        } else if (error instanceof Error && /transaction too large/i.test(error.message)) {
+          return { kind: "tooLarge" };
+        } else {
+          throw error;
+        }
+      }
+      session.saveKeyCheckpoint();
+      return { kind: "withdrawn" };
+    });
+  }
+
   async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
     try {
       return await this.withSession(wallet, (session) => this.viewStatus(session));
@@ -581,7 +637,7 @@ export class RollupTradingClient implements TradingClient {
     } catch (error) {
       scrubError(error);
       const reason =
-        error instanceof SignedTransactionRefused
+        error instanceof SignedTransactionRefused || error instanceof OwnerActionRefused
           ? error.reason
           : error instanceof Error
             ? error.message
@@ -610,6 +666,7 @@ export class RollupTradingClient implements TradingClient {
     if (before === "unknown") {
       throw new Error("Your account could not be read, so it was not opened. Try again shortly.");
     }
+    if (usesOwnerMessages(session.deployment)) return this.openByMessage(wallet, session, invite);
     const owner = session.owner.publicKey;
     const orderKeys = session.orderKeyPublicKeys.map((key) => new PublicKey(key));
     const prepared = await prepareOpen(
@@ -634,6 +691,59 @@ export class RollupTradingClient implements TradingClient {
     const signed = await signChecked(session.owner, prepared.transaction);
     const submitted = await submitOpen(
       { simUrl: this.options.simUrl, owner: owner.toBase58(), signedTx: signed },
+      this.fetchFn,
+    );
+    if (submitted.kind !== "submitted") return this.afterRefusal(wallet, submitted);
+    markAccountOpened(this.storage, wallet.address);
+    await this.settledStatus(wallet);
+    return { kind: "opened", reference: submitted.reference };
+  }
+
+  /**
+   * Opens the account by a message the owner signs, on a deployment that says
+   * so. The service answers only with the expiry; the text is built here from
+   * this session's own owner, its device order keys and the pinned program,
+   * never from anything the service sends, and the wallet is never shown a
+   * transaction.
+   */
+  private async openByMessage(
+    wallet: WalletIdentity,
+    session: RollupSession,
+    invite?: string,
+  ): Promise<OpenAccountOutcome> {
+    const owner = session.owner.publicKey;
+    const orderKeys = session.orderKeyPublicKeys.map((key) => new PublicKey(key));
+    const prepared = await prepareOpenMessage(
+      {
+        simUrl: this.options.simUrl,
+        owner: owner.toBase58(),
+        orderKeys: session.orderKeyPublicKeys,
+        invite,
+      },
+      this.fetchFn,
+    );
+    if (prepared.kind !== "prepared") return this.afterRefusal(wallet, prepared);
+    const refusal = isExpectedOpenWindow(prepared.expiresAtMs, this.now());
+    if (refusal) return { kind: "notSent", reason: refusal };
+    const programId = trustedProgramId(this.options.overrides);
+    let signed: Awaited<ReturnType<typeof signOwnerAction>>;
+    try {
+      signed = await signOwnerAction(
+        session.owner,
+        ownerActionText("open", programId, owner, orderKeys, prepared.expiresAt),
+        { action: "open", programId, keys: orderKeys, expiresAt: prepared.expiresAt },
+      );
+    } catch (error) {
+      if (error instanceof OwnerActionRefused || !messageDeclined(error)) throw error;
+      return { kind: "notSent", reason: "You declined the message" };
+    }
+    const submitted = await submitOpenMessage(
+      {
+        simUrl: this.options.simUrl,
+        owner: owner.toBase58(),
+        signature: signed.signature,
+        expiresAt: prepared.expiresAt,
+      },
       this.fetchFn,
     );
     if (submitted.kind !== "submitted") return this.afterRefusal(wallet, submitted);

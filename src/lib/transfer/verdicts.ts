@@ -28,8 +28,12 @@ export interface SentRecord {
 /** The seat's withdrawal into the rollup, with the owner's rollup balance before it, in atoms as decimal text. */
 export type SeatSend = SentRecord & {
   before: string;
-  /** Set when the deposit key, not the owner, signed it: its status is read through the deposit key's own rollup session. */
-  signer?: "deposit-key";
+  /**
+   * Set when the deposit key, not the owner, signed it: its status is read through the deposit key's own rollup session.
+   * `order-key` is a withdrawal an order key signed through the client: it has no signature to look up, so its record
+   * is judged by what the client proved and says nothing else.
+   */
+  signer?: "deposit-key" | "order-key";
   /** The rollup transaction's signature and the last block height of its blockhash, written before it was sent, so a later read can prove it can no longer land. */
   signature?: string;
   lastValidBlockHeight?: number;

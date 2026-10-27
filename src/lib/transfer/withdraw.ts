@@ -5,12 +5,14 @@ import {
   withdrawSpl,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Transaction } from "@solana/web3.js";
+import type { KeyWithdrawal } from "../trading/types";
 import { withComputeBudget } from "./computeBudget";
 import type { OperationRecord } from "./journal";
 import {
   POLL_MS,
   SHOWN_IN_ROLLUP_WITHIN_MS,
   SOLANA_ARRIVES_WITHIN_MS,
+  ORDER_KEY_WITHDRAWAL_UNPROVEN,
   SOLANA_EXIT_LAMPORTS,
   balanceAccount,
   beginOperation,
@@ -155,6 +157,72 @@ async function balanceInRollup(
 }
 
 /**
+ * The seat's withdrawal signed by an order key, with no wallet signature. The
+ * trading client builds, signs and sends it, so the record is written before
+ * the call and carries no signature to look up: it is closed by what the
+ * client proves, and a send whose outcome is not proven stays on record and
+ * is never sent again. A refusal leaves the key live and moves nothing, and a
+ * stale mark is waited out as for a wallet-signed withdrawal.
+ */
+async function seatWithdrawnByKey(
+  env: TransferEnv,
+  withdrawByKey: (atoms: bigint) => Promise<KeyWithdrawal>,
+  id: string,
+  atoms: bigint,
+  held: bigint,
+): Promise<Stopped | null> {
+  const owner = env.owner.toBase58();
+  await env.journal.recordSeatSend(owner, id, {
+    state: "pending",
+    at: new Date(env.clock.now()).toISOString(),
+    id: env.newId(),
+    before: held.toString(),
+    signer: "order-key",
+  });
+  const deadline = env.clock.now() + FRESH_MARK_WITHIN_MS;
+  for (;;) {
+    let result: KeyWithdrawal;
+    try {
+      result = await withdrawByKey(atoms);
+    } catch {
+      return waiting(id, ORDER_KEY_WITHDRAWAL_UNPROVEN);
+    }
+    if (result.kind === "withdrawn") {
+      await env.journal.markSeatLanded(owner, id);
+      return null;
+    }
+    if (result.kind === "undetermined") return waiting(id, ORDER_KEY_WITHDRAWAL_UNPROVEN);
+    if (result.kind === "refused" && result.code === STALE_PRICE && env.clock.now() <= deadline) {
+      await env.clock.sleep(FRESH_MARK_POLL_MS);
+      continue;
+    }
+    await env.journal.clearSeatSend(owner, id);
+    switch (result.kind) {
+      case "didNotRun":
+        return refuse(
+          "rollup-refused",
+          "The withdrawal did not run and can no longer. Nothing moved.",
+        );
+      case "tooLarge":
+        return refuse(
+          "rollup-refused",
+          "This exchange has more markets than a withdrawal can name in one message, so it cannot be made from here. Nothing was sent.",
+        );
+      default:
+        return result.code === STALE_PRICE
+          ? refuse(
+              "stale-price",
+              "The price is stale and no fresh one arrived in time, so the withdrawal is not made. Try again in a few minutes. Nothing moved.",
+            )
+          : refuse(
+              "rollup-refused",
+              "The withdrawal was refused: the seat may hold less than that free of margin, or the market may refuse withdrawals now. Nothing moved.",
+            );
+    }
+  }
+}
+
+/**
  * The seat's withdrawal into the owner's token account in the rollup, once:
  * not again where the record shows it landed or the rollup shows the balance
  * rose by it, and not again until an earlier send is proven unable to land.
@@ -184,6 +252,7 @@ async function seatWithdrawn(
   if (missing) return missing;
   const held = await readTokenBalance(env.rollup, wallet);
   if (held === null) return waiting(id, "The rollup does not show the owner's token account.");
+  if (env.withdrawByKey) return seatWithdrawnByKey(env, env.withdrawByKey, id, atoms, held);
   const marketIds = await env.exchange.perpMarketIds();
   const withdrawal = withdrawInstruction(env, atoms, marketIds);
   const deadline = env.clock.now() + FRESH_MARK_WITHIN_MS;

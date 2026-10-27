@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { env } from "@/lib/env";
 import { formatMoney } from "@/lib/format";
 import { isAvailableUnknown, transferableAmount } from "@/lib/trading/balanceDisplay";
-import type { Balance, WalletIdentity } from "@/lib/trading/types";
+import type { Balance, KeyWithdrawal, WalletIdentity } from "@/lib/trading/types";
 import { atomsText, balanceAtoms, checkAmount, type AmountCheck } from "@/lib/transfer/amount";
 import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { depositKeyLeftover } from "@/lib/transfer/leftover";
@@ -68,12 +68,18 @@ const AMOUNT_MESSAGES: Record<
 export default function FundsSection({
   identity,
   rollupReader,
+  withdrawByKey,
+  ownerAuthKnown,
   accountOpen,
   collateral,
   onSettled,
 }: {
   identity: WalletIdentity | null;
   rollupReader: (() => Promise<Connection>) | null;
+  /** Given only where the deployment takes the owner's consent as a signed message; the seat's withdrawal then needs no wallet signature. */
+  withdrawByKey: ((atoms: bigint) => Promise<KeyWithdrawal>) | null;
+  /** False until that is known, so a withdrawal cannot start on the wrong path. */
+  ownerAuthKnown: boolean;
   accountOpen: boolean;
   collateral: Balance | null;
   /** Called when a transfer finished, so the account is read again. */
@@ -89,6 +95,8 @@ export default function FundsSection({
 
   const makeEnv = useCallback(async (): Promise<TransferEnv> => {
     if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
+    if (!ownerAuthKnown)
+      throw new Error("Still loading the account settings. Try again in a moment.");
     const rollup = await rollupReader();
     return createMainnetTransferEnv({
       signer,
@@ -97,8 +105,9 @@ export default function FundsSection({
       rollupEndpoint: rollup.rpcEndpoint,
       depositKey: await loadOrCreateDepositKey(signer.publicKey.toBase58()),
       accountOpen: async () => accountOpenRef.current,
+      ...(withdrawByKey ? { withdrawByKey } : {}),
     });
-  }, [signer, rollupReader, solana]);
+  }, [signer, rollupReader, solana, withdrawByKey, ownerAuthKnown]);
 
   const freeCollateral =
     collateral && !isAvailableUnknown(collateral)
@@ -340,14 +349,14 @@ export default function FundsSection({
                 <p className="text-faint mt-1 text-[11px]">
                   {kind === "deposit"
                     ? `Your wallet will ask you to approve one transaction, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
-                    : `Your wallet will ask you to approve two or three transactions, and you pay about ${solText(feeLamports)} in network fees. A withdrawal can wait a few minutes for fresh prices; keep this page open.`}
+                    : `Your wallet will ask you to approve ${withdrawByKey ? "one or two" : "two or three"} transactions, and you pay about ${solText(feeLamports)} in network fees. A withdrawal can wait a few minutes for fresh prices; keep this page open.`}
                 </p>
               </div>
             ) : (
               <p className="text-faint mt-1 text-[11px]">
                 {kind === "deposit"
                   ? "Your wallet asks you to approve one transaction."
-                  : "Your wallet asks you to approve two or three transactions. A withdrawal can wait a few minutes for fresh prices."}
+                  : `Your wallet asks you to approve ${withdrawByKey ? "one or two" : "two or three"} transactions. A withdrawal can wait a few minutes for fresh prices.`}
               </p>
             )}
             <div className="mt-2 flex gap-2">
@@ -365,7 +374,13 @@ export default function FundsSection({
               <button
                 type="button"
                 className={`${btnPrimary} flex-1 text-[12px]`}
-                disabled={busy || blocked || !check.ok || !accountOpen}
+                disabled={
+                  busy ||
+                  blocked ||
+                  !check.ok ||
+                  !accountOpen ||
+                  (kind === "withdraw" && !ownerAuthKnown)
+                }
                 onClick={() => void submit()}
               >
                 {kind === "deposit" ? "Deposit" : "Withdraw"}

@@ -14,7 +14,12 @@ import {
   type SetupStep,
 } from "@/lib/trading/openCopy";
 import { SETTLE_WAIT_MS } from "@/lib/rollup/orderKeySetup";
-import type { AccountStatus, OpenAccountOutcome, OrderKeyState } from "@/lib/trading/types";
+import type {
+  AccountStatus,
+  OpenAccountOutcome,
+  OrderKeyState,
+  OwnerAuth,
+} from "@/lib/trading/types";
 import { useWalletLamports } from "@/components/hooks/useWalletLamports";
 import { btnGhost, btnPrimary } from "@/components/ui/styles";
 import { openWalletMenu } from "@/components/WalletWidget";
@@ -43,6 +48,7 @@ export function AccountSetup({
   onRecheck,
   keys,
   now,
+  ownerAuth = "transaction",
   funded = null,
   depositsOpen,
 }: {
@@ -57,6 +63,8 @@ export function AccountSetup({
   onRecheck: () => Promise<void>;
   keys: OrderKeyState | null;
   now: number;
+  /** How the deployment has the owner consent to opening: by a message, or by a transaction in the wallet. */
+  ownerAuth?: OwnerAuth;
   /** Whether the trading account holds USDC; null while that is not known. */
   funded?: boolean | null;
   /** Whether this build offers deposits (whether the Funds section renders). */
@@ -139,8 +147,9 @@ export function AccountSetup({
         return (
           <>
             <p>
-              Creates your private trading account. Your wallet asks you to approve one transaction;
-              no funds move.
+              {ownerAuth === "message"
+                ? "Sign a message to open your account. No transaction is sent from your wallet."
+                : "Creates your private trading account. Your wallet asks you to approve one transaction; no funds move."}
             </p>
             {(needsInvite || notice?.tone === "wait") && status !== "open" && (
               <button
