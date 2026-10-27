@@ -21,6 +21,7 @@ import {
   underLock,
   waiting,
   walletAccount,
+  withBroadcastError,
   type Intent,
   type Refused,
   type Stopped,
@@ -121,7 +122,7 @@ async function moveToDepositKey(
   id: string,
   atoms: bigint,
   wallet: bigint,
-): Promise<Refused | null> {
+): Promise<Refused | { broadcastError: string | null }> {
   const key = env.depositKey.publicKey;
   const first = !(await env.solana.getAccountInfo(depositKeyBalance(key, env.mint), "confirmed"));
   const vaultMissing = !(await env.solana.getAccountInfo(deriveVault(env.mint)[0], "confirmed"));
@@ -163,7 +164,7 @@ async function moveToDepositKey(
     before: wallet,
     moved: atoms,
   });
-  return "status" in sent ? sent : null;
+  return "status" in sent ? sent : { broadcastError: sent.broadcastError };
 }
 
 /**
@@ -256,7 +257,10 @@ async function sendAndSettle(
   if (result.state === "unconfirmed") {
     return waiting(
       id,
-      `The deposit into the seat was sent but its status did not show in time. It is judged from the rollup's status next time; it is never sent again.`,
+      withBroadcastError(
+        `The deposit into the seat was sent but its status did not show in time. It is judged from the rollup's status next time; it is never sent again.`,
+        result.broadcastError,
+      ),
     );
   }
   await env.journal.markSeatLanded(owner, id);
@@ -326,13 +330,18 @@ export function deposit(env: TransferEnv, input: DepositInput): Promise<DepositO
         "This transfer sent nothing and is gone, so it is not carried on. Nothing was sent.",
       );
     }
+    let broadcastError: string | null = null;
     if (!begun.record) {
       const gate = await depositRefusal(env, atoms);
       if ("status" in gate) return gate;
-      const refused = await moveToDepositKey(env, begun.id, atoms, gate.wallet);
-      if (refused) return refused;
+      const moved = await moveToDepositKey(env, begun.id, atoms, gate.wallet);
+      if ("status" in moved) return moved;
+      broadcastError = moved.broadcastError;
     }
-    return carryOn(env, begun.id, atoms, input.answer);
+    const outcome = await carryOn(env, begun.id, atoms, input.answer);
+    return outcome.status === "waiting" || outcome.status === "unknown"
+      ? { ...outcome, message: withBroadcastError(outcome.message, broadcastError) }
+      : outcome;
   });
 }
 

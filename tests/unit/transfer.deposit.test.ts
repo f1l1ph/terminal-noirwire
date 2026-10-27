@@ -134,6 +134,49 @@ describe("deposit steps", () => {
     ]);
   });
 
+  it("has the wallet sign first and the deposit key sign the message the wallet returned", async () => {
+    const world = makeWorld();
+    landing(world);
+    const keySigned: boolean[] = [];
+    const walletSign = world.env.signChecked;
+    world.env.signChecked = async (transaction, shape) => {
+      keySigned.push(
+        transaction.signatures.some(
+          (entry) => entry.publicKey.equals(world.depositKey.publicKey) && entry.signature,
+        ),
+      );
+      return walletSign(transaction, shape);
+    };
+    await deposit(world.env, { amount: AMOUNT });
+    expect(keySigned).toEqual([false]);
+    const [raw] = world.solana.rawSent;
+    const sent = Transaction.from(raw);
+    expect(sent.verifySignatures()).toBe(true);
+    expect(sent.signatures.filter((entry) => entry.signature !== null)).toHaveLength(2);
+  });
+
+  it("does not let the deposit key sign when the wallet is refused", async () => {
+    const world = makeWorld();
+    world.env.signChecked = async () => {
+      throw new Error("Refusing to sign: your wallet changed the transaction");
+    };
+    await expect(deposit(world.env, { amount: AMOUNT })).rejects.toThrow(/Refusing to sign/);
+    expect(world.solana.rawSent).toEqual([]);
+    expect(world.rows.size).toBe(0);
+  });
+
+  it("says why the first broadcast failed while it keeps waiting, without any address", async () => {
+    const world = makeWorld();
+    world.solana.sendRawTransaction = async () => {
+      throw new Error("fetch failed for https://rollup.example/rpc?token=secret\nstack");
+    };
+    const outcome = await deposit(world.env, { amount: AMOUNT });
+    expect(outcome).toMatchObject({ status: "waiting" });
+    const message = (outcome as { message: string }).message;
+    expect(message).toMatch(/The network answered the send with: fetch failed for/);
+    expect(message).not.toMatch(/https?:|token=|secret/);
+  });
+
   it("asks the wallet for one signature only, and a mainnet one", async () => {
     const world = makeWorld();
     landing(world);

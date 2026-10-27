@@ -8,6 +8,7 @@ import {
 import type { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { Transaction } from "@solana/web3.js";
 import { depositKeyAccount, depositKeyBalance } from "./depositKey";
+import { redactToken } from "../rollup/redact";
 import { programAddresses, programInstructions, type CustodyToken } from "../rollup/sdk";
 import {
   MAX_EXIT_PRIORITY_LAMPORTS,
@@ -415,7 +416,7 @@ export async function sendJournaled(
     before: bigint;
     moved: bigint;
   },
-): Promise<Refused | { signature: string }> {
+): Promise<Refused | { signature: string; broadcastError: string | null }> {
   const { blockhash, lastValidBlockHeight } = await freshBlockhash(env.solana);
   const transaction = new Transaction({
     feePayer: env.owner,
@@ -439,9 +440,11 @@ export async function sendJournaled(
       `Solana would refuse the transaction with ${failure}. Nothing was sent.`,
     );
   }
-  if (plan.cosigner) transaction.partialSign(plan.cosigner);
-  const raw = (await env.signChecked(transaction, plan.shape)).serialize();
+  const signed = await env.signChecked(transaction, plan.shape);
+  if (plan.cosigner) signed.partialSign(plan.cosigner);
+  const raw = signed.serialize();
   const owner = env.owner.toBase58();
+  let broadcastError: string | null = null;
   const { signature } = await recordThenBroadcast({
     journal: env.journal,
     owner,
@@ -457,9 +460,13 @@ export async function sendJournaled(
     before: plan.before.toString(),
     moved: plan.moved.toString(),
     signedTx: raw,
-    broadcast: (signed) =>
-      env.solana.sendRawTransaction(signed, { preflightCommitment: "confirmed" }).catch(() => null),
+    broadcast: (bytes) =>
+      env.solana.sendRawTransaction(bytes, { preflightCommitment: "confirmed" }).catch((error) => {
+        broadcastError = broadcastErrorText(error);
+        return null;
+      }),
   });
+  if (broadcastError) console.warn("The first broadcast of a transfer failed:", broadcastError);
   const result = await confirmSignature(env.solana, signature, {
     clock: env.clock,
     timeoutMs: SOLANA_ARRIVES_WITHIN_MS,
@@ -467,8 +474,22 @@ export async function sendJournaled(
     rebroadcast: raw,
   });
   if (result.seen) await env.journal.markSeen(owner, plan.id, signature, result.seen);
-  return { signature };
+  return { signature, broadcastError };
 }
+
+/**
+ * What a failed broadcast says, as one short line safe to show: the first line
+ * of the error, with any sign-in token and every address removed.
+ */
+export function broadcastErrorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  const line = redactToken(text.split("\n")[0]).replace(/\bhttps?:\/\/\S+/g, "[address]");
+  return line.length > 200 ? `${line.slice(0, 200)}...` : line;
+}
+
+/** `message` with the broadcast error the network gave, when there was one, so a wait is not silent about why. */
+export const withBroadcastError = (message: string, error: string | null | undefined) =>
+  error ? `${message} The network answered the send with: ${error}.` : message;
 
 /**
  * Judges each send an earlier run wrote down before another is built: a send
@@ -760,8 +781,16 @@ export async function sentOnRollup(
   env: TransferEnv,
   sent: { raw: Uint8Array; signature: string },
   rollup: SolanaRpc = env.rollup,
-): Promise<{ state: "confirmed" } | { state: "failed"; error: string } | { state: "unconfirmed" }> {
-  await rollup.sendRawTransaction(sent.raw, { skipPreflight: true }).catch(() => null);
+): Promise<
+  | { state: "confirmed" }
+  | { state: "failed"; error: string }
+  | { state: "unconfirmed"; broadcastError: string | null }
+> {
+  let broadcastError: string | null = null;
+  await rollup.sendRawTransaction(sent.raw, { skipPreflight: true }).catch((error) => {
+    broadcastError = broadcastErrorText(error);
+  });
+  if (broadcastError) console.warn("The broadcast of a rollup transfer failed:", broadcastError);
   const result = await confirmSignature(rollup, sent.signature, {
     clock: env.clock,
     timeoutMs: ROLLUP_CONFIRMS_WITHIN_MS,
@@ -770,5 +799,5 @@ export async function sentOnRollup(
   if (result.state === "failed" && result.seen === "finalized") {
     return { state: "failed", error: result.error };
   }
-  return { state: "unconfirmed" };
+  return { state: "unconfirmed", broadcastError };
 }

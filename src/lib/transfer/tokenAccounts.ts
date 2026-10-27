@@ -1,3 +1,4 @@
+import "../bufferBigInt";
 import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 
 const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
