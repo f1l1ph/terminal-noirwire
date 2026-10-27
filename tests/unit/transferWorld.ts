@@ -4,6 +4,7 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Keypair, PublicKey, Transaction, type AccountInfo } from "@solana/web3.js";
 import { programAddresses } from "@/lib/rollup/sdk";
+import { depositKeyAccount, depositKeyBalance } from "@/lib/transfer/depositKey";
 import { createJournal, type JournalStorage, type OperationRecord } from "@/lib/transfer/journal";
 import { tryLockOwner, type LockManagerLike } from "@/lib/transfer/lock";
 import {
@@ -47,6 +48,7 @@ export class FakeRpc implements SolanaRpc {
   height = 1_000;
   lamports = 1_000_000_000;
   sent: string[] = [];
+  rawSent: Uint8Array[] = [];
   simulations = 0;
   simulateAnswers: unknown[] = [];
   private plans: Plan[] = [];
@@ -97,6 +99,7 @@ export class FakeRpc implements SolanaRpc {
     const signature = signatureOf(raw);
     this.events.push(`broadcast:${this.name}`);
     this.sent.push(signature);
+    this.rawSent.push(raw);
     const plan = this.plans.shift() ?? { fate: "land" };
     if (plan.fate === "land" || plan.fate === "land-lost") {
       plan.effect?.();
@@ -158,6 +161,7 @@ export function browserLocks(): LockManagerLike {
 export function makeWorld() {
   const events: string[] = [];
   const keypair = Keypair.generate();
+  const depositKey = Keypair.generate();
   const clock = {
     t: 1_700_000_000_000,
     now() {
@@ -218,9 +222,11 @@ export function makeWorld() {
     },
     journal,
     lock: (owner) => tryLockOwner(owner, locks),
+    depositKey,
+    depositRollup: async () => rollup,
     signChecked: async (transaction) => {
       events.push("sign");
-      transaction.sign(keypair);
+      transaction.partialSign(keypair);
       signed.push(transaction);
       return transaction;
     },
@@ -230,11 +236,35 @@ export function makeWorld() {
 
   const wallet = walletAccount(env);
   const balance = balanceAccount(env);
+  const keyAccount = depositKeyAccount(depositKey.publicKey, pins.mint);
+  const keyBalance = depositKeyBalance(depositKey.publicKey, pins.mint);
+  const delegateTo = (
+    account: PublicKey,
+    tokens: PublicKey,
+    amount: bigint,
+    validator: PublicKey,
+  ) => {
+    solana.accounts.set(account.toBase58(), tokenAccount(0n));
+    const data = Buffer.alloc(80);
+    validator.toBuffer().copy(data, 8);
+    solana.accounts.set(delegationRecordPdaFromDelegatedAccount(account).toBase58(), {
+      data,
+      executable: false,
+      lamports: 1,
+      owner: DELEGATION_PROGRAM_ID,
+      rentEpoch: 0,
+    });
+    rollup.setToken(tokens, amount);
+  };
   const world = {
     env,
     pins,
     token,
     keypair,
+    depositKey,
+    /** The deposit key's token account, and its balance account that is delegated to the rollup. */
+    keyAccount,
+    keyBalance,
     events,
     clock,
     solana,
@@ -262,28 +292,22 @@ export function makeWorld() {
     },
     /** The owner's balance is delegated to the rollup and holds `amount` there. */
     delegate(amount: bigint, validator = env.validator) {
-      solana.accounts.set(balance.toBase58(), tokenAccount(0n));
-      const data = Buffer.alloc(80);
-      validator.toBuffer().copy(data, 8);
-      solana.accounts.set(delegationRecordPdaFromDelegatedAccount(balance).toBase58(), {
-        data,
-        executable: false,
-        lamports: 1,
-        owner: DELEGATION_PROGRAM_ID,
-        rentEpoch: 0,
-      });
-      rollup.setToken(wallet, amount);
+      delegateTo(balance, wallet, amount, validator);
     },
-    /** What the move into the rollup does when it lands. */
+    /** The deposit key's balance is delegated to the rollup and holds `amount` there. */
+    delegateKey(amount: bigint, validator = env.validator) {
+      delegateTo(keyBalance, keyAccount, amount, validator);
+    },
+    /** What the move into the rollup does when it lands: the wallet's tokens become the deposit key's rollup balance. */
     moveEffect(atoms: bigint) {
       return () => {
         solana.setToken(wallet, solana.token(wallet) - atoms);
-        world.delegate(rollup.token(wallet) + atoms);
+        world.delegateKey(rollup.token(keyAccount) + atoms);
       };
     },
-    /** What the rollup deposit does when it lands. */
+    /** What the rollup deposit does when it lands: the deposit key's balance goes to the seat. */
     depositEffect(atoms: bigint) {
-      return () => rollup.setToken(wallet, rollup.token(wallet) - atoms);
+      return () => rollup.setToken(keyAccount, rollup.token(keyAccount) - atoms);
     },
     /** What the seat's withdrawal does when it lands. */
     seatEffect(atoms: bigint) {
@@ -305,3 +329,45 @@ export function makeWorld() {
 }
 
 export type World = ReturnType<typeof makeWorld>;
+
+/**
+ * A deposit begun by an earlier version of the app, which moved the tokens into
+ * the owner's own rollup balance and left the owner to sign the collateral step:
+ * its move landed, and its collateral step was refused (`fail`, so only the
+ * move is on record) or is still unanswered (`swallow`, so it is recorded
+ * pending). Its record carries no deposit key.
+ */
+export async function legacyDeposit(world: World, fate: "fail" | "swallow", atoms: bigint) {
+  await world.env.journal.record(world.owner, {
+    id: "old",
+    kind: "deposit",
+    atoms: atoms.toString(),
+    step: "deposit",
+    rollupBefore: "0",
+    sends: [
+      {
+        signature: "sigA",
+        lastValidBlockHeight: world.solana.height + 150,
+        status: "finalized",
+        before: (100n * USDC).toString(),
+        moved: atoms.toString(),
+      },
+    ],
+  });
+  world.solana.statuses.set("sigA", { err: null, confirmationStatus: "finalized" });
+  world.solana.sent.push("sigA");
+  world.solana.setToken(world.wallet, 100n * USDC - atoms);
+  world.delegate(atoms);
+  if (fate === "swallow") {
+    await world.env.journal.recordSeatSend(world.owner, "old", {
+      state: "pending",
+      at: "t",
+      id: "s1",
+      before: atoms.toString(),
+      signature: "sigR",
+      lastValidBlockHeight: world.rollup.height + 150,
+    });
+    world.rollup.sent.push("sigR");
+  }
+  world.events.length = 0;
+}

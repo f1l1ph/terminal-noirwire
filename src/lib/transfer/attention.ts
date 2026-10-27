@@ -17,8 +17,10 @@ export interface Attention {
   signature?: string;
   /** Whether the flow can carry this record on: not one that did not land, cannot be placed, is still settling on the rollup, or is a return. */
   resumable: boolean;
-  /** Whether the deposit's tokens may be taken back to the wallet: a deposit record with no rollup send still settling. */
+  /** Whether the deposit's tokens may be taken back to the wallet: a deposit record, from before deposits went through a deposit key, with no rollup send still settling. */
   returnable: boolean;
+  /** Whether the deposit's tokens went into the rollup as the deposit key's balance, where "try the deposit again" is their way into the account. */
+  keyed: boolean;
 }
 
 /** The actions a record may offer. A resend is never one of them: resuming runs the flow, which judges every earlier send first. */
@@ -45,7 +47,12 @@ export function attentionOf(
 ): Attention {
   const operation = operationOf(record);
   const behindReturn = all.some((other) => other.id === `${record.id}.return`);
-  const base = { id: record.id, operation, atoms: record.atoms };
+  const base = {
+    id: record.id,
+    operation,
+    atoms: record.atoms,
+    keyed: operation === "deposit" && record.depositKey !== undefined,
+  };
   const pending = record.seat?.state === "pending" ? record.seat : undefined;
   if (pending && seat === "not-seen") {
     return {
@@ -72,7 +79,11 @@ export function attentionOf(
     signature: pending?.signature ?? lastSignature(record),
     resumable: settled && !behindReturn,
     returnable:
-      settled && operation === "deposit" && !behindReturn && record.seat?.state !== "landed",
+      settled &&
+      operation === "deposit" &&
+      !behindReturn &&
+      record.seat?.state !== "landed" &&
+      record.depositKey === undefined,
   };
 }
 

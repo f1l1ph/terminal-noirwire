@@ -1,22 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { actionsOf, attentionOf } from "@/lib/transfer/attention";
-import { deposit } from "@/lib/transfer/deposit";
 import { tryLockOwner } from "@/lib/transfer/lock";
 import { giveBack } from "@/lib/transfer/resume";
 import { returnToWallet } from "@/lib/transfer/returnToWallet";
-import { USDC, makeWorld, type World } from "./transferWorld";
+import { USDC, legacyDeposit, makeWorld, type World } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
-const AMOUNT = "2.5";
 const START = 100n * USDC;
 
-/** A deposit whose move landed and whose seat step was then refused: the USDC sits in the rollup. */
+/** A deposit begun before deposits went through a deposit key, whose seat step was refused: the USDC sits in the owner's rollup balance. */
 async function strandedDeposit(): Promise<World> {
   const world = makeWorld();
-  world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
-  world.rollup.script({ fate: "fail" });
-  expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "stranded" });
-  world.events.length = 0;
+  await legacyDeposit(world, "fail", ATOMS);
   return world;
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
 import {
   actionsOf,
@@ -23,6 +23,10 @@ export interface RecordsEngine {
   resume(attention: Attention, report: (line: string) => void): Promise<string>;
   /** Takes a deposit's tokens, or a return already begun, back to the wallet and says in plain words how it ended. */
   giveBack(attention: Attention, report: (line: string) => void): Promise<string>;
+  /** What the deposit key still holds in the rollup, read without the wallet; null when nothing is waiting. */
+  leftover(): Promise<bigint | null>;
+  /** Puts what the deposit key holds into the account and says in plain words how it ended. */
+  recover(report: (line: string) => void): Promise<string>;
 }
 
 const RELOAD_MS = 20_000;
@@ -67,19 +71,32 @@ export function TransferRecords({
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const [waiting, setWaiting] = useState<bigint | null>(null);
+  const autoTried = useRef<string | null>(null);
+  const autoRecover = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (!owner) return;
     let active = true;
-    const load = async () => {
+    const load = async (lookForLeftover: boolean) => {
       try {
         const records = await createJournal(indexedDbStorage()).unfinished(owner);
         const judged =
           engine && records.some((record) => record.seat?.state === "pending")
             ? await engine.judge(records).catch(() => ({}) as Record<string, SeatJudgement>)
             : {};
+        const leftover =
+          engine && records.length === 0 && lookForLeftover
+            ? await engine.leftover().catch(() => null)
+            : null;
         if (!active) return;
         setItems(records.map((record) => attentionOf(record, judged[record.id] ?? null, records)));
+        if (records.length > 0) setWaiting(null);
+        else if (lookForLeftover) setWaiting(leftover);
+        if (leftover !== null && autoTried.current !== owner) {
+          autoTried.current = owner;
+          autoRecover.current();
+        }
         setUnreadable(false);
         onBlocked?.(newTransferBlocked(records.length, false));
       } catch {
@@ -88,8 +105,8 @@ export function TransferRecords({
         onBlocked?.(newTransferBlocked(0, true));
       }
     };
-    void load();
-    const timer = setInterval(() => void load(), RELOAD_MS);
+    void load(true);
+    const timer = setInterval(() => void load(false), RELOAD_MS);
     return () => {
       active = false;
       clearInterval(timer);
@@ -134,6 +151,25 @@ export function TransferRecords({
     [engine],
   );
 
+  const recover = useCallback(async () => {
+    if (!engine) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      setNote(await engine.recover(setNote));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "something went wrong";
+      setNote(`The transfer stopped: ${reason.replace(/\.?$/, ".")} Nothing is sent again.`);
+    } finally {
+      setBusy(false);
+      setReload((count) => count + 1);
+    }
+  }, [engine]);
+
+  useEffect(() => {
+    autoRecover.current = () => void recover();
+  }, [recover]);
+
   const copy = (signature: string) => {
     try {
       void navigator.clipboard.writeText(signature).catch(() => {});
@@ -151,10 +187,31 @@ export function TransferRecords({
       </p>
     );
   }
-  if (items.length === 0 && !note) return null;
+  if (items.length === 0 && !note && waiting === null) return null;
   return (
     <section className="border-line-subtle border-b p-3" aria-label="Transfers that need attention">
       <p className={sectionLabel}>Transfers that need attention</p>
+      {engine && waiting !== null && items.length === 0 && (
+        <div className="border-line-subtle rounded-tile mt-2 border p-2">
+          <p className="text-ink text-[13px]">
+            {atomsText(waiting, QUOTE_DECIMALS)} USDC is waiting to be credited
+          </p>
+          <p className="text-dim mt-1 text-[12px]">
+            It is in the rollup, held by this browser&apos;s deposit key, and not yet in your
+            account. Putting it in your account asks nothing of your wallet.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={`${btnGhost} px-2 text-[11px]`}
+              disabled={busy}
+              onClick={() => void recover()}
+            >
+              {busy ? "Working..." : "Put it in my account"}
+            </button>
+          </div>
+        </div>
+      )}
       {items.map((item) => (
         <div key={item.id} className="border-line-subtle rounded-tile mt-2 border p-2">
           <p className="text-ink text-[13px]">
@@ -167,6 +224,13 @@ export function TransferRecords({
               If your USDC already moved into the rollup, &quot;Try the deposit again&quot; puts it
               in your account, and &quot;Return to wallet&quot; sends it back to your wallet. Either
               one sends nothing that was already sent.
+            </p>
+          )}
+          {engine && item.keyed && item.resumable && (
+            <p className="text-dim mt-1 text-[12px]">
+              If your USDC already moved into the rollup, it is held by this browser&apos;s deposit
+              key. &quot;Try the deposit again&quot; puts it in your account and asks nothing of
+              your wallet.
             </p>
           )}
           {!engine && (

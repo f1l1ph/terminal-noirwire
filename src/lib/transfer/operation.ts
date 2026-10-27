@@ -5,8 +5,10 @@ import {
   delegationRecordPdaFromDelegatedAccount,
   parseDelegationRecordAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import type { PublicKey, TransactionInstruction } from "@solana/web3.js";
+import type { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { Transaction } from "@solana/web3.js";
+import { depositKeyAccount, depositKeyBalance } from "./depositKey";
+import { redactToken } from "../rollup/redact";
 import { programAddresses, programInstructions, type CustodyToken } from "../rollup/sdk";
 import {
   MAX_EXIT_PRIORITY_LAMPORTS,
@@ -31,8 +33,8 @@ import { exitOperation, type ExitOperation, type SeatSend, type SolanaVerdict } 
 /** What the exit's steps on Solana cost their fee payer, in lamports: the transaction fee and the rent of the accounts the token program makes, and the priority fee of the token account's setup and of the exit. */
 export const SOLANA_EXIT_LAMPORTS =
   10_000_000 + MAX_SETUP_PRIORITY_LAMPORTS + MAX_EXIT_PRIORITY_LAMPORTS;
-/** What a deposit's two steps cost their fee payer: the move into the rollup also pays the balance account's rent and the mint's escrow account, so three times the exit's, and the priority fee of the move (the deposit into the seat is a rollup send and has none). */
-export const ROUND_TRIP_LAMPORTS = 30_000_000 + MAX_MOVE_PRIORITY_LAMPORTS;
+/** What a deposit costs its fee payer, the owner: the move into the rollup also pays the balance account's rent and the mint's escrow account, so three times the exit's, the rent of the deposit key's token account on its first deposit, and the priority fee of the move (the deposit into the seat is a rollup send and has none). */
+export const ROUND_TRIP_LAMPORTS = 35_000_000 + MAX_MOVE_PRIORITY_LAMPORTS;
 
 export const SOLANA_ARRIVES_WITHIN_MS = 180_000;
 export const SHOWN_IN_ROLLUP_WITHIN_MS = 30_000;
@@ -62,6 +64,10 @@ export interface TransferEnv {
   solana: SolanaRpc;
   /** The rollup endpoint, able to read the owner's token account (a private endpoint is signed in as the owner). */
   rollup: SolanaRpc;
+  /** The owner's deposit key, kept in this browser: it holds the deposited tokens in the rollup and credits them to the account, so the wallet signs nothing in the rollup. Made and stored before any wallet prompt. */
+  depositKey: Keypair;
+  /** The rollup endpoint signed in as the deposit key, which alone can read the key's token account. Signs in on first use, with no wallet. */
+  depositRollup(): Promise<SolanaRpc>;
   exchange: ExchangePort;
   journal: Journal;
   lock(owner: string): Promise<OwnerLock | null>;
@@ -128,6 +134,9 @@ export type Refusal =
   | "rollup-unreadable"
   | "send-failed"
   | "nothing-to-return"
+  | "nothing-to-recover"
+  | "legacy-deposit"
+  | "deposit-key-missing"
   | "deposit-landed"
   | "rollup-short"
   | "nothing-to-dismiss"
@@ -201,6 +210,17 @@ export const depositInstruction = (env: TransferEnv, atoms: bigint) =>
     atoms,
   );
 
+/** The order book's collateral deposit out of the deposit key's balance in the rollup, crediting the owner's account; the key signs it and pays for it. */
+export const keyDepositInstruction = (env: TransferEnv, atoms: bigint) =>
+  programInstructions(env.pins.programId).deposit(
+    env.depositKey.publicKey,
+    depositKeyAccount(env.depositKey.publicKey, env.mint),
+    env.exchange.token,
+    env.owner,
+    { collateral: true },
+    atoms,
+  );
+
 /** The order book's collateral withdrawal into the owner's token account in the rollup. */
 export const withdrawInstruction = (env: TransferEnv, atoms: bigint, marketIds: number[]) =>
   programInstructions(env.pins.programId).withdraw(
@@ -213,12 +233,12 @@ export const withdrawInstruction = (env: TransferEnv, atoms: bigint, marketIds: 
   );
 
 /** Where the owner's balance account is delegated on Solana: the validator, or null when it is not delegated. */
-export async function delegatedTo(env: TransferEnv): Promise<PublicKey | null> {
+export async function delegatedTo(
+  env: TransferEnv,
+  balance: PublicKey = balanceAccount(env),
+): Promise<PublicKey | null> {
   const record = parseDelegationRecordAccount(
-    await env.solana.getAccountInfo(
-      delegationRecordPdaFromDelegatedAccount(balanceAccount(env)),
-      "confirmed",
-    ),
+    await env.solana.getAccountInfo(delegationRecordPdaFromDelegatedAccount(balance), "confirmed"),
   );
   return record.status === DelegationStatus.Delegated ? record.validator : null;
 }
@@ -232,6 +252,13 @@ export async function delegatedTo(env: TransferEnv): Promise<PublicKey | null> {
 export async function heldInRollup(env: TransferEnv): Promise<bigint | null> {
   if (!(await delegatedTo(env))) return 0n;
   return readTokenBalance(env.rollup, walletAccount(env));
+}
+
+/** What the deposit key holds in the rollup, read through its own session, on the same terms as `heldInRollup`. */
+export async function keyHeldInRollup(env: TransferEnv): Promise<bigint | null> {
+  const key = env.depositKey.publicKey;
+  if (!(await delegatedTo(env, depositKeyBalance(key, env.mint)))) return 0n;
+  return readTokenBalance(await env.depositRollup(), depositKeyAccount(key, env.mint));
 }
 
 /** Runs `run` while holding the owner's lock, which another tab of this browser holding gives `busy`. */
@@ -383,11 +410,13 @@ export async function sendJournaled(
     instructions: TransactionInstruction[];
     /** The exact transaction these instructions must make. */
     shape: TransferShape;
+    /** A key that signs the transaction too, before the owner is asked: the deposit key, which the instructions name as the authority over its own tokens. */
+    cosigner?: Keypair;
     /** The owner's token account on Solana before this send, and what it is to move. */
     before: bigint;
     moved: bigint;
   },
-): Promise<Refused | { signature: string }> {
+): Promise<Refused | { signature: string; broadcastError: string | null }> {
   const { blockhash, lastValidBlockHeight } = await freshBlockhash(env.solana);
   const transaction = new Transaction({
     feePayer: env.owner,
@@ -411,8 +440,11 @@ export async function sendJournaled(
       `Solana would refuse the transaction with ${failure}. Nothing was sent.`,
     );
   }
-  const raw = (await env.signChecked(transaction, plan.shape)).serialize();
+  const signed = await env.signChecked(transaction, plan.shape);
+  if (plan.cosigner) signed.partialSign(plan.cosigner);
+  const raw = signed.serialize();
   const owner = env.owner.toBase58();
+  let broadcastError: string | null = null;
   const { signature } = await recordThenBroadcast({
     journal: env.journal,
     owner,
@@ -422,14 +454,19 @@ export async function sendJournaled(
       atoms: plan.atoms.toString(),
       step: plan.step,
       rollupBefore: plan.rollupBefore?.toString(),
+      depositKey: plan.cosigner?.publicKey.toBase58(),
     },
     lastValidBlockHeight,
     before: plan.before.toString(),
     moved: plan.moved.toString(),
     signedTx: raw,
-    broadcast: (signed) =>
-      env.solana.sendRawTransaction(signed, { preflightCommitment: "confirmed" }).catch(() => null),
+    broadcast: (bytes) =>
+      env.solana.sendRawTransaction(bytes, { preflightCommitment: "confirmed" }).catch((error) => {
+        broadcastError = broadcastErrorText(error);
+        return null;
+      }),
   });
+  if (broadcastError) console.warn("The first broadcast of a transfer failed:", broadcastError);
   const result = await confirmSignature(env.solana, signature, {
     clock: env.clock,
     timeoutMs: SOLANA_ARRIVES_WITHIN_MS,
@@ -437,8 +474,22 @@ export async function sendJournaled(
     rebroadcast: raw,
   });
   if (result.seen) await env.journal.markSeen(owner, plan.id, signature, result.seen);
-  return { signature };
+  return { signature, broadcastError };
 }
+
+/**
+ * What a failed broadcast says, as one short line safe to show: the first line
+ * of the error, with any sign-in token and every address removed.
+ */
+export function broadcastErrorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  const line = redactToken(text.split("\n")[0]).replace(/\bhttps?:\/\/\S+/g, "[address]");
+  return line.length > 200 ? `${line.slice(0, 200)}...` : line;
+}
+
+/** `message` with the broadcast error the network gave, when there was one, so a wait is not silent about why. */
+export const withBroadcastError = (message: string, error: string | null | undefined) =>
+  error ? `${message} The network answered the send with: ${error}.` : message;
 
 /**
  * Judges each send an earlier run wrote down before another is built: a send
@@ -503,17 +554,80 @@ export async function signedAndRecordedOnRollup(
   const unsafe = await shapeRefusal(env, transaction, shape);
   if (unsafe) return notAllowed(unsafe);
   const raw = (await env.signChecked(transaction, shape)).serialize();
+  return recordedRollupSend(env, id, raw, lastValidBlockHeight, before);
+}
+
+/**
+ * Signs a rollup transaction with the deposit key as its fee payer and only
+ * signer, and writes it to the journal before anything is sent, like
+ * `signedAndRecordedOnRollup` but without the wallet. `before` is the deposit
+ * key's rollup balance now. The rollup charges no fee, as for an order key.
+ */
+export async function signedByDepositKey(
+  env: TransferEnv,
+  id: string,
+  instructions: TransactionInstruction[],
+  shape: TransferShape,
+  before: bigint,
+): Promise<Refused | { raw: Uint8Array; signature: string; seatId: string }> {
+  const signed = await signedWithDepositKey(env, instructions, shape, before);
+  if ("status" in signed) return signed;
+  await env.journal.recordSeatSend(env.owner.toBase58(), id, signed.seat);
+  return signed;
+}
+
+/** The deposit key's signed rollup transaction and the pending seat record that names it, not yet written anywhere. */
+export async function signedWithDepositKey(
+  env: TransferEnv,
+  instructions: TransactionInstruction[],
+  shape: TransferShape,
+  before: bigint,
+): Promise<Refused | { raw: Uint8Array; signature: string; seatId: string; seat: SeatSend }> {
+  const { blockhash, lastValidBlockHeight } = await freshBlockhash(await env.depositRollup());
+  const transaction = new Transaction({
+    feePayer: env.depositKey.publicKey,
+    blockhash,
+    lastValidBlockHeight,
+  }).add(...instructions);
+  const unsafe = await shapeRefusal(env, transaction, shape);
+  if (unsafe) return notAllowed(unsafe);
+  transaction.sign(env.depositKey);
+  return pendingSeat(env, transaction.serialize(), lastValidBlockHeight, before, {
+    signer: "deposit-key",
+  });
+}
+
+function pendingSeat(
+  env: TransferEnv,
+  raw: Uint8Array,
+  lastValidBlockHeight: number,
+  before: bigint,
+  by: Pick<SeatSend, "signer"> = {},
+) {
   const signature = signatureOf(raw);
   const seatId = env.newId();
-  await env.journal.recordSeatSend(env.owner.toBase58(), id, {
+  const seat: SeatSend = {
     state: "pending",
     at: new Date(env.clock.now()).toISOString(),
     id: seatId,
     before: before.toString(),
+    ...by,
     signature,
     lastValidBlockHeight,
-  });
-  return { raw, signature, seatId };
+  };
+  return { raw, signature, seatId, seat };
+}
+
+async function recordedRollupSend(
+  env: TransferEnv,
+  id: string,
+  raw: Uint8Array,
+  lastValidBlockHeight: number,
+  before: bigint,
+) {
+  const sent = pendingSeat(env, raw, lastValidBlockHeight, before);
+  await env.journal.recordSeatSend(env.owner.toBase58(), id, sent.seat);
+  return { raw, signature: sent.signature, seatId: sent.seatId };
 }
 
 export type RollupSendState =
@@ -541,7 +655,8 @@ export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
   }
   try {
-    const { value } = await env.rollup.getSignatureStatus(seat.signature, {
+    const rollup = seat.signer === "deposit-key" ? await env.depositRollup() : env.rollup;
+    const { value } = await rollup.getSignatureStatus(seat.signature, {
       searchTransactionHistory: true,
     });
     if (value) {
@@ -556,7 +671,7 @@ export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise
       return { kind: "landed", finalized: value.confirmationStatus === "finalized" };
     }
     if (recordedLanded) return { kind: "landed", finalized: false };
-    const height = await env.rollup.getBlockHeight("confirmed");
+    const height = await rollup.getBlockHeight("confirmed");
     return height > seat.lastValidBlockHeight ? { kind: "not-seen" } : { kind: "pending" };
   } catch {
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
@@ -665,9 +780,18 @@ export async function settledRollupSend(
 export async function sentOnRollup(
   env: TransferEnv,
   sent: { raw: Uint8Array; signature: string },
-): Promise<{ state: "confirmed" } | { state: "failed"; error: string } | { state: "unconfirmed" }> {
-  await env.rollup.sendRawTransaction(sent.raw, { skipPreflight: true }).catch(() => null);
-  const result = await confirmSignature(env.rollup, sent.signature, {
+  rollup: SolanaRpc = env.rollup,
+): Promise<
+  | { state: "confirmed" }
+  | { state: "failed"; error: string }
+  | { state: "unconfirmed"; broadcastError: string | null }
+> {
+  let broadcastError: string | null = null;
+  await rollup.sendRawTransaction(sent.raw, { skipPreflight: true }).catch((error) => {
+    broadcastError = broadcastErrorText(error);
+  });
+  if (broadcastError) console.warn("The broadcast of a rollup transfer failed:", broadcastError);
+  const result = await confirmSignature(rollup, sent.signature, {
     clock: env.clock,
     timeoutMs: ROLLUP_CONFIRMS_WITHIN_MS,
   });
@@ -675,5 +799,5 @@ export async function sentOnRollup(
   if (result.state === "failed" && result.seen === "finalized") {
     return { state: "failed", error: result.error };
   }
-  return { state: "unconfirmed" };
+  return { state: "unconfirmed", broadcastError };
 }

@@ -36,6 +36,11 @@ const REFUSALS: Record<Refusal, string> = {
   "send-failed":
     "The transaction did not go through and can no longer. Nothing moved. You can start again.",
   "nothing-to-return": "There is no unfinished deposit to return. Nothing was sent.",
+  "nothing-to-recover": "Nothing is waiting in the rollup to be put in your account.",
+  "legacy-deposit":
+    "This deposit was begun by an earlier version of the app. Return it to your wallet under transfers that need attention, then deposit again. Nothing was sent.",
+  "deposit-key-missing":
+    "This deposit was made with a key this browser no longer holds, so it cannot be finished from here. Nothing was sent.",
   "deposit-landed": "The deposit already went through. Nothing was sent.",
   "rollup-short": "Your rollup balance holds less than that. Nothing was sent.",
   "nothing-to-dismiss": "No transfer is waiting to be dismissed.",
@@ -102,7 +107,7 @@ export function outcomeLine(
     case "stranded":
       return {
         tone: "warn",
-        text: `Your USDC moved into the rollup but the deposit into your account was refused. It is safe in your rollup balance. Under transfers that need attention, "Try the deposit again" puts it in your account, and "Return to wallet" sends it back to your wallet.`,
+        text: `${outcome.message} Under transfers that need attention, "Try the deposit again" puts it in your account.`,
       };
   }
 }

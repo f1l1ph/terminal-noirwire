@@ -27,12 +27,17 @@ export interface OperationRecord {
   seat?: SeatSend;
   /** A deposit's rollup balance before the move in, in atoms as decimal text: the move landed once the rollup holds this plus the amount. */
   rollupBefore?: string;
+  /** A deposit's deposit key, as a public key: the tokens went into the rollup as that key's balance, and the same key credits them to the account. */
+  depositKey?: string;
   createdAt: number;
   updatedAt: number;
 }
 
 export type OperationInput = Pick<OperationRecord, "id" | "kind" | "atoms" | "step"> & {
   rollupBefore?: string;
+  depositKey?: string;
+  /** A recovery's seat step, written with its record because it has no Solana send to write first. */
+  seat?: SeatSend;
   sends: Array<
     Pick<JournalSend, "signature" | "lastValidBlockHeight" | "status" | "before" | "moved">
   >;
@@ -121,6 +126,8 @@ export function createJournal(storage: JournalStorage, now: () => number = Date.
           atoms: op.atoms,
           step: op.step,
           rollupBefore: existing?.rollupBefore ?? op.rollupBefore,
+          depositKey: existing?.depositKey ?? op.depositKey,
+          seat: existing?.seat ?? op.seat,
           sends,
           createdAt: existing?.createdAt ?? now(),
           updatedAt: now(),
