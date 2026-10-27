@@ -5,13 +5,14 @@ import type { Wallet } from "@wallet-standard/base";
 import { formatShortAddress } from "@/lib/format";
 import { isMainnetBuild } from "@/lib/network";
 import { userMessage } from "@/lib/userMessage";
-import { useStandardWallet } from "@/lib/wallet/standardWallet";
+import { type SessionEnd, useStandardWallet } from "@/lib/wallet/standardWallet";
 import {
   browserLocalStorage,
   keptWalletAddress,
   MIN_PASSPHRASE_LENGTH,
   WalletExistsError,
 } from "@/lib/wallet/index";
+import { isMobileBrowser, phantomBrowseUrl, solflareBrowseUrl } from "@/lib/wallet/walletLinks";
 import type { WalletHookResult } from "@/lib/wallet/useWallet";
 import { btnGhost, input, panel } from "@/components/ui/styles";
 
@@ -172,9 +173,15 @@ export function openWalletMenu() {
   window.dispatchEvent(new Event(OPEN_WALLET_MENU_EVENT));
 }
 
+const endedLine = (ended: SessionEnd) =>
+  ended.reason === "locked"
+    ? "Your wallet is locked or no longer shares this account with this page. Open it and connect again."
+    : "Your wallet switched to another account. Connect again to continue.";
+
 /** Phantom, Solflare and any other Wallet Standard wallet that signs for Solana mainnet: connect, show and copy the address, disconnect. */
 function ExternalWalletWidget() {
-  const { wallets, signer, connecting, connect, disconnect } = useStandardWallet();
+  const { wallets, rejected, signer, connecting, ended, dismissEnded, connect, disconnect } =
+    useStandardWallet();
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -220,8 +227,31 @@ function ExternalWalletWidget() {
       >
         {connecting ? "Connecting…" : address ? formatShortAddress(address) : "Connect wallet"}
       </button>
+      {ended && !open && !address && (
+        <div
+          role="status"
+          className={`${panel} absolute right-0 z-10 mt-2 w-[min(20rem,calc(100vw-2rem))] p-4`}
+        >
+          <p className="text-ink text-[13px]">{endedLine(ended)}</p>
+          <p className="text-faint tnum mt-1 text-[12px]">
+            Previous account: {formatShortAddress(ended.address)}
+          </p>
+          <button
+            type="button"
+            className={`${btnGhost} mt-2 h-9 w-full text-[12px]`}
+            onClick={dismissEnded}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {open && (
         <div className={`${panel} absolute right-0 z-10 mt-2 w-[min(20rem,calc(100vw-2rem))] p-4`}>
+          {ended && !address && (
+            <p role="status" className="text-ink mb-3 text-[13px]">
+              {endedLine(ended)}
+            </p>
+          )}
           {address ? (
             <>
               <p className="text-faint text-[12px]">Connected wallet</p>
@@ -256,27 +286,70 @@ function ExternalWalletWidget() {
                 View address on Solscan
               </a>
             </>
+          ) : wallets.length === 0 && rejected.length > 0 ? (
+            <>
+              <p className="text-ink text-[13px] font-medium">This wallet cannot be used</p>
+              {rejected.map((each) => (
+                <p key={each.name} className="text-faint mt-1 text-[12px]">
+                  {each.sentence}
+                </p>
+              ))}
+              <p className="text-faint mt-2 text-[12px]">
+                Use Phantom or Solflare. A Ledger works through either.
+              </p>
+            </>
           ) : wallets.length === 0 ? (
             <>
               <p className="text-ink text-[13px] font-medium">No wallet found</p>
-              <p className="text-faint mt-1 text-[12px]">
-                Install one of these, then reload this page.
-              </p>
-              <ul className="mt-3 flex flex-col gap-2">
-                {WALLET_INSTALLS.map((install) => (
-                  <li key={install.name}>
-                    <a
-                      className={`${btnGhost} w-full justify-between px-3`}
-                      href={install.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <span>{install.name}</span>
-                      <span className="text-faint text-[12px]">Install</span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
+              {isMobileBrowser(navigator) ? (
+                <>
+                  <p className="text-faint mt-1 text-[12px]">Open this page in your wallet app.</p>
+                  <ul className="mt-3 flex flex-col gap-2">
+                    {[
+                      {
+                        name: "Phantom",
+                        url: phantomBrowseUrl(window.location.href, window.location.origin),
+                      },
+                      {
+                        name: "Solflare",
+                        url: solflareBrowseUrl(window.location.href, window.location.origin),
+                      },
+                    ].map((link) => (
+                      <li key={link.name}>
+                        <a
+                          className={`${btnGhost} w-full justify-between px-3`}
+                          href={link.url}
+                          rel="noopener noreferrer"
+                        >
+                          <span>{link.name}</span>
+                          <span className="text-faint text-[12px]">Open</span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <>
+                  <p className="text-faint mt-1 text-[12px]">
+                    Install one of these, then reload this page.
+                  </p>
+                  <ul className="mt-3 flex flex-col gap-2">
+                    {WALLET_INSTALLS.map((install) => (
+                      <li key={install.name}>
+                        <a
+                          className={`${btnGhost} w-full justify-between px-3`}
+                          href={install.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <span>{install.name}</span>
+                          <span className="text-faint text-[12px]">Install</span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </>
           ) : (
             <>

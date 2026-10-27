@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import type { Wallet, WalletAccount } from "@wallet-standard/base";
-import { isUsableWallet, ownerSignerFor } from "@/lib/wallet/standardWallet";
+import {
+  isUsableWallet,
+  ownerSignerFor,
+  rejectedWallets,
+  sessionEndReason,
+} from "@/lib/wallet/standardWallet";
 
 type MessageOutput = { signedMessage: Uint8Array; signature: Uint8Array };
 
@@ -154,5 +159,84 @@ describe("signTransaction through a wallet", () => {
     await signer.signTransaction(tx, "solana:mainnet");
     await signer.signTransaction(tx);
     expect(seenChains).toEqual(["solana:mainnet", undefined]);
+  });
+});
+
+const named = (wallet: Wallet, name: string, chains?: string[]) =>
+  ({ ...wallet, name, ...(chains ? { chains } : {}) }) as unknown as Wallet;
+
+describe("the wallets that were found but cannot be used", () => {
+  const reasonFor = (omit: string) =>
+    rejectedWallets([named(fake(Keypair.generate(), { omit }).wallet, "Backpack")])[0]?.sentence;
+
+  it("names a wallet that cannot sign messages", () => {
+    expect(reasonFor("solana:signMessage")).toBe(
+      "Backpack was found but cannot sign messages, which this app needs.",
+    );
+  });
+
+  it("names a wallet that cannot sign transactions", () => {
+    expect(reasonFor("solana:signTransaction")).toBe(
+      "Backpack was found but cannot sign transactions, which this app needs.",
+    );
+  });
+
+  it("names a wallet that cannot report account changes", () => {
+    expect(reasonFor("standard:events")).toBe(
+      "Backpack was found but cannot report account changes, which this app needs.",
+    );
+  });
+
+  it("names a wallet that cannot connect", () => {
+    expect(reasonFor("standard:connect")).toBe(
+      "Backpack was found but cannot connect to a page, which this app needs.",
+    );
+  });
+
+  it("names a Solana wallet that is not on mainnet", () => {
+    const wallet = named(fake(Keypair.generate()).wallet, "Coinbase", ["solana:devnet"]);
+    expect(rejectedWallets([wallet])).toEqual([
+      { name: "Coinbase", sentence: "Coinbase was found but is not on Solana mainnet." },
+    ]);
+  });
+
+  it("gives the first missing reason when several are missing", () => {
+    const { wallet } = fake(Keypair.generate(), { omit: "solana:signMessage" });
+    delete (wallet.features as Record<string, unknown>)["solana:signTransaction"];
+    expect(rejectedWallets([named(wallet, "Backpack")])[0]?.sentence).toBe(
+      "Backpack was found but cannot sign transactions, which this app needs.",
+    );
+  });
+
+  it("lists only the unusable ones in a mixed list, and skips wallets for other chains", () => {
+    const good = named(fake(Keypair.generate()).wallet, "Phantom");
+    const bad = named(fake(Keypair.generate(), { omit: "solana:signMessage" }).wallet, "Backpack");
+    const other = {
+      name: "Other",
+      chains: ["eip155:1"],
+      accounts: [],
+      features: { "standard:connect": {} },
+    } as unknown as Wallet;
+    expect(rejectedWallets([good, bad, other]).map((each) => each.name)).toEqual(["Backpack"]);
+  });
+
+  it("is empty when every wallet is usable", () => {
+    expect(rejectedWallets([fake(Keypair.generate()).wallet])).toEqual([]);
+  });
+});
+
+describe("the reason a connected session ends", () => {
+  const key = (address: string) => ({ address });
+
+  it("is none while the connected address is still offered", () => {
+    expect(sessionEndReason([key("a"), key("b")], "a")).toBeNull();
+  });
+
+  it("is a switch when only other accounts are offered", () => {
+    expect(sessionEndReason([key("b")], "a")).toBe("switched");
+  });
+
+  it("is a lock when no account is offered", () => {
+    expect(sessionEndReason([], "a")).toBe("locked");
   });
 });
