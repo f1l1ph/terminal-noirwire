@@ -6,21 +6,22 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Transaction } from "@solana/web3.js";
 import type { KeyWithdrawal } from "../trading/types";
-import { withComputeBudget } from "./computeBudget";
-import type { OperationRecord } from "./journal";
 import {
   POLL_MS,
   SHOWN_IN_ROLLUP_WITHIN_MS,
-  SOLANA_ARRIVES_WITHIN_MS,
+  ORDER_KEY_CALL_SETTLES_WITHIN_MS,
   ORDER_KEY_WITHDRAWAL_UNPROVEN,
   SOLANA_EXIT_LAMPORTS,
   balanceAccount,
   beginOperation,
   createAssociatedTokenAccountIdempotentIx,
   delegatedTo,
+  finishAllWhenFinal,
+  finishIfNothingSent,
+  finishWhenFinalized,
   holdsSol,
   intentRefusal,
-  operationFinal,
+  movingSends,
   reconciled,
   recordOf,
   refuse,
@@ -64,10 +65,6 @@ export interface WithdrawInput {
   /** Whether this is a new transfer or the carrying on of a shown record; checked inside the lock. */
   intent?: Intent;
 }
-
-/** The sends of an operation that move the tokens on Solana, as opposed to a token account's setup, which moves none. */
-const movingSends = (record: Pick<OperationRecord, "sends" | "atoms"> | undefined) =>
-  (record?.sends ?? []).filter((send) => send.moved === record?.atoms);
 
 /** The operation's record, or nothing before its first send was written. */
 const recordedOrNone = async (env: TransferEnv, id: string) =>
@@ -114,20 +111,18 @@ async function balanceInRollup(
       kind: "withdraw",
       step: "withdraw",
       atoms,
-      instructions: withComputeBudget(
-        exists
-          ? [delegateEphemeralAtaIx(env.owner, balance, env.validator)]
-          : [
-              createAssociatedTokenAccountIdempotentIx(
-                env.owner,
-                walletAccount(env),
-                env.owner,
-                env.mint,
-              ),
-              initEphemeralAtaIx(balance, env.owner, env.mint, env.owner),
-              delegateEphemeralAtaIx(env.owner, balance, env.validator),
-            ],
-      ),
+      instructions: exists
+        ? [delegateEphemeralAtaIx(env.owner, balance, env.validator)]
+        : [
+            createAssociatedTokenAccountIdempotentIx(
+              env.owner,
+              walletAccount(env),
+              env.owner,
+              env.mint,
+            ),
+            initEphemeralAtaIx(balance, env.owner, env.mint, env.owner),
+            delegateEphemeralAtaIx(env.owner, balance, env.validator),
+          ],
       shape: { kind: "setup" },
       before: 0n,
       moved: 0n,
@@ -153,7 +148,44 @@ async function balanceInRollup(
     SHOWN_IN_ROLLUP_WITHIN_MS,
     POLL_MS,
   );
-  return shown ? null : waiting(id, "The rollup does not yet show the owner's token account.");
+  if (shown) return null;
+  if ((await recordOf(env, id)).sends.length === 0) {
+    return refuse(
+      "rollup-unreadable",
+      "The rollup does not show the owner's token account, so the withdrawal was not started. Nothing was sent.",
+    );
+  }
+  return waiting(id, "The rollup does not yet show the owner's token account.");
+}
+
+/**
+ * What to do when the trading client threw: it does not say whether the call
+ * was sent. The call cannot run any more once the longest it could still be
+ * running has passed, and then the owner's token account in the rollup decides:
+ * risen by the amount, the withdrawal ran; unchanged, it did not, and the
+ * pending record is cleared so a new try is allowed. A balance that cannot be
+ * read leaves the record, which the same read settles later, and nothing is
+ * sent again.
+ */
+async function settledAfterThrow(
+  env: TransferEnv,
+  id: string,
+  atoms: bigint,
+  held: bigint,
+): Promise<Stopped | null> {
+  const owner = env.owner.toBase58();
+  await env.clock.sleep(ORDER_KEY_CALL_SETTLES_WITHIN_MS);
+  const now = await readTokenBalance(env.rollup, walletAccount(env)).catch(() => null);
+  if (now === null) return waiting(id, ORDER_KEY_WITHDRAWAL_UNPROVEN);
+  if (now >= held + atoms) {
+    await env.journal.markSeatLanded(owner, id);
+    return null;
+  }
+  await env.journal.clearSeatSend(owner, id);
+  return refuse(
+    "send-failed",
+    "The withdrawal did not run and can no longer. Nothing moved. Try again.",
+  );
 }
 
 /**
@@ -185,7 +217,7 @@ async function seatWithdrawnByKey(
     try {
       result = await withdrawByKey(atoms);
     } catch {
-      return waiting(id, ORDER_KEY_WITHDRAWAL_UNPROVEN);
+      return settledAfterThrow(env, id, atoms, held);
     }
     if (result.kind === "withdrawn") {
       await env.journal.markSeatLanded(owner, id);
@@ -251,7 +283,12 @@ async function seatWithdrawn(
   const missing = await balanceInRollup(env, id, atoms, answer);
   if (missing) return missing;
   const held = await readTokenBalance(env.rollup, wallet);
-  if (held === null) return waiting(id, "The rollup does not show the owner's token account.");
+  if (held === null) {
+    return refuse(
+      "rollup-unreadable",
+      "The rollup does not show the owner's token account, so the withdrawal was not started. Nothing was withdrawn.",
+    );
+  }
   if (env.withdrawByKey) return seatWithdrawnByKey(env, env.withdrawByKey, id, atoms, held);
   const marketIds = await env.exchange.perpMarketIds();
   const withdrawal = withdrawInstruction(env, atoms, marketIds);
@@ -266,7 +303,7 @@ async function seatWithdrawn(
       failed = await simulationError(env.rollup, simulated);
     } catch (error) {
       return refuse(
-        "simulation-failed",
+        "simulation-unavailable",
         `The endpoint did not simulate the withdrawal (${(error as Error).message.split("\n")[0]}), so it is not sent. Nothing was sent.`,
       );
     }
@@ -316,18 +353,30 @@ async function seatWithdrawn(
 
 /**
  * The token program's withdrawal of exactly `atoms` from the owner's rollup
- * balance to the wallet on Solana, journaled before it is broadcast, then
- * waits for the wallet to show it. Earlier sends of this operation are judged
- * first, and one that landed is not sent again: only its arrival is checked.
- * `alsoFinish` is another operation this one settles.
+ * balance to the wallet on Solana, journaled before it is broadcast. It is
+ * done once that send is confirmed, which is what its signature's status says
+ * and not what the wallet holds, since the wallet may spend the USDC at once.
+ * Earlier sends of this operation are judged first, and one that landed is not
+ * sent again. The record is closed here when every send is already final, and
+ * otherwise by a later look (`finishCompleted`). A refusal here comes after
+ * the collateral left the account, so it is marked as the USDC being in the
+ * rollup balance. `alsoFinish` is another operation this one settles.
  */
 export async function shuttleToWallet(
   env: TransferEnv,
   operation: { id: string; step: string; atoms: bigint; alsoFinish?: string },
   answer: string | undefined,
 ): Promise<WithdrawOutcome> {
+  const outcome = await shuttleLeg(env, operation, answer);
+  return outcome.status === "refused" ? { ...outcome, inRollup: true } : outcome;
+}
+
+async function shuttleLeg(
+  env: TransferEnv,
+  operation: { id: string; step: string; atoms: bigint; alsoFinish?: string },
+  answer: string | undefined,
+): Promise<WithdrawOutcome> {
   const { id, step, atoms } = operation;
-  const owner = env.owner.toBase58();
   const wallet = walletAccount(env);
   const settled = await reconciled(env, id, movingSends(await recordedOrNone(env, id)), answer);
   if ("status" in settled) return settled;
@@ -342,13 +391,11 @@ export async function shuttleToWallet(
       kind: "withdraw",
       step,
       atoms,
-      instructions: withComputeBudget(
-        await withdrawSpl(env.owner, env.mint, atoms, {
-          validator: env.validator,
-          payer: env.owner,
-          initAtasIfMissing: true,
-        }),
-      ),
+      instructions: await withdrawSpl(env.owner, env.mint, atoms, {
+        validator: env.validator,
+        payer: env.owner,
+        initAtasIfMissing: true,
+      }),
       shape: { kind: "exit", atoms },
       before,
       moved: atoms,
@@ -364,35 +411,42 @@ export async function shuttleToWallet(
       );
     }
   }
-  const expected = BigInt(landed.before) + BigInt(landed.moved);
-  const arrived = await pollUntil(
-    async () => {
-      const now = await readTokenBalance(env.solana, wallet);
-      return now !== null && now >= expected ? now : null;
-    },
-    env.clock,
-    SOLANA_ARRIVES_WITHIN_MS,
-    POLL_MS,
-  );
-  if (arrived === null) {
-    return waiting(
-      id,
-      `The withdrawal ${landed.signature} landed but the wallet does not yet show ${expected} atoms. Nothing more is sent; only its arrival is checked.`,
-    );
-  }
-  const closing = (await env.journal.unfinished(owner)).filter(
-    (record) => record.id === id || record.id === operation.alsoFinish,
-  );
-  for (const record of closing) {
-    if (!(await operationFinal(env, record))) {
-      return waiting(
-        id,
-        `The withdrawal ${landed.signature} arrived but a send of this operation is not yet finalized, so its record stays. Nothing more is sent.`,
+  await finishAllWhenFinal(env, closingIds(id, operation.alsoFinish));
+  return { status: "done", id, atoms, signature: landed.signature };
+}
+
+const closingIds = (id: string, alsoFinish: string | undefined) =>
+  alsoFinish === undefined ? [id] : [id, alsoFinish];
+
+/**
+ * Closes, without being asked, the withdrawals and returns whose Solana send
+ * is confirmed and whose records are only waiting for finality, and the
+ * deposits whose last step landed. Nothing is sent: a record is closed only
+ * where every send of it is final, and one that is not yet is left for the next
+ * look. Skipped while a transfer holds the owner's lock.
+ */
+export function finishCompleted(env: TransferEnv): Promise<void> {
+  return underLock(env, async () => {
+    const owner = env.owner.toBase58();
+    for (const record of await env.journal.unfinished(owner)) {
+      if (record.kind === "deposit") {
+        if (record.seat?.state === "landed") await finishWhenFinalized(env, record.id);
+        continue;
+      }
+      if (record.seat?.state === "pending") continue;
+      const moving = movingSends(record);
+      if (moving.length === 0) continue;
+      const settled = await reconciled(env, record.id, moving, undefined);
+      if ("status" in settled || !settled.landed) continue;
+      await finishAllWhenFinal(
+        env,
+        closingIds(
+          record.id,
+          record.step === "return" ? record.id.slice(0, -".return".length) : undefined,
+        ),
       );
     }
-  }
-  for (const record of closing) await env.journal.finish(owner, record.id);
-  return { status: "done", id, atoms, signature: landed.signature };
+  }).then(() => undefined);
 }
 
 /**
@@ -400,7 +454,9 @@ export async function shuttleToWallet(
  * the rollup program's withdrawal into the owner's rollup token account (after
  * making that account where it is missing), then the token program's
  * withdrawal to Solana. A run that finds the rollup step landed sends only the
- * Solana step, and one that cannot tell whether it landed asks.
+ * Solana step, and one that cannot tell whether it landed waits. A run that
+ * stops having sent nothing that could have moved money drops its record, so
+ * it blocks no other transfer.
  */
 export function withdraw(env: TransferEnv, input: WithdrawInput): Promise<WithdrawOutcome> {
   return underLock(env, async () => {
@@ -419,6 +475,12 @@ export function withdraw(env: TransferEnv, input: WithdrawInput): Promise<Withdr
       input.intent?.kind === "resume" ? input.intent.id : undefined,
     );
     if ("status" in begun) return begun;
+    if (!begun.record && input.intent?.kind === "resume") {
+      return refuse(
+        "record-changed",
+        "This transfer sent nothing and is gone, so it is not carried on. Nothing was sent.",
+      );
+    }
     const { id, record } = begun;
     const solanaStepSent = movingSends(record ?? undefined).length > 0;
     if (!record?.seat && !solanaStepSent) {
@@ -446,9 +508,17 @@ export function withdraw(env: TransferEnv, input: WithdrawInput): Promise<Withdr
         });
       }
     }
-    if (!solanaStepSent) {
-      const stopped = await seatWithdrawn(env, id, atoms, input.answer);
-      if (stopped) return stopped;
+    try {
+      if (!solanaStepSent) {
+        const stopped = await seatWithdrawn(env, id, atoms, input.answer);
+        if (stopped) {
+          await finishIfNothingSent(env, id);
+          return stopped;
+        }
+      }
+    } catch (error) {
+      await finishIfNothingSent(env, id);
+      throw error;
     }
     return shuttleToWallet(env, { id, step: "withdraw", atoms }, input.answer);
   });

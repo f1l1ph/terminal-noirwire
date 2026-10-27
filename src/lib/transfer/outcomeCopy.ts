@@ -30,6 +30,8 @@ const REFUSALS: Record<Refusal, string> = {
   "delegated-elsewhere": "Your token balance sits with a different rollup. Nothing moved.",
   "simulation-failed":
     "The network would refuse this transaction, so it was not sent. Nothing moved.",
+  "simulation-unavailable":
+    "Could not check the transaction with the network. Nothing was sent. Try again in a moment.",
   "stale-price":
     "Prices are not fresh enough to withdraw right now. Try again in a few minutes. Nothing moved.",
   "rollup-refused":
@@ -56,6 +58,19 @@ export const solText = (lamports: number): string => {
   const text = atomsText(BigInt(lamports), 9).replace(/0+$/, "");
   return `${text.endsWith(".") ? text.slice(0, -1) : text} SOL`;
 };
+
+/** What a stop in the step that takes the USDC to the wallet says, after the account already paid it out: it is on its way and the open record finishes it. */
+function inRollupLine(reason: Refusal, feeLamports: number): string {
+  const lead = "Your USDC left your trading account and is on its way to your wallet.";
+  if (reason === "insufficient-sol") {
+    return `${lead} Your wallet needs about ${solText(feeLamports)} for network fees to finish it. Add SOL, then press Resume under transfers that need attention.`;
+  }
+  const stop =
+    reason === "send-failed"
+      ? "The last step did not go through."
+      : "The last step stopped before it was sent.";
+  return `${lead} ${stop} It is safe in your rollup balance. Press Resume under transfers that need attention to finish it.`;
+}
 
 /** What a flow's outcome says to the user, in plain words. */
 export function outcomeLine(
@@ -84,8 +99,9 @@ export function outcomeLine(
     case "refused":
       return {
         tone: "error",
-        text:
-          outcome.reason === "insufficient-sol"
+        text: outcome.inRollup
+          ? inRollupLine(outcome.reason, feeLamports)
+          : outcome.reason === "insufficient-sol"
             ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
             : outcome.reason === "deposit-key-missing"
               ? outcome.message
@@ -99,19 +115,24 @@ export function outcomeLine(
     case "not-landed":
       return {
         tone: "warn",
-        text: `The ${noun} did not go through: the transaction was never shown and has expired. Nothing moved by it. You can dismiss it under transfers that need attention and start again.`,
+        text:
+          kind === "deposit"
+            ? "The last step of the deposit did not go through: the transaction was never shown and has expired. Your USDC already left your wallet and is safe in the rollup. Dismiss this under transfers that need attention, then use the button that appears there to put it in your account."
+            : `The ${noun} did not go through: the transaction was never shown and has expired. Nothing moved by it. You can dismiss it under transfers that need attention and start again.`,
         signature: outcome.signature,
       };
     case "unknown":
       return {
         tone: "warn",
-        text: `We cannot tell what happened to this ${noun}. Wait, or contact support with the signature. Nothing is sent again.`,
+        text: `We cannot tell what happened to this ${noun}. Wait, or contact support with ${
+          outcome.signature ? `the signature ${outcome.signature}` : `the transfer id ${outcome.id}`
+        }. Nothing is sent again.`,
         signature: outcome.signature,
       };
     case "stranded":
       return {
         tone: "warn",
-        text: `${outcome.message} Under transfers that need attention, "Try the deposit again" puts it in your account.`,
+        text: `${outcome.message} Under transfers that need attention, "Put it in my account" puts it in your account.`,
       };
   }
 }

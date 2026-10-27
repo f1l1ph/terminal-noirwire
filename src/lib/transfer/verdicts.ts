@@ -6,7 +6,7 @@ export interface SolanaReader {
     signature: string,
     config: { searchTransactionHistory: boolean },
   ): Promise<{ value: { err: unknown; confirmationStatus?: string } | null }>;
-  getBlockHeight(commitment: "confirmed"): Promise<number>;
+  getBlockHeight(commitment: "confirmed" | "finalized"): Promise<number>;
 }
 
 /** One Solana transaction written down before it was broadcast. */
@@ -92,11 +92,15 @@ export function seatVerdict(
  * Where a transaction written down before its broadcast stands: `landed`,
  * `failed` (it ran and was refused, so it moved nothing), `safe` (it is not
  * there and its blockhash has expired, so it can never be included) or `wait`
- * (it may still land). A send seen as `processed` without an error is marked
+ * (it may still land). The block height is read before the status, so a
+ * transaction that lands between the two reads is seen by the status and never
+ * judged unable to land. A send seen as `processed` without an error is marked
  * `everProcessed` (on the send the caller passes, which the caller must save)
- * and is never dropped on its own afterwards, whatever a later read says,
- * since a lagging node may answer null for an execution another node saw: it
- * waits until it is confirmed or the operator answers `landed:<signature>`.
+ * and is never dropped on a later missing status alone, since a lagging node
+ * may answer null for an execution another node saw: it waits until it is
+ * confirmed, the operator answers `landed:<signature>`, or the finalized
+ * chain is past its blockhash's last valid height and the status is read again
+ * (absent then is `safe`, a finalized status is `landed` or `failed`).
  * A send is `failed` only on a finalized status that carries an error; an
  * error on a status that is not finalized may still be rolled back, so it
  * waits. A read that fails throws, and nothing is sent on a guess.
@@ -106,6 +110,7 @@ export async function solanaVerdict(
   send: SolanaSend,
   answer?: string,
 ): Promise<SolanaVerdict> {
+  const height = await connection.getBlockHeight("confirmed");
   const { value } = await connection.getSignatureStatus(send.signature, {
     searchTransactionHistory: true,
   });
@@ -120,10 +125,25 @@ export async function solanaVerdict(
     }
   }
   if (send.everProcessed) {
-    return answer === `landed:${send.signature}` ? "landed" : "wait";
+    if (answer === `landed:${send.signature}`) return "landed";
+    return height > send.lastValidBlockHeight ? finalizedVerdict(connection, send) : "wait";
   }
-  const height = await connection.getBlockHeight("confirmed");
   return height > send.lastValidBlockHeight ? "safe" : "wait";
+}
+
+/** The verdict for a send that was seen and whose blockhash has expired: decided only once the finalized chain is past that height, from a status read after it. */
+async function finalizedVerdict(
+  connection: SolanaReader,
+  send: SolanaSend,
+): Promise<SolanaVerdict> {
+  const finalizedHeight = await connection.getBlockHeight("finalized");
+  if (finalizedHeight <= send.lastValidBlockHeight) return "wait";
+  const { value } = await connection.getSignatureStatus(send.signature, {
+    searchTransactionHistory: true,
+  });
+  if (!value) return "safe";
+  if (value.confirmationStatus === "finalized") return value.err ? "failed" : "landed";
+  return !value.err && value.confirmationStatus !== "processed" ? "landed" : "wait";
 }
 
 const sentSomething = (operation: ExitOperation) =>

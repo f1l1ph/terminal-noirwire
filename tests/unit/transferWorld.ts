@@ -63,6 +63,11 @@ export class FakeRpc implements SolanaRpc {
     this.plans.push(...plans);
   }
 
+  /** The node takes every transaction it is sent from now on, rebroadcasts included, and never includes any. */
+  swallowAll() {
+    this.plans.push(...Array.from({ length: 200 }, () => ({ fate: "swallow" as const })));
+  }
+
   setToken(address: PublicKey, amount: bigint) {
     this.accounts.set(address.toBase58(), tokenAccount(amount));
   }
@@ -96,7 +101,10 @@ export class FakeRpc implements SolanaRpc {
     return this.lamports;
   }
 
-  async sendRawTransaction(raw: Uint8Array) {
+  async sendRawTransaction(
+    raw: Uint8Array,
+    _options?: { skipPreflight?: boolean; preflightCommitment?: "confirmed" },
+  ) {
     const signature = signatureOf(raw);
     this.events.push(`broadcast:${this.name}`);
     this.sent.push(signature);
@@ -118,10 +126,26 @@ export class FakeRpc implements SolanaRpc {
     return signature;
   }
 
-  async simulateTransaction() {
+  /** What the node says the transaction consumed; absent unless a test sets it. */
+  unitsConsumed: number | undefined;
+  /** The recent fees the node reports; an Error makes the read fail. */
+  recentFees: number[] | Error = [];
+  /** The accounts the last fee read asked about. */
+  feeAccounts: PublicKey[] = [];
+  /** The transactions simulated, to read the budget they carried. */
+  simulated: Transaction[] = [];
+
+  async simulateTransaction(transaction: Transaction) {
     this.simulations += 1;
+    this.simulated.push(transaction);
     const err = this.simulateAnswers.shift() ?? null;
-    return { value: { err, logs: null } };
+    return { value: { err, logs: null, unitsConsumed: this.unitsConsumed } };
+  }
+
+  async getRecentPrioritizationFees(config?: { lockedWritableAccounts?: PublicKey[] }) {
+    this.feeAccounts = config?.lockedWritableAccounts ?? [];
+    if (this.recentFees instanceof Error) throw this.recentFees;
+    return this.recentFees.map((prioritizationFee, slot) => ({ slot, prioritizationFee }));
   }
 }
 

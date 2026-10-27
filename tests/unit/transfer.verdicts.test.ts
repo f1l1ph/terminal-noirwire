@@ -54,20 +54,86 @@ describe("solanaVerdict", () => {
     expect(seen.everProcessed).toBe(true);
   });
 
-  it("never drops a send seen as processed on a later missing status after the blockhash expired", async () => {
+  it("keeps waiting on a send seen as processed while it is still processed after the blockhash expired", async () => {
     const expired = aSend();
     expect(await solanaVerdict(processed(1_001), expired)).toBe("wait");
-    for (const answer of ["lost:other", `lost:${expired.signature}`, undefined]) {
-      expect(await solanaVerdict(nodeAt(null, 1_001), expired, answer), String(answer)).toBe(
-        "wait",
-      );
+    expect(expired.everProcessed).toBe(true);
+  });
+
+  /** A node whose confirmed height is past the limit and whose finalized height is `finalized`. */
+  const lagging = (
+    value: { err: unknown; confirmationStatus: string } | null,
+    finalized: number,
+  ) => ({
+    getSignatureStatus: async () => ({ value }),
+    getBlockHeight: async (commitment: "confirmed" | "finalized") =>
+      commitment === "finalized" ? finalized : 1_001,
+  });
+
+  it("waits on a send seen as processed and now missing until the finalized chain is past its blockhash", async () => {
+    for (const answer of ["lost:other", "lost:sig", undefined]) {
+      expect(
+        await solanaVerdict(lagging(null, 1_000), aSend({ everProcessed: true }), answer),
+        String(answer),
+      ).toBe("wait");
     }
-    expect(await solanaVerdict(nodeAt(null, 1_001), expired, `landed:${expired.signature}`)).toBe(
-      "landed",
-    );
     expect(
-      await solanaVerdict(nodeAt({ err: null, confirmationStatus: "confirmed" }, 1_001), expired),
+      await solanaVerdict(lagging(null, 1_000), aSend({ everProcessed: true }), "landed:sig"),
     ).toBe("landed");
+  });
+
+  it("decides a processed-then-dropped send from a status read once the finalized chain is past its blockhash", async () => {
+    const seen = () => aSend({ everProcessed: true });
+    expect(await solanaVerdict(lagging(null, 1_001), seen())).toBe("safe");
+    expect(
+      await solanaVerdict(lagging({ err: null, confirmationStatus: "confirmed" }, 1_001), seen()),
+    ).toBe("landed");
+    expect(
+      await solanaVerdict(
+        lagging({ err: { InstructionError: [0, "x"] }, confirmationStatus: "finalized" }, 1_001),
+        seen(),
+      ),
+    ).toBe("failed");
+    expect(
+      await solanaVerdict(
+        lagging({ err: { InstructionError: [0, "x"] }, confirmationStatus: "confirmed" }, 1_001),
+        seen(),
+      ),
+    ).toBe("wait");
+    expect(
+      await solanaVerdict(lagging({ err: null, confirmationStatus: "processed" }, 1_001), seen()),
+    ).toBe("wait");
+  });
+
+  it("never judges a send unable to land when it lands between the height read and the status read", async () => {
+    const signature = "sig";
+    let landed = false;
+    const node = {
+      getBlockHeight: async () => {
+        landed = true;
+        return 1_001;
+      },
+      getSignatureStatus: async () => ({
+        value: landed ? { err: null, confirmationStatus: "confirmed" } : null,
+      }),
+    };
+    expect(await solanaVerdict(node, aSend({ signature }))).toBe("landed");
+  });
+
+  it("reads the height before the status", async () => {
+    const reads: string[] = [];
+    const node = {
+      getBlockHeight: async () => {
+        reads.push("height");
+        return 999;
+      },
+      getSignatureStatus: async () => {
+        reads.push("status");
+        return { value: null };
+      },
+    };
+    await solanaVerdict(node, aSend());
+    expect(reads).toEqual(["height", "status"]);
   });
 
   it("waits on a never-seen send while its blockhash can still land", async () => {

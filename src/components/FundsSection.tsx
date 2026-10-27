@@ -23,10 +23,10 @@ import {
 import { failureLine, outcomeLine, solText, type OutcomeLine } from "@/lib/transfer/outcomeCopy";
 import { PHASE_LINES, withProgress, type Phase } from "@/lib/transfer/progress";
 import { returnToWallet } from "@/lib/transfer/returnToWallet";
-import { giveBack, resumeRecord } from "@/lib/transfer/resume";
+import { canStartTransfer, giveBack, resumeRecord } from "@/lib/transfer/resume";
 import { readTokenBalance } from "@/lib/transfer/solanaRpc";
 import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
-import { withdraw } from "@/lib/transfer/withdraw";
+import { finishCompleted, withdraw } from "@/lib/transfer/withdraw";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
 import { btnGhost, btnPrimary, input, sectionLabel } from "@/components/ui/styles";
 import { TransferRecords, type RecordsEngine } from "@/components/TransferRecords";
@@ -71,6 +71,7 @@ export default function FundsSection({
   withdrawByKey,
   ownerAuthKnown,
   accountOpen,
+  accountKnown,
   collateral,
   onSettled,
 }: {
@@ -81,6 +82,8 @@ export default function FundsSection({
   /** False until that is known, so a withdrawal cannot start on the wrong path. */
   ownerAuthKnown: boolean;
   accountOpen: boolean;
+  /** False until the account's state has been read, so nothing acts on a guess about whether it is open. */
+  accountKnown: boolean;
   collateral: Balance | null;
   /** Called when a transfer finished, so the account is read again. */
   onSettled: () => void;
@@ -129,12 +132,15 @@ export default function FundsSection({
                 {};
               for (const record of records) {
                 if (record.seat?.state === "pending") {
-                  judged[record.id] = (await rollupSendState(transfer, record.seat)).kind;
+                  judged[record.id] = (
+                    await rollupSendState(transfer, record.seat, BigInt(record.atoms))
+                  ).kind;
                 }
               }
               return judged;
             },
             dismiss: async () => dismissRollupSend(await makeEnv()),
+            settle: async () => finishCompleted(await makeEnv()),
             resume: async (attention, report) => {
               const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
               const outcome = await resumeRecord(
@@ -261,6 +267,8 @@ export default function FundsSection({
         engine={engine}
         refreshKey={refreshKey}
         onBlocked={setBlocked}
+        running={busy}
+        accountKnown={accountKnown}
       />
       <div className="border-line-subtle border-b p-3">
         {!open ? (
@@ -375,11 +383,13 @@ export default function FundsSection({
                 type="button"
                 className={`${btnPrimary} flex-1 text-[12px]`}
                 disabled={
-                  busy ||
-                  blocked ||
-                  !check.ok ||
-                  !accountOpen ||
-                  (kind === "withdraw" && !ownerAuthKnown)
+                  !canStartTransfer({
+                    running: busy,
+                    blocked,
+                    amountOk: check.ok,
+                    accountOpen,
+                    settingsKnown: ownerAuthKnown,
+                  })
                 }
                 onClick={() => void submit()}
               >
