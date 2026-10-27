@@ -44,6 +44,8 @@ export type SeatSend = SentRecord & {
   lastValidBlockHeight?: number;
   /** Set once any read has seen the rollup transaction at processed or better: from then on a missing status is never taken as proof that it cannot land. */
   seen?: true;
+  /** Set only when the trading client proved an order key's withdrawal from the account's own view: then it is final as recorded. A landed seat without it was shown by a status and is final only at a finalized success. */
+  proven?: true;
   /** Every distinct signed attempt of an order key's withdrawal. It is safe to clear only when every one is shown unable to land, and it landed if any one did. */
   attempts?: SeatAttempt[];
 };

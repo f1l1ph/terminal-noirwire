@@ -85,8 +85,10 @@ export interface Journal {
   ): Promise<void>;
   /** Records that a read saw the seat's rollup transaction `signature` at processed or better, so a missing status is never taken as proof afterwards. */
   markSeatSighted(owner: string, id: string, signature: string): Promise<void>;
-  /** Marks the recorded seat send as landed. */
+  /** Marks the recorded seat send as landed, as a status showed it: it stays open to a later read until a finalized success. */
   markSeatLanded(owner: string, id: string): Promise<void>;
+  /** Marks an order key's withdrawal as landed and final, because the trading client proved it from the account's own view. No status read decides this, so keep it apart from `markSeatLanded`. */
+  markSeatProven(owner: string, id: string): Promise<void>;
   /** Marks a deposit as stranded: its seat step was refused for good. */
   markStranded(owner: string, id: string): Promise<void>;
   /** Drops a seat send the chain refused outright (it moved nothing). */
@@ -226,6 +228,17 @@ export function createJournal(storage: JournalStorage, now: () => number = Date.
       await storage.update(owner, id, (existing) => {
         if (!existing) throw new Error(`No recorded operation ${id}`);
         return { ...existing, stranded: true, updatedAt: now() };
+      });
+    },
+
+    async markSeatProven(owner, id) {
+      await storage.update(owner, id, (existing) => {
+        if (!existing?.seat) throw new Error(`No recorded seat withdrawal for operation ${id}`);
+        return {
+          ...existing,
+          seat: { ...existing.seat, state: "landed", proven: true },
+          updatedAt: now(),
+        };
       });
     },
 

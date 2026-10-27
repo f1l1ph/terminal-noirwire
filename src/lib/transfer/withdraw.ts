@@ -8,6 +8,8 @@ import { Transaction } from "@solana/web3.js";
 import type { KeyWithdrawal } from "../trading/types";
 import {
   POLL_MS,
+  ROLLUP_CONFIRMS_WITHIN_MS,
+  rollupSendState,
   SHOWN_IN_ROLLUP_WITHIN_MS,
   ORDER_KEY_WITHDRAWAL_UNPROVEN,
   SOLANA_EXIT_LAMPORTS,
@@ -160,6 +162,32 @@ async function balanceInRollup(
 }
 
 /**
+ * Whether anything signed for an order key's withdrawal is still unresolved,
+ * asked before the client's own answer (a refusal, a call that did not run, a
+ * packet too large) is acted on: that answer speaks of the attempt the client
+ * last watched, and an earlier one it re-signed over may still run. Every
+ * journaled attempt is read, the refused ones given up to a minute to reach
+ * finalized. `none` means every attempt was refused at finalized or is
+ * unable to land (or none was dispatched), and the answer may be acted on; a
+ * stop to return means one landed or may still, and nothing is cleared or sent.
+ */
+async function attemptsUnresolved(env: TransferEnv, id: string): Promise<Stopped | null | "none"> {
+  const seatNow = async () => (await recordOf(env, id)).seat;
+  if (!(await seatNow())?.attempts?.length) return "none";
+  const until = env.clock.now() + ROLLUP_CONFIRMS_WITHIN_MS;
+  let state = await rollupSendState(env, (await seatNow())!, id);
+  while (state.kind === "pending" && env.clock.now() < until) {
+    await env.clock.sleep(POLL_MS);
+    state = await rollupSendState(env, (await seatNow())!, id);
+  }
+  if (state.kind === "failed" || state.kind === "not-seen") return "none";
+  const settled = await settledRollupSend(env, id, await seatNow(), true);
+  if (settled === "landed") return null;
+  if (settled === "none" || (typeof settled === "object" && "failed" in settled)) return "none";
+  return settled;
+}
+
+/**
  * The seat's withdrawal signed by an order key, with no wallet signature. The
  * trading client builds, signs and sends it, but the key signs here in the
  * browser, so the signed bytes are handed over before they are dispatched and
@@ -202,10 +230,12 @@ async function seatWithdrawnByKey(
       return refuse("send-failed", "The withdrawal was not sent. Nothing moved. Try again.");
     }
     if (result.kind === "withdrawn") {
-      await env.journal.markSeatLanded(owner, id);
+      await env.journal.markSeatProven(owner, id);
       return null;
     }
     if (result.kind === "undetermined") return waiting(id, ORDER_KEY_WITHDRAWAL_UNPROVEN);
+    const unresolved = await attemptsUnresolved(env, id);
+    if (unresolved !== "none") return unresolved;
     if (result.kind === "refused" && result.code === STALE_PRICE && env.clock.now() <= deadline) {
       await env.clock.sleep(FRESH_MARK_POLL_MS);
       continue;

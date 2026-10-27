@@ -769,11 +769,13 @@ function combined(attempts: Attempt[], looks: Look[]): RollupSendState | { kind:
  * land is read before its status, so one that lands between the reads is seen.
  * A balance never decides: the seat and the owner's token account can both be
  * moved by something else. A status read that fails is `unreadable`, never
- * absent. An order key's withdrawal recorded as landed was proven by the
- * client from the account's own view, so it is final as recorded; before that
- * it is judged by the attempts written down just before they were dispatched,
- * and one with none has nothing to look up and is `unknown`. `id` is the
- * operation's, and lets sightings be written down.
+ * absent. An order key's withdrawal the client proved from the account's own
+ * view (`proven`) is final as recorded; otherwise it is judged by the attempts
+ * written down just before they were dispatched, even once a status showed it
+ * landed, and is final only at a finalized success. One with no attempts has
+ * nothing to look up and is `unknown`, or as recorded if it was recorded landed
+ * before attempts were kept. `id` is the operation's, and lets sightings be
+ * written down.
  */
 export async function rollupSendState(
   env: TransferEnv,
@@ -781,7 +783,13 @@ export async function rollupSendState(
   id?: string,
 ): Promise<RollupSendState> {
   const recordedLanded = seat.state === "landed";
-  if (seat.signer === "order-key" && recordedLanded) return { kind: "landed", finalized: true };
+  if (
+    seat.signer === "order-key" &&
+    recordedLanded &&
+    (seat.proven === true || seat.attempts === undefined)
+  ) {
+    return { kind: "landed", finalized: true };
+  }
   const attempts = attemptsOf(seat);
   if (attempts.length === 0) {
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
