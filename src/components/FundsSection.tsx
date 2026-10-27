@@ -12,8 +12,10 @@ import { depositKeyLeftover } from "@/lib/transfer/leftover";
 import {
   DepositKeyDeclined,
   deriveDepositKey,
+  type DepositKey,
   loadOrCreateDepositKey,
   storedDepositKey,
+  storedKeyMatching,
   storedOrUnsavedDepositKey,
 } from "@/lib/transfer/depositKeyStore";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
@@ -26,7 +28,14 @@ import {
   rollupSendState,
   type TransferEnv,
 } from "@/lib/transfer/operation";
-import { failureLine, outcomeLine, solText, type OutcomeLine } from "@/lib/transfer/outcomeCopy";
+import {
+  KEY_SIGNATURE_NOTE,
+  NO_UNFINISHED_DEPOSIT,
+  failureLine,
+  outcomeLine,
+  solText,
+  type OutcomeLine,
+} from "@/lib/transfer/outcomeCopy";
 import { PHASE_LINES, withProgress, type Phase } from "@/lib/transfer/progress";
 import { returnToWallet } from "@/lib/transfer/returnToWallet";
 import { giveBack, resumeRecord } from "@/lib/transfer/resume";
@@ -40,8 +49,6 @@ import { TransferRecords, type RecordsEngine } from "@/components/TransferRecord
 type Kind = "deposit" | "withdraw";
 
 const SOL_DECIMALS = 9;
-
-const NO_UNFINISHED_DEPOSIT = "No unfinished deposit found for this wallet.";
 
 interface WalletFunds {
   /** Null while unknown: a read that failed is never shown as zero. */
@@ -102,15 +109,29 @@ export default function FundsSection({
   }, [accountOpen]);
 
   const makeEnv = useCallback(
-    async (forNewDeposit = false): Promise<TransferEnv> => {
+    async (forNewDeposit = false, given?: DepositKey): Promise<TransferEnv> => {
       if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
       if (!ownerAuthKnown)
         throw new Error("Still loading the account settings. Try again in a moment.");
       const rollup = await rollupReader();
       const address = signer.publicKey.toBase58();
-      const key = forNewDeposit
-        ? await loadOrCreateDepositKey(address, (message) => signer.signMessage(message))
-        : await storedOrUnsavedDepositKey(address);
+      const openRecordKey = forNewDeposit
+        ? null
+        : await createJournal(indexedDbStorage())
+            .unfinished(address)
+            .then(
+              (records) =>
+                records.map((record) => record.depositKey).find((wanted) => wanted !== undefined),
+              () => undefined,
+            )
+            .then((wanted) => storedKeyMatching(address, wanted));
+      const key =
+        openRecordKey ??
+        (given
+          ? given
+          : forNewDeposit
+            ? await loadOrCreateDepositKey(address, (message) => signer.signMessage(message))
+            : await storedOrUnsavedDepositKey(address));
       return createMainnetTransferEnv({
         signer,
         solana,
@@ -297,9 +318,9 @@ export default function FundsSection({
     setResult(null);
     setPhase("approve");
     try {
-      await deriveDepositKey(owner, (message) => signer.signMessage(message));
+      const key = await deriveDepositKey(owner, (message) => signer.signMessage(message));
       setPhase("preparing");
-      const transfer = withProgress(await makeEnv(), setPhase);
+      const transfer = withProgress(await makeEnv(false, key), setPhase);
       if ((await depositKeyLeftover(transfer)) === null) {
         setResult({ tone: "warn", text: NO_UNFINISHED_DEPOSIT });
         return;
@@ -413,14 +434,14 @@ export default function FundsSection({
                 </p>
                 <p className="text-faint mt-1 text-[11px]">
                   {kind === "deposit"
-                    ? `Your wallet will ask you to approve one transaction, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
+                    ? `${keyStored ? "" : KEY_SIGNATURE_NOTE}Your wallet will ask you to approve one transaction, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
                     : `Your wallet will ask you to approve ${withdrawByKey ? "one or two" : "two or three"} transactions, and you pay about ${solText(feeLamports)} in network fees. A withdrawal can wait a few minutes for fresh prices; keep this page open.`}
                 </p>
               </div>
             ) : (
               <p className="text-faint mt-1 text-[11px]">
                 {kind === "deposit"
-                  ? "Your wallet asks you to approve one transaction."
+                  ? `${keyStored ? "" : KEY_SIGNATURE_NOTE}Your wallet asks you to approve one transaction.`
                   : `Your wallet asks you to approve ${withdrawByKey ? "one or two" : "two or three"} transactions. A withdrawal can wait a few minutes for fresh prices.`}
               </p>
             )}
@@ -473,7 +494,7 @@ export default function FundsSection({
             )}
           </div>
         )}
-        {!keyStored && !open && (
+        {!open && (
           <button
             type="button"
             className="text-faint mt-2 w-full text-center text-[11px] underline"

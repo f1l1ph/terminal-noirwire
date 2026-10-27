@@ -87,6 +87,25 @@ export async function storedDepositKey(
   return derived ? { keypair: Keypair.fromSeed(derived), derived: true } : null;
 }
 
+/** The key stored on this browser, random or derived, whose public key is `wanted`; null when none is. It never asks the wallet. */
+export async function storedKeyMatching(
+  owner: string,
+  wanted: string | undefined,
+  seeds: SeedPort = browserSeeds,
+): Promise<DepositKey | null> {
+  if (wanted === undefined) return null;
+  for (const [name, derived] of [
+    [randomName(owner), false],
+    [derivedName(owner), true],
+  ] as const) {
+    const seed = await seeds.load(name);
+    if (!seed) continue;
+    const keypair = Keypair.fromSeed(seed);
+    if (keypair.publicKey.toBase58() === wanted) return { keypair, derived };
+  }
+  return null;
+}
+
 /** The stored key, or a fresh one that is not stored: for work that must never ask the wallet or leave a key that would shadow a derived one. */
 export async function storedOrUnsavedDepositKey(
   owner: string,
@@ -97,16 +116,16 @@ export async function storedOrUnsavedDepositKey(
 
 /**
  * The key made from the wallet's signature, stored before it is returned so
- * the wallet is asked once per browser. A key already stored always wins and
- * is never replaced.
+ * the wallet is asked once per browser. It is always the derived key, even
+ * when a random one is also stored; that one is never replaced or removed.
  */
 export async function deriveDepositKey(
   owner: string,
   sign: SignMessage,
   seeds: SeedPort = browserSeeds,
 ): Promise<DepositKey> {
-  const stored = await storedDepositKey(owner, seeds);
-  if (stored) return stored;
+  const kept = await seeds.load(derivedName(owner));
+  if (kept) return { keypair: Keypair.fromSeed(kept), derived: true };
   const seed = await seeds.create(derivedName(owner), await derivedSeed(owner, sign));
   return { keypair: Keypair.fromSeed(seed), derived: true };
 }
@@ -125,8 +144,8 @@ export async function loadOrCreateDepositKey(
   sign?: SignMessage,
   seeds: SeedPort = browserSeeds,
 ): Promise<DepositKey> {
-  if (sign) return deriveDepositKey(owner, sign, seeds);
   const stored = await storedDepositKey(owner, seeds);
   if (stored) return stored;
+  if (sign) return deriveDepositKey(owner, sign, seeds);
   return { keypair: Keypair.fromSeed(await seeds.create(randomName(owner))), derived: false };
 }

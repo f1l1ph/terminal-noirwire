@@ -51,6 +51,14 @@ const REFUSALS: Record<Refusal, string> = {
     "This transfer already finished or changed, perhaps in another tab. Nothing was sent.",
 };
 
+/** What finishing a deposit from another browser says when the wallet's deposit key holds nothing. */
+export const NO_UNFINISHED_DEPOSIT =
+  "No unfinished deposit found for this wallet. If you just started one in another browser, wait a minute and try again.";
+
+/** Added before the deposit confirmation while this browser has no deposit key yet. */
+export const KEY_SIGNATURE_NOTE =
+  "The first deposit here also asks your wallet to sign a message that creates your deposit key, before the transaction. ";
+
 /** The need for network fees in SOL as plain text, such as "0.03 SOL". */
 export const solText = (lamports: number): string => {
   const text = atomsText(BigInt(lamports), 9).replace(/0+$/, "");
