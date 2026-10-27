@@ -7,7 +7,9 @@ import { formatMoney } from "@/lib/format";
 import { isAvailableUnknown, transferableAmount } from "@/lib/trading/balanceDisplay";
 import type { Balance, WalletIdentity } from "@/lib/trading/types";
 import { atomsText, balanceAtoms, checkAmount, type AmountCheck } from "@/lib/transfer/amount";
-import { deposit } from "@/lib/transfer/deposit";
+import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
+import { depositKeyLeftover } from "@/lib/transfer/leftover";
+import { loadOrCreateDepositKey } from "@/lib/transfer/depositKeyStore";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { createMainnetTransferEnv, mainnetTransferPins } from "@/lib/transfer/mainnetEnv";
 import {
@@ -85,10 +87,13 @@ export default function FundsSection({
 
   const makeEnv = useCallback(async (): Promise<TransferEnv> => {
     if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
+    const rollup = await rollupReader();
     return createMainnetTransferEnv({
       signer,
       solana,
-      rollup: await rollupReader(),
+      rollup,
+      rollupEndpoint: rollup.rpcEndpoint,
+      depositKey: await loadOrCreateDepositKey(signer.publicKey.toBase58()),
       accountOpen: async () => accountOpenRef.current,
     });
   }, [signer, rollupReader, solana]);
@@ -136,6 +141,13 @@ export default function FundsSection({
                 QUOTE_DECIMALS,
                 resumed === "deposit" ? ROUND_TRIP_LAMPORTS : SOLANA_EXIT_LAMPORTS,
               ).text;
+            },
+            leftover: async () => depositKeyLeftover(await makeEnv()),
+            recover: async (report) => {
+              const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
+              const outcome = await recoverDepositKey(transfer);
+              if (outcome.status === "done") latest.current.onSettled();
+              return outcomeLine("deposit", outcome, QUOTE_DECIMALS, ROUND_TRIP_LAMPORTS).text;
             },
             giveBack: async (attention, report) => {
               const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
@@ -313,14 +325,14 @@ export default function FundsSection({
                 </p>
                 <p className="text-faint mt-1 text-[11px]">
                   {kind === "deposit"
-                    ? `Your wallet will ask you to approve two transactions, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
+                    ? `Your wallet will ask you to approve one transaction, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
                     : `Your wallet will ask you to approve two or three transactions, and you pay about ${solText(feeLamports)} in network fees. A withdrawal can wait a few minutes for fresh prices; keep this page open.`}
                 </p>
               </div>
             ) : (
               <p className="text-faint mt-1 text-[11px]">
                 {kind === "deposit"
-                  ? "Your wallet asks you to approve two transactions."
+                  ? "Your wallet asks you to approve one transaction."
                   : "Your wallet asks you to approve two or three transactions. A withdrawal can wait a few minutes for fresh prices."}
               </p>
             )}

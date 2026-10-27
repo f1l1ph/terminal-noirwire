@@ -37,6 +37,8 @@ export function withProgress(env: TransferEnv, report: (phase: Phase) => void): 
     ...env,
     solana: watchedBroadcast(env.solana, () => report("finality")),
     rollup: watchedBroadcast(env.rollup, () => report("finality")),
+    depositRollup: async () =>
+      watchedBroadcast(await env.depositRollup(), () => report("finality")),
     signChecked: async (transaction: Transaction, shape: TransferShape) => {
       report("approve");
       const signed = await env.signChecked(transaction, shape);

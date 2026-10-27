@@ -10,6 +10,7 @@ import {
 import { PublicKey, type Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
 import { withComputeBudget } from "./computeBudget";
+import { depositKeyAccount, fundKeyInstructions, moveKeyInstructions } from "./depositKey";
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 
 /** What the app pins: the order book program, the quote token and the rollup validator. */
@@ -41,6 +42,10 @@ export type TransferShape =
   | { kind: "setup" }
   /** The order book's collateral deposit. */
   | { kind: "seat-deposit"; atoms: bigint }
+  /** The owner's tokens paid to the deposit key's token account and moved into the rollup as the key's own balance. */
+  | { kind: "key-move"; atoms: bigint; sealed: boolean; key: PublicKey; decimals: number }
+  /** The order book's collateral deposit out of the deposit key's balance into the owner's account, paid by the key. */
+  | { kind: "key-deposit"; atoms: bigint; key: PublicKey }
   /** The order book's collateral withdrawal, naming every perp market. */
   | { kind: "seat-withdraw"; atoms: bigint; marketIds: number[] };
 
@@ -95,6 +100,48 @@ async function expectedTransactions(
   switch (shape.kind) {
     case "seat-deposit":
       return [[program.deposit(owner, wallet, token, owner, { collateral: true }, shape.atoms)]];
+    case "key-deposit":
+      return [
+        [
+          program.deposit(
+            shape.key,
+            depositKeyAccount(shape.key, pins.mint),
+            token,
+            owner,
+            { collateral: true },
+            shape.atoms,
+          ),
+        ],
+      ];
+    case "key-move": {
+      const variants = [true, false].flatMap((first) =>
+        [true, false].map((vaultMissing) => ({ first, vaultMissing })),
+      );
+      return Promise.all(
+        variants.map(async ({ first, vaultMissing }) =>
+          withComputeBudget([
+            ...fundKeyInstructions({
+              owner,
+              key: shape.key,
+              mint: pins.mint,
+              decimals: shape.decimals,
+              atoms: shape.atoms,
+            }),
+            ...(await moveKeyInstructions({
+              owner,
+              key: shape.key,
+              mint: pins.mint,
+              validator: pins.validator,
+              atoms: shape.atoms,
+              sealed: shape.sealed,
+              first,
+              vaultMissing,
+              shuttleId,
+            })),
+          ]),
+        ),
+      );
+    }
     case "seat-withdraw":
       return [
         [
@@ -169,7 +216,12 @@ export async function signableRefusal(
   transaction: Transaction,
   shape: TransferShape,
 ): Promise<string | null> {
-  if (!transaction.feePayer?.equals(context.owner)) return "the owner is not the fee payer";
+  const payer = shape.kind === "key-deposit" ? shape.key : context.owner;
+  if (!transaction.feePayer?.equals(payer)) {
+    return shape.kind === "key-deposit"
+      ? "the deposit key is not the fee payer"
+      : "the owner is not the fee payer";
+  }
   const candidates = await expectedTransactions(context, shape, shuttleIdOf(transaction));
   return candidates.some((expected) => sameList(transaction.instructions, expected))
     ? null

@@ -10,6 +10,33 @@ export const associatedTokenAddress = (owner: PublicKey, mint: PublicKey): Publi
     ASSOCIATED_TOKEN_PROGRAM,
   )[0];
 
+const TRANSFER_CHECKED = 12;
+
+/** The token program's checked transfer of `atoms` from one token account to another, signed by the source's authority. */
+export function transferCheckedIx(
+  source: PublicKey,
+  mint: PublicKey,
+  destination: PublicKey,
+  authority: PublicKey,
+  atoms: bigint,
+  decimals: number,
+): TransactionInstruction {
+  const data = Buffer.alloc(10);
+  data[0] = TRANSFER_CHECKED;
+  data.writeBigUInt64LE(atoms, 1);
+  data[9] = decimals;
+  return new TransactionInstruction({
+    programId: TOKEN_PROGRAM,
+    keys: [
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: destination, isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: true, isWritable: false },
+    ],
+    data,
+  });
+}
+
 /** Creates the associated token account unless it exists (the token program's idempotent create). */
 export const createAssociatedTokenAccountIdempotentIx = (
   payer: PublicKey,

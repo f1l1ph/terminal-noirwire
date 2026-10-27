@@ -1,9 +1,17 @@
-import { PublicKey, type Transaction } from "@solana/web3.js";
+import { PublicKey, type Keypair, type Transaction } from "@solana/web3.js";
+import nacl from "tweetnacl";
 import { MAINNET_PINS } from "../rollup/pins";
+import { rememberToken } from "../rollup/redact";
 import { QUOTE_DECIMALS } from "../rollup/markets";
 import { isMainnetOwnerSigner } from "../rollup/mainnetOwner";
 import { signChecked } from "../rollup/ownerSend";
-import { decodeExchangeAccount, programAddresses, type CustodyToken } from "../rollup/sdk";
+import {
+  connectWithToken,
+  decodeExchangeAccount,
+  programAddresses,
+  signInWithExpiry,
+  type CustodyToken,
+} from "../rollup/sdk";
 import type { MainnetChain, OwnerSigner } from "../wallet/ownerSigner";
 import type { TransferPins } from "./guard";
 import { createJournal, indexedDbStorage, type Journal } from "./journal";
@@ -66,6 +74,12 @@ export interface MainnetTransferParts {
   solana: SolanaRpc;
   /** The rollup connection of the trading session, signed in as the owner. */
   rollup: SolanaRpc;
+  /** Where the trading session's `rollup` connection points, which may carry its sign-in token: the deposit key signs in at the same rollup, without the token. */
+  rollupEndpoint: string;
+  /** The owner's deposit key, already stored on this browser (`loadOrCreateDepositKey`). */
+  depositKey: Keypair;
+  /** The rollup connection signed in as the deposit key; by default the key signs in itself, once, with no wallet. Tests pass their own. */
+  depositRollup?: () => Promise<SolanaRpc>;
   /** Whether the owner has an open account on the exchange, as the trading session reads it. */
   accountOpen(): Promise<boolean>;
   /** Reads the Exchange account; by default from `rollup`. Tests pass their own. */
@@ -73,6 +87,29 @@ export interface MainnetTransferParts {
   journal?: Journal;
   clock?: Clock;
   newId?: () => string;
+}
+
+/** The rollup's address with any query (the sign-in token) and trailing slash removed. */
+export function rollupBaseUrl(endpoint: string): string {
+  const url = new URL(endpoint);
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/** The rollup signed in as `key`: its own signature answers the endpoint's challenge, and the connection is made once and kept. */
+function signedInAsKey(key: Keypair, rollupRpcUrl: string): () => Promise<SolanaRpc> {
+  let session: Promise<SolanaRpc> | null = null;
+  const signIn = async () => {
+    const { token } = await signInWithExpiry(rollupRpcUrl, key.publicKey, async (message) =>
+      nacl.sign.detached(message, key.secretKey),
+    );
+    rememberToken(token);
+    return connectWithToken(rollupRpcUrl, token);
+  };
+  return () =>
+    (session ??= signIn().catch((error: unknown) => {
+      session = null;
+      throw error;
+    }));
 }
 
 const browserClock: Clock = {
@@ -113,6 +150,9 @@ export async function createMainnetTransferEnv(parts: MainnetTransferParts): Pro
     sealed: exchange.sealed,
     solana: parts.solana,
     rollup: parts.rollup,
+    depositKey: parts.depositKey,
+    depositRollup:
+      parts.depositRollup ?? signedInAsKey(parts.depositKey, rollupBaseUrl(parts.rollupEndpoint)),
     exchange: port,
     journal: parts.journal ?? createJournal(indexedDbStorage()),
     lock: (owner) => tryLockOwner(owner),

@@ -10,6 +10,8 @@ import {
   mainnetTransferPins,
   type ExchangeFacts,
 } from "@/lib/transfer/mainnetEnv";
+import { withComputeBudget } from "@/lib/transfer/computeBudget";
+import { fundKeyInstructions, moveKeyInstructions } from "@/lib/transfer/depositKey";
 import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
 import type { Journal } from "@/lib/transfer/journal";
 import type { SolanaRpc } from "@/lib/transfer/solanaRpc";
@@ -44,6 +46,8 @@ const parts = (signer: OwnerSigner, facts: ExchangeFacts = exchange()) => ({
   signer,
   solana: rpc,
   rollup: rpc,
+  rollupEndpoint: "https://rollup.invalid/path?token=secret",
+  depositKey: Keypair.generate(),
   accountOpen: async () => true,
   readExchange: async () => facts,
   journal,
@@ -149,6 +153,52 @@ describe("the mainnet transfer env", () => {
     await expect(
       env.signChecked(seatDeposit(keypair.publicKey), { kind: "seat-deposit", atoms: ATOMS }),
     ).rejects.toThrow(/changed the transaction/);
+  });
+});
+
+describe("the deposit key's move through the wallet", () => {
+  it("keeps the key's signature when the wallet adds the owner's", async () => {
+    const { guarded, keypair } = setup();
+    const key = Keypair.generate();
+    const env = await createMainnetTransferEnv({ ...parts(guarded), depositKey: key });
+    const atoms = 2_500_000n;
+    const instructions = withComputeBudget([
+      ...fundKeyInstructions({
+        owner: keypair.publicKey,
+        key: key.publicKey,
+        mint,
+        decimals: 6,
+        atoms,
+      }),
+      ...(await moveKeyInstructions({
+        owner: keypair.publicKey,
+        key: key.publicKey,
+        mint,
+        validator: new PublicKey(MAINNET_PINS.validator),
+        atoms,
+        sealed: false,
+        first: true,
+        vaultMissing: false,
+      })),
+    ]);
+    const transaction = new Transaction({
+      feePayer: keypair.publicKey,
+      blockhash: PublicKey.unique().toBase58(),
+      lastValidBlockHeight: 100,
+    }).add(...instructions);
+    transaction.partialSign(key);
+    const signed = await env.signChecked(transaction, {
+      kind: "key-move",
+      atoms,
+      sealed: false,
+      key: key.publicKey,
+      decimals: 6,
+    });
+    const signers = signed.signatures.filter((entry) => entry.signature !== null);
+    expect(signers.map((entry) => entry.publicKey.toBase58()).sort()).toEqual(
+      [keypair.publicKey, key.publicKey].map((entry) => entry.toBase58()).sort(),
+    );
+    expect(signed.verifySignatures()).toBe(true);
   });
 });
 

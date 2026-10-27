@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { Connection } from "@solana/web3.js";
-import { deposit } from "@/lib/transfer/deposit";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
-import { ROUND_TRIP_LAMPORTS } from "@/lib/transfer/operation";
+import { programAddresses } from "@/lib/rollup/sdk";
+import { ROUND_TRIP_LAMPORTS, keyDepositInstruction } from "@/lib/transfer/operation";
 import type { SolanaRpc } from "@/lib/transfer/solanaRpc";
 import { tryLockOwner } from "@/lib/transfer/lock";
-import { USDC, makeWorld, type World } from "./transferWorld";
+import { USDC, legacyDeposit, makeWorld, type World } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
 const AMOUNT = "2.5";
@@ -24,6 +25,7 @@ async function earlierMove(world: World, signature = "sigA") {
     atoms: ATOMS.toString(),
     step: "deposit",
     rollupBefore: "0",
+    depositKey: world.depositKey.publicKey.toBase58(),
     sends: [
       {
         signature,
@@ -61,12 +63,12 @@ describe("deposit preconditions", () => {
     expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
   });
 
-  it("refuses when custody cannot be read, rather than counting it as empty", async () => {
+  it("leaves the cap to the program when the rollup does not serve custody", async () => {
     const world = makeWorld();
     world.rollup.accounts.delete(world.custody.toBase58());
+    landing(world);
     const outcome = await deposit(world.env, { amount: AMOUNT });
-    expect(outcome).toMatchObject({ status: "refused", reason: "custody-unreadable" });
-    expect(world.events).toEqual([]);
+    expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
   });
 
   it("refuses when the wallet holds less SOL than the steps cost, before any signature", async () => {
@@ -114,7 +116,7 @@ describe("deposit steps", () => {
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toEqual({ status: "done", id: "id1", atoms: ATOMS, next: "syncView" });
     expect(world.solana.token(world.wallet)).toBe(100n * USDC - ATOMS);
-    expect(world.rollup.token(world.wallet)).toBe(0n);
+    expect(world.rollup.token(world.keyAccount)).toBe(0n);
     expect(new Set(world.rollup.sent).size).toBe(1);
     expect(world.rows.size).toBe(0);
   });
@@ -127,17 +129,170 @@ describe("deposit steps", () => {
       "sign",
       "journal:record",
       "broadcast:solana",
-      "sign",
       "journal:seat",
       "broadcast:rollup",
     ]);
+  });
+
+  it("asks the wallet for one signature only, and a mainnet one", async () => {
+    const world = makeWorld();
+    landing(world);
+    await deposit(world.env, { amount: AMOUNT });
+    expect(world.signed).toHaveLength(1);
+    const [transaction] = world.signed;
+    const program = world.pins.programId;
+    expect(transaction.instructions.some((ix) => ix.programId.equals(program))).toBe(false);
+    expect(transaction.feePayer?.equals(world.keypair.publicKey)).toBe(true);
+    const signers = transaction.signatures
+      .filter((entry) => entry.signature !== null)
+      .map((entry) => entry.publicKey.toBase58());
+    expect(signers.sort()).toEqual([world.owner, world.depositKey.publicKey.toBase58()].sort());
+  });
+
+  it("has the deposit key sign and pay for the collateral deposit, crediting the owner", async () => {
+    const world = makeWorld();
+    landing(world);
+    await deposit(world.env, { amount: AMOUNT });
+    const [raw] = world.rollup.rawSent;
+    const sent = Transaction.from(raw);
+    expect(sent.feePayer?.equals(world.depositKey.publicKey)).toBe(true);
+    expect(sent.signatures.map((entry) => entry.publicKey.toBase58())).toEqual([
+      world.depositKey.publicKey.toBase58(),
+    ]);
+    expect(sent.instructions).toHaveLength(1);
+    const expected = keyDepositInstruction(world.env, ATOMS);
+    expect(sent.instructions[0].keys.map((key) => key.pubkey.toBase58())).toEqual(
+      expected.keys.map((key) => key.pubkey.toBase58()),
+    );
+    expect(sent.instructions[0].keys.map((key) => key.pubkey.toBase58())).toContain(
+      programAddresses(world.pins.programId).view(world.keypair.publicKey).toBase58(),
+    );
+    expect(world.record()).toBeUndefined();
+  });
+
+  it("writes the deposit key into the record with the move", async () => {
+    const world = makeWorld();
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.rollup.script({ fate: "swallow" });
+    await deposit(world.env, { amount: AMOUNT });
+    expect(world.record()).toMatchObject({
+      depositKey: world.depositKey.publicKey.toBase58(),
+      rollupBefore: "0",
+    });
+    expect(world.record()?.seat).toMatchObject({ signer: "deposit-key" });
+  });
+
+  it("resumes from every state without asking the wallet again", async () => {
+    const world = makeWorld();
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.rollup.script({ fate: "swallow" });
+    await deposit(world.env, { amount: AMOUNT });
+    world.rollup.statuses.set(world.rollup.sent[0], { err: null, confirmationStatus: "finalized" });
+    world.events.length = 0;
+    const resumed = await deposit(world.env, {
+      amount: AMOUNT,
+      intent: { kind: "resume", id: "id1", atoms: ATOMS.toString() },
+    });
+    expect(resumed).toMatchObject({ status: "done" });
+    expect(world.events).not.toContain("sign");
+  });
+
+  it("refuses to begin a fresh move from a resume whose record is gone", async () => {
+    const world = makeWorld();
+    const outcome = await deposit(world.env, {
+      amount: AMOUNT,
+      intent: { kind: "resume", id: "gone", atoms: ATOMS.toString() },
+    });
+    expect(outcome).toMatchObject({ status: "refused" });
+    expect(world.events).toEqual([]);
+  });
+
+  it("does not finish a record begun without a deposit key, and sends nothing", async () => {
+    const world = makeWorld();
+    await legacyDeposit(world, "fail", ATOMS);
+    const outcome = await deposit(world.env, { amount: AMOUNT });
+    expect(outcome).toMatchObject({ status: "refused", reason: "legacy-deposit" });
+    expect(world.events).toEqual([]);
+  });
+
+  it("does not finish a record made with a different deposit key", async () => {
+    const world = makeWorld();
+    await earlierMove(world);
+    await world.env.journal.finish(world.owner, "old");
+    await world.env.journal.record(world.owner, {
+      id: "old",
+      kind: "deposit",
+      atoms: ATOMS.toString(),
+      step: "deposit",
+      rollupBefore: "0",
+      depositKey: PublicKey.unique().toBase58(),
+      sends: [
+        {
+          signature: "sigB",
+          lastValidBlockHeight: world.solana.height + 150,
+          before: "0",
+          moved: ATOMS.toString(),
+        },
+      ],
+    });
+    const outcome = await deposit(world.env, { amount: AMOUNT });
+    expect(outcome).toMatchObject({ status: "refused", reason: "deposit-key-missing" });
+  });
+
+  it("pays a later deposit into the same key, counting what it already held", async () => {
+    const world = makeWorld();
+    world.delegateKey(1_000_000n);
+    landing(world);
+    expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "done" });
+    expect(world.rollup.token(world.keyAccount)).toBe(1_000_000n);
+  });
+  it("credits a balance left in the key when no transfer is open, journaled before it is sent", async () => {
+    const world = makeWorld();
+    world.delegateKey(ATOMS);
+    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
+    const outcome = await recoverDepositKey(world.env);
+    expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
+    expect(world.events).toEqual(["journal:record", "broadcast:rollup"]);
+    expect(world.rollup.token(world.keyAccount)).toBe(0n);
+    expect(world.rows.size).toBe(0);
+  });
+
+  it("carries an interrupted recovery on without sending it twice", async () => {
+    const world = makeWorld();
+    world.delegateKey(ATOMS);
+    world.rollup.script({ fate: "swallow" });
+    expect(await recoverDepositKey(world.env)).toMatchObject({ status: "waiting" });
+    const [record] = [...world.rows.values()];
+    world.rollup.statuses.set(world.rollup.sent[0], { err: null, confirmationStatus: "finalized" });
+    const resumed = await deposit(world.env, {
+      amount: "2.5",
+      intent: { kind: "resume", id: record.id, atoms: record.atoms },
+    });
+    expect(resumed).toMatchObject({ status: "done" });
+    expect(new Set(world.rollup.sent).size).toBe(1);
+    expect(world.solana.sent).toEqual([]);
+  });
+
+  it("has nothing to do when the key holds nothing, and waits behind an open transfer", async () => {
+    const world = makeWorld();
+    world.delegateKey(0n);
+    expect(await recoverDepositKey(world.env)).toMatchObject({
+      status: "refused",
+      reason: "nothing-to-recover",
+    });
+    await earlierMove(world);
+    expect(await recoverDepositKey(world.env)).toMatchObject({
+      status: "refused",
+      reason: "unfinished-operation",
+    });
+    expect(world.rollup.sent).toEqual([]);
   });
 
   it("resumes after the move landed by sending only the deposit", async () => {
     const world = makeWorld();
     await earlierMove(world);
     world.solana.statuses.set("sigA", { err: null, confirmationStatus: "finalized" });
-    world.delegate(ATOMS);
+    world.delegateKey(ATOMS);
     world.solana.setToken(world.wallet, 100n * USDC - ATOMS);
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     const outcome = await deposit(world.env, { amount: AMOUNT });
@@ -158,7 +313,7 @@ describe("deposit steps", () => {
     const world = makeWorld();
     await earlierMove(world);
     world.solana.statuses.set("sigA", { err: null, confirmationStatus: "finalized" });
-    world.delegate(0n);
+    world.delegateKey(0n);
     await world.env.journal.recordSeatSend(world.owner, "old", {
       state: "pending",
       at: "t",
@@ -231,7 +386,7 @@ describe("deposit steps", () => {
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "done" });
     expect(new Set(world.rollup.sent).size).toBe(2);
-    expect(world.rollup.token(world.wallet)).toBe(0n);
+    expect(world.rollup.token(world.keyAccount)).toBe(0n);
   });
 
   it("does not take a balance change for proof that the deposit landed", async () => {
@@ -291,7 +446,7 @@ describe("deposit steps", () => {
     const world = makeWorld();
     await earlierMove(world);
     world.solana.statuses.set("sigA", { err: null, confirmationStatus: "finalized" });
-    world.delegate(ATOMS);
+    world.delegateKey(ATOMS);
     await world.env.journal.recordSeatSend(world.owner, "old", {
       state: "pending",
       at: "t",
@@ -311,7 +466,7 @@ describe("deposit steps", () => {
     const world = makeWorld();
     await earlierMove(world);
     world.solana.statuses.set("sigA", { err: null, confirmationStatus: "finalized" });
-    world.delegate(ATOMS);
+    world.delegateKey(ATOMS);
     await world.env.journal.recordSeatSend(world.owner, "old", {
       state: "pending",
       at: "t",
@@ -324,7 +479,7 @@ describe("deposit steps", () => {
     const moved = makeWorld();
     await earlierMove(moved);
     moved.solana.statuses.set("sigA", { err: null, confirmationStatus: "finalized" });
-    moved.delegate(ATOMS + 5n);
+    moved.delegateKey(ATOMS + 5n);
     await moved.env.journal.recordSeatSend(moved.owner, "old", {
       state: "pending",
       at: "t",
@@ -361,7 +516,7 @@ describe("deposit steps", () => {
     world.rollup.script({ fate: "fail" });
     const stranded = await deposit(world.env, { amount: AMOUNT });
     expect(stranded).toMatchObject({ status: "stranded" });
-    expect(world.rollup.token(world.wallet)).toBe(ATOMS);
+    expect(world.rollup.token(world.keyAccount)).toBe(ATOMS);
     expect(world.record()?.seat).toBeUndefined();
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     const retried = await deposit(world.env, { amount: AMOUNT });

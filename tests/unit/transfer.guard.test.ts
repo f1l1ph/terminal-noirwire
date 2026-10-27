@@ -24,6 +24,7 @@ import {
   withComputeBudget,
 } from "@/lib/transfer/computeBudget";
 import { deposit } from "@/lib/transfer/deposit";
+import { fundKeyInstructions, moveKeyInstructions } from "@/lib/transfer/depositKey";
 import {
   signableRefusal,
   validatedPins,
@@ -34,6 +35,7 @@ import {
   createAssociatedTokenAccountIdempotentIx,
   createTransferEnv,
   depositInstruction,
+  keyDepositInstruction,
   walletAccount,
   withdrawInstruction,
 } from "@/lib/transfer/operation";
@@ -386,7 +388,7 @@ describe("the env", () => {
     expect(await deposit(sealed.env, { amount: "2.5" })).toMatchObject({ status: "done" });
 
     const existing = makeWorld();
-    existing.delegate(USDC_TEN);
+    existing.delegateKey(USDC_TEN);
     existing.solana.script({ fate: "land", effect: existing.moveEffect(ATOMS) });
     existing.rollup.script({ fate: "land", effect: existing.depositEffect(ATOMS) });
     expect(await deposit(existing.env, { amount: "2.5" })).toMatchObject({ status: "done" });
@@ -403,3 +405,56 @@ describe("the env", () => {
 });
 
 const USDC_TEN = 10_000_000n;
+
+describe("the deposit key's transactions", () => {
+  const keyMove = async (world: World, atoms = ATOMS, first = true) => {
+    const parts = {
+      owner: world.keypair.publicKey,
+      key: world.depositKey.publicKey,
+      mint: world.pins.mint,
+      validator: world.pins.validator,
+      atoms,
+      sealed: false,
+      first,
+    };
+    return withComputeBudget([
+      ...fundKeyInstructions({ ...parts, decimals: 6 }),
+      ...(await moveKeyInstructions({ ...parts, vaultMissing: first })),
+    ]);
+  };
+  const keyMoveShape = (world: World, atoms = ATOMS) =>
+    ({
+      kind: "key-move",
+      atoms,
+      sealed: false,
+      key: world.depositKey.publicKey,
+      decimals: 6,
+    }) as const;
+
+  it("accepts the owner-paid move into the key and nothing altered", async () => {
+    const world = makeWorld();
+    expect(await refusalOf(world, await keyMove(world), keyMoveShape(world))).toBeNull();
+    expect(
+      await refusalOf(world, await keyMove(world, ATOMS, false), keyMoveShape(world)),
+    ).toBeNull();
+    expect(await refusalOf(world, await keyMove(world, ATOMS + 1n), keyMoveShape(world))).toMatch(
+      /not the expected key-move/,
+    );
+    const other = makeWorld();
+    expect(await refusalOf(world, await keyMove(other), keyMoveShape(world))).toMatch(
+      /not the expected key-move/,
+    );
+  });
+
+  it("accepts the key's own collateral deposit only when the key pays", async () => {
+    const world = makeWorld();
+    const key = world.depositKey.publicKey;
+    const instructions = [keyDepositInstruction(world.env, ATOMS)];
+    const shape = { kind: "key-deposit", atoms: ATOMS, key } as const;
+    expect(await refusalOf(world, instructions, shape, key)).toBeNull();
+    expect(await refusalOf(world, instructions, shape)).toMatch(/deposit key is not the fee payer/);
+    expect(await refusalOf(world, instructions, { ...shape, atoms: ATOMS + 1n }, key)).toMatch(
+      /not the expected key-deposit/,
+    );
+  });
+});

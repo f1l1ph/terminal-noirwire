@@ -2,19 +2,16 @@ import { describe, expect, it } from "vitest";
 import { deposit } from "@/lib/transfer/deposit";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { returnToWallet } from "@/lib/transfer/returnToWallet";
-import { USDC, makeWorld, type World } from "./transferWorld";
+import { USDC, legacyDeposit, makeWorld, type World } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
 const AMOUNT = "2.5";
 const START = 100n * USDC;
 
-/** A deposit whose move into the rollup landed and whose collateral step then did the given thing. */
+/** A deposit begun before deposits went through a deposit key, whose collateral step then did the given thing. */
 async function depositThatStopped(fate: "fail" | "swallow"): Promise<World> {
   const world = makeWorld();
-  world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
-  world.rollup.script({ fate });
-  await deposit(world.env, { amount: AMOUNT });
-  world.events.length = 0;
+  await legacyDeposit(world, fate, ATOMS);
   return world;
 }
 
@@ -28,7 +25,7 @@ describe("returnToWallet", () => {
     expect(world.solana.token(world.wallet)).toBe(START);
     expect(world.rollup.token(world.wallet)).toBe(0n);
     expect(world.rows.size).toBe(0);
-    expect(world.rollup.sent).toHaveLength(1);
+    expect(world.rollup.sent).toHaveLength(0);
   });
 
   it("writes the return down before it is broadcast", async () => {
