@@ -84,6 +84,7 @@ import { priceDecimalsOf, sizeDecimalsOf } from "../market-data/precision";
 import { isStale, STALE_MARK_MS } from "../market-data/selectors";
 import { summarizeMargin, type PerpExposure } from "./accountMargin";
 import { wireOrderType } from "./orderType";
+import { priceOutsideBand } from "./validation";
 import type {
   AccountReadOutcome,
   AccountStatus,
@@ -160,6 +161,15 @@ const DEFAULT_EXPIRY_SECONDS = 5;
  * a pushed result while a read is in flight, a full round trip on devnet.
  */
 const RESULT_PUSH_WAIT_MS = 1_500;
+/** Returned when the session picked for a send carries chain limits the reviewed order no longer meets. */
+const SETTINGS_CHANGED_RESULT: PlaceOrderResult = {
+  orderId: "",
+  tag: "",
+  status: "rejected",
+  filledSize: "0",
+  remainingSize: "0",
+  reason: "The market settings changed. Review the order again.",
+};
 /** Shown when the package gave up before it sent anything: no hold, the form is free to try again. */
 const NOT_SENT_REASON = "Nothing was sent. The order could not be prepared just now. Try again.";
 
@@ -1066,6 +1076,21 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
+  /** Whether the order is outside this session's crossing band (from the current mark), under its minimum size, or under its minimum value. */
+  private breaksSessionLimits(
+    session: RollupSession,
+    binding: MarketBinding,
+    order: NewOrderInput,
+    price: bigint,
+    size: bigint,
+  ): boolean {
+    const chain = session.limits?.get(binding.numericId);
+    if (!chain) return false;
+    if (size < chain.minSize || price * size < chain.minNotional) return true;
+    const mark = this.options.marketSettingsLookup(binding.marketId)?.markPrice;
+    return mark != null && priceOutsideBand(order.side, order.price, mark, chain.bandBps);
+  }
+
   private async placeOnce(
     wallet: WalletIdentity,
     session: RollupSession,
@@ -1075,6 +1100,12 @@ export class RollupTradingClient implements TradingClient {
     if (!binding) throw new Error(`${order.market} was not found on chain`);
     const price = priceToChainAtoms(binding.units, order.price);
     const size = sizeToLots(binding.units, order.size);
+    // The session picked for this send may be a newer one than the form
+    // validated against (a token refresh during the submit): check the order
+    // against its limits, and send nothing if they no longer allow it.
+    if (this.breaksSessionLimits(session, binding, order, price, size)) {
+      return { value: SETTINGS_CHANGED_RESULT, refusal: null };
+    }
     const makersListedNow = await this.makersListedNow(session, binding.numericId);
     const secret = randomSecret();
     const expiry = expiryFor(order.goodFor, this.now);
