@@ -906,6 +906,7 @@ export function Terminal() {
         <TerminalNotices
           owner={ownerIdentity?.address ?? null}
           pricesUnreachable={allData.marketsUnreachable}
+          usingKeptSettings={allData.marketsFromKept}
           tradingElsewhere={tabGuard.elsewhere}
           onUseThisTab={tabGuard.takeOver}
         />

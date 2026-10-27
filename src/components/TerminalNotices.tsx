@@ -3,6 +3,8 @@
 import { useDepositInProgress } from "@/components/hooks/useDepositInProgress";
 
 export const PRICES_DOWN_NOTICE = "Prices are not loading. Your funds are safe; we keep retrying.";
+export const PRICES_DOWN_KEPT_SETTINGS_NOTICE =
+  "Price service unreachable. Using the last market settings this browser saw: you can view, cancel, close and withdraw, but prices may be missing. Retrying.";
 export const DEPOSIT_IN_PROGRESS_NOTICE =
   "Deposit in progress: keep this browser open until it finishes";
 export const TRADING_IN_OTHER_TAB_NOTICE =
@@ -16,11 +18,13 @@ export const TRADING_IN_OTHER_TAB_NOTICE =
 export function TerminalNotices({
   owner,
   pricesUnreachable,
+  usingKeptSettings,
   tradingElsewhere,
   onUseThisTab,
 }: {
   owner: string | null;
   pricesUnreachable: boolean;
+  usingKeptSettings: boolean;
   tradingElsewhere: boolean;
   onUseThisTab: () => void;
 }) {
@@ -44,7 +48,7 @@ export function TerminalNotices({
           role="status"
           className="border-line text-warning rounded-tile border px-3 py-1.5 text-[12px]"
         >
-          {PRICES_DOWN_NOTICE}
+          {usingKeptSettings ? PRICES_DOWN_KEPT_SETTINGS_NOTICE : PRICES_DOWN_NOTICE}
         </p>
       )}
       {depositOpen && (

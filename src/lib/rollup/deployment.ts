@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { keepLastKnown, loadLastKnown } from "../lastKnown";
+import { browserLocalStorage, type KeyValueStore } from "../wallet/index";
 import { pinRefusal, testBuildRefusal, type NetworkPins } from "./pins";
 
 /**
@@ -86,32 +88,49 @@ export interface DeploymentOverrides {
   pins?: NetworkPins;
 }
 
-const cache = new Map<string, Promise<PublicDeployment>>();
+const cache = new Map<string, Promise<Loaded>>();
+
+const KEPT_NAME = "deployment";
+
+interface Loaded {
+  deployment: PublicDeployment;
+  /** True when the service could not be reached and the description is the one this browser kept. */
+  kept: boolean;
+}
 
 /**
  * One fetch per service for the life of the page. The pin checks and the URL
  * overrides run on every call, after the cache, so no caller can be handed an
  * answer another caller's pins would have refused. A failed fetch is
  * forgotten as soon as it fails, so the next caller asks again instead of
- * inheriting a network blip until the page is reloaded.
+ * inheriting a network blip until the page is reloaded. When the service
+ * cannot be reached, the last description this browser kept stands in for it
+ * (and is not cached, so the next caller asks the service again); every live
+ * answer replaces the kept one.
  */
 export async function fetchDeployment(
   simUrl: string,
   overrides: DeploymentOverrides = {},
   fetchFn: typeof fetch = fetch,
   sleep?: (ms: number) => Promise<void>,
+  storage: KeyValueStore = browserLocalStorage(),
 ): Promise<PublicDeployment> {
   let promise = cache.get(simUrl);
   if (!promise) {
-    promise = load(simUrl, fetchFn, sleep);
+    promise = loadOrKept(simUrl, fetchFn, sleep, storage);
     cache.set(simUrl, promise);
     const loading = promise;
-    loading.catch(() => {
-      if (cache.get(simUrl) === loading) cache.delete(simUrl);
-    });
+    loading.then(
+      ({ kept }) => {
+        if (kept && cache.get(simUrl) === loading) cache.delete(simUrl);
+      },
+      () => {
+        if (cache.get(simUrl) === loading) cache.delete(simUrl);
+      },
+    );
   }
   try {
-    return accepted(simUrl, await promise, overrides);
+    return accepted(simUrl, (await promise).deployment, overrides);
   } catch (error) {
     if (cache.get(simUrl) === promise) cache.delete(simUrl);
     throw error;
@@ -155,6 +174,25 @@ async function loadOnce(simUrl: string, fetchFn: typeof fetch): Promise<PublicDe
       : new Error(message);
   }
   return deploymentSchema.parse(await response.json());
+}
+
+/** The live description (kept for next time), or, when the service stays unreachable or busy, the one kept from an earlier visit. A refusal or a malformed answer is never covered over. */
+async function loadOrKept(
+  simUrl: string,
+  fetchFn: typeof fetch,
+  sleep: ((ms: number) => Promise<void>) | undefined,
+  storage: KeyValueStore,
+): Promise<Loaded> {
+  try {
+    const deployment = await load(simUrl, fetchFn, sleep);
+    keepLastKnown(storage, KEPT_NAME, simUrl, deployment);
+    return { deployment, kept: false };
+  } catch (error) {
+    if (!(error instanceof TransientLoadError)) throw error;
+    const deployment = loadLastKnown(storage, KEPT_NAME, simUrl, deploymentSchema);
+    if (!deployment) throw error;
+    return { deployment, kept: true };
+  }
 }
 
 /** Asks up to three times, waiting 1 s then 2 s, so a blip in the service does not stop a session from being built. */
