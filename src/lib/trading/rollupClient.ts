@@ -975,8 +975,14 @@ export class RollupTradingClient implements TradingClient {
     };
   }
 
+  /** A read that comes back older than a view already shown yields that newer view instead, so a slow read never rolls the account back. */
   private mapView(session: RollupSession): Promise<TraderState> {
-    return session.client.view().then((view) => this.mapViewFrom(session, view));
+    return session.client.view().then((view) => {
+      const held = this.lastViews.get(session.owner.publicKey.toBase58());
+      return held && held.view.resultsWritten > view.resultsWritten
+        ? this.mapViewFrom(held.session, held.view)
+        : this.mapViewFrom(session, view);
+    });
   }
 
   private mapViewFrom(session: RollupSession, view: View): TraderState {
