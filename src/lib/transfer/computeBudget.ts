@@ -4,8 +4,12 @@ import { ComputeBudgetProgram, type TransactionInstruction } from "@solana/web3.
 export const UNITS_PER_INSTRUCTION = 200_000;
 /** The most compute units a transaction may ask for. */
 export const MAX_COMPUTE_UNITS = 1_400_000;
-/** What the owner pays per compute unit, in micro-lamports, on top of the base fee. */
+/** What the owner pays per compute unit, in micro-lamports, on top of the base fee: the least a transfer pays, and the price used when the recent fees cannot be read. */
 export const MICRO_LAMPORTS_PER_UNIT = 50_000;
+/** The most the owner pays per compute unit however high recent fees run, in micro-lamports. */
+export const MAX_MICRO_LAMPORTS_PER_UNIT = 200_000;
+/** Which share of the recent fees the price follows: it beats this share of the transactions that wrote the same accounts. */
+const FEE_PERCENTILE = 75;
 
 /** The compute unit limit for a transaction of `count` instructions of its own, before the two budget instructions. */
 export const computeUnitsFor = (count: number) =>
@@ -13,7 +17,7 @@ export const computeUnitsFor = (count: number) =>
 
 /** The most the priority fee can cost for a limit of `units`, in lamports. */
 export const priorityLamportsFor = (units: number) =>
-  Math.ceil((units * MICRO_LAMPORTS_PER_UNIT) / 1_000_000);
+  Math.ceil((units * MAX_MICRO_LAMPORTS_PER_UNIT) / 1_000_000);
 
 /** The most instructions each owner-paid Solana shape can carry: a sealed first deposit with the escrow and the permission, the token account's setup, the exit. */
 const MOVE_INSTRUCTIONS = 7;
@@ -30,17 +34,81 @@ export const SOLANA_EXIT_LAMPORTS =
 /** What a deposit costs its fee payer, the owner: the move into the rollup also pays the balance account's rent and the mint's escrow account, so three times the exit's, the rent of the deposit key's token account on its first deposit, and the priority fee of the move (the deposit into the seat is a rollup send and has none). */
 export const ROUND_TRIP_LAMPORTS = 35_000_000 + MAX_MOVE_PRIORITY_LAMPORTS;
 
+/** The fewest compute units a measured limit is set to, so a small simulated figure never starves the transaction. */
+export const MIN_COMPUTE_UNITS = 50_000;
+/** The margin added to the units a simulation consumed, as a percentage. */
+const SIMULATED_UNITS_MARGIN_PERCENT = 110;
+
+/**
+ * The compute unit limit for `count` instructions of its own, given the units
+ * the simulation consumed: that figure plus 10%, never below the floor and
+ * never above the default allowance. Without a usable figure it is the default.
+ */
+export function computeUnitsAfterSimulation(count: number, consumed: number | undefined): number {
+  const allowance = computeUnitsFor(count);
+  if (consumed === undefined || !Number.isSafeInteger(consumed) || consumed <= 0) return allowance;
+  const measured = Math.ceil((consumed * SIMULATED_UNITS_MARGIN_PERCENT) / 100);
+  return Math.min(Math.max(measured, MIN_COMPUTE_UNITS), allowance);
+}
+
+/**
+ * The price per compute unit that follows the recent fees paid by transactions
+ * writing the same accounts: the 75th percentile of `fees`, never below the
+ * fixed price and never above the cap. Without any fee to go by it is the
+ * fixed price.
+ */
+export function microLamportsFromFees(fees: number[] | undefined): number {
+  const usable = (fees ?? []).filter((fee) => Number.isFinite(fee) && fee >= 0);
+  if (usable.length === 0) return MICRO_LAMPORTS_PER_UNIT;
+  const sorted = [...usable].sort((a, b) => a - b);
+  const at = Math.min(sorted.length - 1, Math.ceil((sorted.length * FEE_PERCENTILE) / 100) - 1);
+  return Math.min(
+    Math.max(Math.ceil(sorted[at]), MICRO_LAMPORTS_PER_UNIT),
+    MAX_MICRO_LAMPORTS_PER_UNIT,
+  );
+}
+
 /**
  * `instructions` with the transaction's own compute budget in front: the unit
- * limit, then the unit price. A transaction that carries both is left alone by
- * the wallet, which adds a priority fee of its own only to one that has none.
+ * limit (`units`, by default the allowance for their count), then the unit
+ * price (`microLamports`, by default the fixed price). A transaction that
+ * carries both is left alone by the wallet, which adds a priority fee of its
+ * own only to one that has none.
  */
 export function withComputeBudget(
   instructions: TransactionInstruction[],
+  units: number = computeUnitsFor(instructions.length),
+  microLamports: number = MICRO_LAMPORTS_PER_UNIT,
 ): TransactionInstruction[] {
   return [
-    ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitsFor(instructions.length) }),
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: MICRO_LAMPORTS_PER_UNIT }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
     ...instructions,
   ];
+}
+
+const SET_COMPUTE_UNIT_LIMIT = 2;
+const SET_COMPUTE_UNIT_PRICE = 3;
+
+function budgetData(
+  instruction: TransactionInstruction | undefined,
+  discriminator: number,
+  length: number,
+) {
+  if (!instruction || !instruction.programId.equals(ComputeBudgetProgram.programId)) return null;
+  const data = Buffer.from(instruction.data);
+  return instruction.keys.length === 0 && data.length === length && data[0] === discriminator
+    ? data
+    : null;
+}
+
+/** The unit limit a `setComputeUnitLimit` instruction carries, or null when it is anything else. */
+export function computeUnitLimitOf(instruction: TransactionInstruction | undefined): number | null {
+  return budgetData(instruction, SET_COMPUTE_UNIT_LIMIT, 5)?.readUInt32LE(1) ?? null;
+}
+
+/** The micro-lamports per unit a `setComputeUnitPrice` instruction carries, or null when it is anything else. */
+export function computeUnitPriceOf(instruction: TransactionInstruction | undefined): number | null {
+  const data = budgetData(instruction, SET_COMPUTE_UNIT_PRICE, 9);
+  return data === null ? null : Number(data.readBigUInt64LE(1));
 }

@@ -18,7 +18,10 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_EXIT_PRIORITY_LAMPORTS,
   MAX_MOVE_PRIORITY_LAMPORTS,
+  MAX_MICRO_LAMPORTS_PER_UNIT,
   MAX_SETUP_PRIORITY_LAMPORTS,
+  MICRO_LAMPORTS_PER_UNIT,
+  MIN_COMPUTE_UNITS,
   computeUnitsFor,
   priorityLamportsFor,
   withComputeBudget,
@@ -248,12 +251,57 @@ describe("exactly what may be signed", () => {
       expect(await refusalOf(world, [changed, same, ...rest], EXIT)).toMatch(/expected exit/);
     });
 
-    it("refuses a changed unit price", async () => {
+    it("accepts a unit limit from the floor to the allowance, and refuses one outside it", async () => {
+      const world = makeWorld();
+      const [, same, ...rest] = await budgeted(world);
+      const limit = (units: number) => ComputeBudgetProgram.setComputeUnitLimit({ units });
+      const allowance = computeUnitsFor(rest.length);
+      for (const units of [MIN_COMPUTE_UNITS, 123_457, allowance]) {
+        expect(
+          await refusalOf(world, [limit(units), same, ...rest], EXIT),
+          String(units),
+        ).toBeNull();
+      }
+      for (const units of [MIN_COMPUTE_UNITS - 1, allowance + 1, 0]) {
+        expect(await refusalOf(world, [limit(units), same, ...rest], EXIT), String(units)).toMatch(
+          /expected exit/,
+        );
+      }
+    });
+
+    it("accepts a unit price from the fixed price to the cap, and refuses one outside it", async () => {
       const world = makeWorld();
       const [same, , ...rest] = await budgeted(world);
-      const changed = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_001 });
-      expect(await refusalOf(world, [same, changed, ...rest], EXIT)).toMatch(/expected exit/);
+      const priced = (microLamports: number) =>
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports });
+      for (const microLamports of [
+        MICRO_LAMPORTS_PER_UNIT,
+        MICRO_LAMPORTS_PER_UNIT + 1,
+        MAX_MICRO_LAMPORTS_PER_UNIT,
+      ]) {
+        expect(
+          await refusalOf(world, [same, priced(microLamports), ...rest], EXIT),
+          String(microLamports),
+        ).toBeNull();
+      }
+      for (const microLamports of [
+        0,
+        MICRO_LAMPORTS_PER_UNIT - 1,
+        MAX_MICRO_LAMPORTS_PER_UNIT + 1,
+      ]) {
+        expect(
+          await refusalOf(world, [same, priced(microLamports), ...rest], EXIT),
+          String(microLamports),
+        ).toMatch(/expected exit/);
+      }
       expect(await refusalOf(world, [same, price, ...rest], EXIT)).toBeNull();
+    });
+
+    it("still compares every instruction after the budget exactly", async () => {
+      const world = makeWorld();
+      const [limit2, price2, first, ...rest] = await budgeted(world);
+      expect(await refusalOf(world, [limit2, price2, ...rest], EXIT)).toMatch(/expected exit/);
+      expect(await refusalOf(world, [limit2, price2, first, ...rest], EXIT)).toBeNull();
     });
 
     it("refuses a third budget instruction", async () => {

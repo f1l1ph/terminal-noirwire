@@ -1,4 +1,5 @@
 import {
+  finishIfNothingSent,
   refuse,
   rollupSendState,
   underLock,
@@ -13,7 +14,8 @@ export type DismissOutcome = Stopped | { status: "dismissed"; id: string; signat
  * Closes the record of a rollup send that did not go through or cannot be
  * placed, once the user has looked at it. It only ever closes the record: the
  * transaction is never sent again, and if it later landed after all, the
- * balances will show it. A send that landed, that failed (already cleared) or
+ * balances will show it. A record left holding nothing that could have moved
+ * money, such as a withdrawal that sent nothing else, is finished with it. A send that landed, that failed (already cleared) or
  * that may still land is not dismissable.
  */
 export function dismissRollupSend(env: TransferEnv): Promise<DismissOutcome> {
@@ -27,7 +29,7 @@ export function dismissRollupSend(env: TransferEnv): Promise<DismissOutcome> {
         "No rollup send is waiting on record. Nothing was changed.",
       );
     }
-    const state = await rollupSendState(env, record.seat);
+    const state = await rollupSendState(env, record.seat, BigInt(record.atoms));
     if (state.kind !== "not-seen") {
       return refuse(
         "not-dismissable",
@@ -35,6 +37,7 @@ export function dismissRollupSend(env: TransferEnv): Promise<DismissOutcome> {
       );
     }
     await env.journal.clearSeatSend(owner, record.id);
+    await finishIfNothingSent(env, record.id);
     return { status: "dismissed", id: record.id, signature: record.seat.signature };
   });
 }

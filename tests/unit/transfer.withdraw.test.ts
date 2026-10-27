@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { awaitsFinality } from "@/lib/transfer/attention";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { tryLockOwner } from "@/lib/transfer/lock";
 import { SOLANA_EXIT_LAMPORTS } from "@/lib/transfer/operation";
-import { withdraw } from "@/lib/transfer/withdraw";
+import { finishCompleted, withdraw } from "@/lib/transfer/withdraw";
 import { USDC, makeWorld, staleMark, type World } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
@@ -299,7 +300,7 @@ describe("withdraw steps", () => {
     expect(world.record()?.seat?.state).toBe("landed");
   });
 
-  it("keeps the record until both legs are finalized", async () => {
+  it("is done once the Solana leg is confirmed, and the record is closed without a click once it is finalized", async () => {
     const world = makeWorld();
     world.delegate(0n);
     world.rollup.script({ fate: "land", effect: world.seatEffect(ATOMS) });
@@ -308,12 +309,35 @@ describe("withdraw steps", () => {
       effect: world.shuttleEffect(ATOMS),
       commitment: "confirmed",
     });
-    expect(await ask(world)).toMatchObject({ status: "waiting" });
+    expect(await ask(world)).toMatchObject({ status: "done" });
+    expect(world.record()).toBeDefined();
+    expect(awaitsFinality(world.record()!)).toBe(true);
+    await finishCompleted(world.env);
     expect(world.record()).toBeDefined();
     world.solana.statuses.set(world.solana.sent[0], { err: null, confirmationStatus: "finalized" });
-    expect(await ask(world)).toMatchObject({ status: "done" });
+    await finishCompleted(world.env);
     expect(world.rows.size).toBe(0);
     expect(new Set(world.solana.sent).size).toBe(1);
+  });
+
+  it("leaves a record alone while a transfer holds the owner's lock", async () => {
+    const world = makeWorld();
+    world.delegate(0n);
+    world.rollup.script({ fate: "land", effect: world.seatEffect(ATOMS) });
+    world.solana.script({
+      fate: "land",
+      effect: world.shuttleEffect(ATOMS),
+      commitment: "confirmed",
+    });
+    await ask(world);
+    world.solana.statuses.set(world.solana.sent[0], { err: null, confirmationStatus: "finalized" });
+    const held = await tryLockOwner(world.owner, world.locks);
+    await finishCompleted(world.env);
+    expect(world.record()).toBeDefined();
+    held?.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await finishCompleted(world.env);
+    expect(world.record()).toBeUndefined();
   });
 
   it("dismisses nothing when nothing is on record", async () => {
@@ -357,19 +381,48 @@ describe("withdraw steps", () => {
         },
       ],
     });
-    world.solana.height += 10_000;
+    const heights = { finalized: world.solana.height };
+    world.solana.getBlockHeight = async (commitment?: string) =>
+      commitment === "finalized" ? heights.finalized : world.solana.height + 10_000;
     for (const answer of [undefined, "lost:sigS"]) {
       const outcome = await ask(world, { answer });
-      expect(outcome).toMatchObject({
-        status: "unknown",
-        subject: "solana-send",
-        answers: ["landed:sigS"],
-      });
+      expect(outcome).toMatchObject({ status: "waiting", id: "old" });
+      expect(outcome).toMatchObject({ message: expect.stringContaining("has been seen") });
+      expect(outcome).not.toMatchObject({ message: expect.stringMatching(/processed/) });
     }
+    expect(world.solana.sent).toEqual([]);
+    heights.finalized = world.solana.height + 10_000;
+    world.solana.script({ fate: "land", effect: world.shuttleEffect(ATOMS) });
+    expect(await ask(world)).toMatchObject({ status: "done", id: "old" });
+    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent[0]).not.toBe("sigS");
+  });
+
+  it("takes a Solana send seen as processed and since missing as landed on the operator's word, sending nothing", async () => {
+    const world = readyToWithdraw();
+    await earlierSeatStep(world, "landed");
+    await world.env.journal.record(world.owner, {
+      id: "old",
+      kind: "withdraw",
+      atoms: ATOMS.toString(),
+      step: "withdraw",
+      sends: [
+        {
+          signature: "sigS",
+          lastValidBlockHeight: world.solana.height + 150,
+          status: "processed",
+          before: "0",
+          moved: ATOMS.toString(),
+        },
+      ],
+    });
+    world.solana.getBlockHeight = async (commitment?: string) =>
+      commitment === "finalized" ? world.solana.height : world.solana.height + 10_000;
+    expect(await ask(world, { answer: "landed:sigS" })).toMatchObject({ status: "done" });
     expect(world.solana.sent).toEqual([]);
   });
 
-  it("checks only the arrival of a Solana send that landed, and sends nothing", async () => {
+  it("decides arrival from the exit's status and not from what the wallet holds, and sends nothing", async () => {
     const world = readyToWithdraw();
     await earlierSeatStep(world, "landed");
     await world.env.journal.record(world.owner, {
@@ -387,10 +440,7 @@ describe("withdraw steps", () => {
       ],
     });
     world.solana.statuses.set("sigS", { err: null, confirmationStatus: "finalized" });
-    const short = await ask(world);
-    expect(short).toMatchObject({ status: "waiting", id: "old" });
-    expect(world.record()).toBeDefined();
-    world.solana.setToken(world.wallet, ATOMS);
+    world.solana.setToken(world.wallet, 0n);
     const arrived = await ask(world);
     expect(arrived).toMatchObject({ status: "done", id: "old", signature: "sigS" });
     expect(world.solana.sent).toEqual([]);

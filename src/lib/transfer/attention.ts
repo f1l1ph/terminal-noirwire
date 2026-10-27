@@ -1,7 +1,7 @@
 import type { OperationRecord } from "./journal";
 
 /** What a rollup send stands at, as `rollupSendState` judges it from its signature's status. */
-export type SeatJudgement = "landed" | "failed" | "pending" | "not-seen" | "unknown";
+export type SeatJudgement = "landed" | "failed" | "pending" | "not-seen" | "unreadable" | "unknown";
 
 export type AttentionKind = "waiting" | "not-landed" | "unknown";
 
@@ -27,6 +27,16 @@ export interface Attention {
 export const depositInProgress = (records: readonly OperationRecord[]): boolean =>
   records.some((record) => operationOf(record) === "deposit");
 
+/**
+ * Whether a record is complete and only waiting for its sends to be final: a
+ * deposit whose last step landed, or a withdrawal or return whose Solana send
+ * was made and has no rollup send still unproven. Closing it needs no click.
+ */
+export const awaitsFinality = (record: OperationRecord): boolean =>
+  record.kind === "deposit"
+    ? record.seat?.state === "landed"
+    : record.seat?.state !== "pending" && record.sends.some((send) => send.moved === record.atoms);
+
 /** The actions a record may offer. A resend is never one of them: resuming runs the flow, which judges every earlier send first. */
 export type RecordAction = "copy-signature" | "dismiss" | "resume" | "return";
 
@@ -40,7 +50,8 @@ const lastSignature = (record: OperationRecord): string | undefined =>
  * How one record is shown. Only a rollup send that is past its blockhash's
  * life and was read as absent is `not-landed`, and only that can be
  * dismissed; one that cannot be placed is `unknown`; everything else is
- * still `waiting`. `seat` is the judgement of the record's pending rollup
+ * still `waiting`, and one whose status could not be read just now can be
+ * carried on, which only reads it again. `seat` is the judgement of the record's pending rollup
  * send, or null when none was made (no pending send, or transfers are off in
  * this build, where nothing can be judged).
  */
@@ -81,7 +92,7 @@ export function attentionOf(
     ...base,
     kind: "waiting",
     signature: pending?.signature ?? lastSignature(record),
-    resumable: settled && !behindReturn,
+    resumable: (settled || seat === "unreadable") && !behindReturn,
     returnable:
       settled &&
       operation === "deposit" &&
@@ -91,9 +102,15 @@ export function attentionOf(
   };
 }
 
-/** What a record offers: the signature to copy when it has one, and Dismiss for a send that did not land and nothing else. */
-export function actionsOf(attention: Attention): RecordAction[] {
+/**
+ * What a record offers: the signature to copy when it has one, and Dismiss for
+ * a send that did not land and nothing else. The record of a transfer this tab
+ * is running now (`running`) offers nothing to press, since carrying it on
+ * would only collide with the run.
+ */
+export function actionsOf(attention: Attention, running = false): RecordAction[] {
   const actions: RecordAction[] = attention.signature ? ["copy-signature"] : [];
+  if (running) return actions;
   if (attention.kind === "not-landed") actions.push("dismiss");
   if (attention.resumable) actions.push("resume");
   if (attention.returnable) actions.push("return");

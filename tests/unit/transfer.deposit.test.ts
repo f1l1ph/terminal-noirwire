@@ -9,6 +9,7 @@ import { programAddresses } from "@/lib/rollup/sdk";
 import { ROUND_TRIP_LAMPORTS, keyDepositInstruction } from "@/lib/transfer/operation";
 import type { SolanaRpc } from "@/lib/transfer/solanaRpc";
 import { tryLockOwner } from "@/lib/transfer/lock";
+import { withdraw } from "@/lib/transfer/withdraw";
 import { USDC, legacyDeposit, makeWorld, type World } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
@@ -574,7 +575,7 @@ describe("deposit steps", () => {
     expect(world.rollup.sent).toEqual([]);
   });
 
-  it("shows the signature and sends nothing when a send cannot be placed", async () => {
+  it("sends nothing when a send cannot be placed, and only reads again when its status could not be read", async () => {
     const world = makeWorld();
     await earlierMove(world);
     world.solana.statuses.set("sigA", { err: null, confirmationStatus: "finalized" });
@@ -604,9 +605,8 @@ describe("deposit steps", () => {
       throw new Error("endpoint down");
     };
     expect(await deposit(moved.env, { amount: AMOUNT })).toMatchObject({
-      status: "unknown",
-      signature: "sigR",
-      answers: [],
+      status: "waiting",
+      message: expect.stringContaining("could not be read just now"),
     });
     moved.rollup.height += 200;
     expect(await dismissRollupSend(moved.env)).toMatchObject({ reason: "not-dismissable" });
@@ -633,11 +633,35 @@ describe("deposit steps", () => {
     expect(strandedMessage).toMatch(/do not need to send more/);
     expect(strandedMessage).not.toMatch(/Custom|InstructionError|deposit again by hand/);
     expect(world.rollup.token(world.keyAccount)).toBe(ATOMS);
-    expect(world.record()?.seat).toBeUndefined();
-    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
-    const retried = await deposit(world.env, { amount: AMOUNT });
-    expect(retried).toMatchObject({ status: "done" });
+    expect(world.rows.size).toBe(0);
     expect(world.solana.sent).toHaveLength(1);
+  });
+
+  it("does not block a withdrawal of the collateral already in the account while its tokens wait in the key", async () => {
+    const world = makeWorld();
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.rollup.script({ fate: "fail" });
+    expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "stranded" });
+    world.delegate(0n);
+    world.rollup.script({ fate: "land", effect: world.seatEffect(ATOMS) });
+    world.solana.script({ fate: "land", effect: world.shuttleEffect(ATOMS) });
+    const out = await withdraw(world.env, {
+      amount: AMOUNT,
+      freeCollateral: 5n * USDC,
+      intent: { kind: "new" },
+    });
+    expect(out).toMatchObject({ status: "done" });
+    expect(world.rollup.token(world.keyAccount)).toBe(ATOMS);
+  });
+
+  it("puts the tokens a refused deposit left in the key into the account once the program takes them", async () => {
+    const world = makeWorld();
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.rollup.script({ fate: "fail" });
+    expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "stranded" });
+    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
+    expect(await recoverDepositKey(world.env)).toMatchObject({ status: "done" });
+    expect(world.rollup.token(world.keyAccount)).toBe(0n);
   });
 
   it("does not send a second move when the first send's answer was lost", async () => {

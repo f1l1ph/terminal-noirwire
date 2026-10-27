@@ -831,6 +831,7 @@ export function Terminal() {
               withdrawByKey={trading.withdrawByKey}
               ownerAuthKnown={trading.ownerAuthKnown}
               accountOpen={trading.accountStatus === "open"}
+              accountKnown={trading.accountStatus !== "unknown"}
               collateral={trading.state.collateral ?? null}
               onSettled={() => void trading.syncMarket(selectedMarketId)}
             />

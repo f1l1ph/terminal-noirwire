@@ -1,14 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { actionsOf, attentionOf } from "@/lib/transfer/attention";
+import { attentionOf } from "@/lib/transfer/attention";
 import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { depositKeyLeftover } from "@/lib/transfer/leftover";
 import { outcomeLine } from "@/lib/transfer/outcomeCopy";
-import { resumeRecord } from "@/lib/transfer/resume";
-import { returnToWallet } from "@/lib/transfer/returnToWallet";
-import { withdraw } from "@/lib/transfer/withdraw";
 import { legacyDeposit, makeWorld } from "./transferWorld";
-
-const flows = { deposit, withdraw, returnToWallet };
 
 const ATOMS = 2_500_000n;
 const AMOUNT = "2.5";
@@ -16,48 +11,42 @@ const AMOUNT = "2.5";
 const lineOf = (outcome: Awaited<ReturnType<typeof deposit>>) =>
   outcomeLine("deposit", outcome, 6, 35_000_000).text;
 
-describe("a stranded key-based deposit has a way out in the records", () => {
-  it("shows the record with Try the deposit again, and no return to the wallet", async () => {
+describe("a stranded key-based deposit has a way out that blocks nothing", () => {
+  it("names the button that exists, and leaves no record to block other transfers", async () => {
     const world = makeWorld();
     world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
     world.rollup.script({ fate: "fail" });
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "stranded" });
-    expect(lineOf(outcome)).toMatch(/Try the deposit again/);
-    const [record] = [...world.rows.values()];
-    const attention = attentionOf(record, null);
-    expect(attention).toMatchObject({ keyed: true, resumable: true, returnable: false });
-    expect(actionsOf(attention)).toContain("resume");
-    expect(actionsOf(attention)).not.toContain("return");
+    expect(lineOf(outcome)).toMatch(/"Put it in my account"/);
+    expect(lineOf(outcome)).not.toMatch(/Try the deposit again/);
+    expect(world.rows.size).toBe(0);
+    expect(await depositKeyLeftover(world.env)).toBe(ATOMS);
   });
 
-  it("credits the account when the button is pressed", async () => {
+  it("credits the account when the leftover button is pressed", async () => {
     const world = makeWorld();
     world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
     world.rollup.script({ fate: "fail" });
     await deposit(world.env, { amount: AMOUNT });
-    const [record] = [...world.rows.values()];
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
-    const attention = attentionOf(record, null);
-    const outcome = await resumeRecord(world.env, attention, 0n, flows, 6);
+    const outcome = await recoverDepositKey(world.env);
     expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
     expect(world.rollup.token(world.keyAccount)).toBe(0n);
     expect(world.solana.sent).toHaveLength(1);
   });
 
-  it("keeps the button when the program refuses again, and says why, without sending by itself", async () => {
+  it("keeps the leftover button when the program refuses again, and says why, without sending by itself", async () => {
     const world = makeWorld();
     world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
     world.rollup.script({ fate: "fail" }, { fate: "fail" });
     await deposit(world.env, { amount: AMOUNT });
-    const [record] = [...world.rows.values()];
-    const attention = attentionOf(record, null);
-    const again = await resumeRecord(world.env, attention, 0n, flows, 6);
+    const again = await recoverDepositKey(world.env);
     expect(again).toMatchObject({ status: "stranded" });
-    expect(lineOf(again as Awaited<ReturnType<typeof deposit>>)).toMatch(/deposit limit/);
+    expect(lineOf(again)).toMatch(/deposit limit/);
     expect(world.rollup.sent).toHaveLength(2);
-    const [kept] = [...world.rows.values()];
-    expect(actionsOf(attentionOf(kept, null))).toContain("resume");
+    expect(world.rows.size).toBe(0);
+    expect(await depositKeyLeftover(world.env)).toBe(ATOMS);
   });
 });
 

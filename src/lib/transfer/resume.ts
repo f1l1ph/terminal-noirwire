@@ -53,6 +53,16 @@ export function giveBack(
   return flows.returnToWallet(env, { intent: { id: attention.id, atoms: attention.atoms } });
 }
 
+/** Whether the Deposit or Withdraw button may be pressed: nothing is running or open, the amount is valid, the account is open, and the account settings are known, which both directions need. */
+export const canStartTransfer = (state: {
+  running: boolean;
+  blocked: boolean;
+  amountOk: boolean;
+  accountOpen: boolean;
+  settingsKnown: boolean;
+}): boolean =>
+  !state.running && !state.blocked && state.amountOk && state.accountOpen && state.settingsKnown;
+
 /** A new transfer waits while any record is open, or while the records cannot be read. */
 export const newTransferBlocked = (open: number, unreadable: boolean): boolean =>
   unreadable || open > 0;
