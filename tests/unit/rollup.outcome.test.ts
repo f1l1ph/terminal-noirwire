@@ -163,7 +163,7 @@ describe("placedToResult: outcome status mapping", () => {
 
   it.each([
     [77, /too far from the market, so trading is paused for safety/],
-    [37, /too far from the market price/],
+    [37, /too far from the market price\. Try again in a moment, or set a price nearer the market/],
     [24, /fall below the margin/],
     [43, /only shrink your position/],
     [48, /position limit/],
