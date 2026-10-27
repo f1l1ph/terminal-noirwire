@@ -41,9 +41,20 @@ export const deploymentSchema = z.object({
   exchange: z.string(),
   stats: z.string(),
   markets: z.array(marketSchema),
+  /**
+   * How the owner consents to opening an account, replacing order keys and
+   * (through an order key) withdrawing: with a signed message, or with a
+   * transaction their wallet signs. Absent means "transaction", which is also
+   * what a deployment whose program predates signed messages must say.
+   */
+  ownerAuth: z.enum(["message", "transaction"]).optional(),
 });
 
 export type PublicDeployment = z.infer<typeof deploymentSchema>;
+
+/** Whether the deployment's program takes the owner's consent as a signed message. Anything but an explicit "message" is the transaction path. */
+export const usesOwnerMessages = (deployment: Pick<PublicDeployment, "ownerAuth">): boolean =>
+  deployment.ownerAuth === "message";
 
 /**
  * The quote token `marketId` is priced in, as the deployment names it. With

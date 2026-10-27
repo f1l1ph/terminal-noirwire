@@ -8,7 +8,13 @@ import { NetworkRefused } from "./networkCheck";
 import { secretOwner, type DerivedOrderSeeds } from "../wallet/secretSigner";
 import { loadCheckpoint, saveCheckpoint } from "./checkpointStore";
 import { assertRollupIdentity } from "./identity";
-import { fetchDeployment, type DeploymentOverrides, type PublicDeployment } from "./deployment";
+import {
+  fetchDeployment,
+  usesOwnerMessages,
+  type DeploymentOverrides,
+  type PublicDeployment,
+} from "./deployment";
+import { installOrderKeysSigned } from "./ownerMessages";
 import { isMainnetOwnerSigner } from "./mainnetOwner";
 import { marketMatchesChain } from "./markets";
 import { deviceOrderKeys, type DeviceSeeds, type OrderKeyStatus } from "./orderKeySetup";
@@ -39,6 +45,7 @@ import {
   type Placed,
   type Timing,
   type View,
+  type Withdrawn,
 } from "./sdk";
 
 /** The slice of `./sdk`'s `TraderClient` this module needs; a fake of this shape is what unit tests inject. */
@@ -69,6 +76,8 @@ export interface TraderClientLike {
   ): Promise<OrderResult & Timing>;
   cancelAll(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
   syncView(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
+  /** Optional: only the real SDK client (0.8.0+) has it; a unit-test fake may omit it. */
+  withdrawByKey?(token: CustodyToken, amount: bigint, expirySeconds?: number): Promise<Withdrawn>;
   transferBetweenBalances(
     toCollateral: boolean,
     spotToken: number,
@@ -306,6 +315,7 @@ async function derivedOrderKeys(
   seeds: DerivedOrderSeeds,
   programId: PublicKey,
   checkpoint: ReturnType<typeof loadCheckpoint>,
+  install: (fresh: OrderKeyManager) => Promise<void>,
 ): Promise<OrderKeyManager> {
   const fresh = freshOrderKeys(seeds.seed);
   const notFromSeed = (error: unknown) => isErrorWithMessage(error, KEYS_NOT_FROM_SEED_MESSAGE);
@@ -323,7 +333,7 @@ async function derivedOrderKeys(
       if (!notFromSeed(error)) throw error;
     }
   }
-  await installOrderKeys(reader, owner, fresh, programId);
+  await install(fresh);
   return fresh;
 }
 
@@ -435,15 +445,21 @@ async function buildSession(
     ).catch((error: unknown) => {
       throw new SessionAuthError(error);
     });
+  const installOn = (reader: Connection, fresh: OrderKeyManager): Promise<void> =>
+    usesOwnerMessages(described)
+      ? installOrderKeysSigned(reader, signer, fresh, programId)
+      : installOrderKeys(reader, signer, fresh, programId);
   const orderKeysOn = (reader: Connection): Promise<OrderKeyManager> =>
     derivedSeeds
-      ? derivedOrderKeys(reader, signer, derivedSeeds, programId, checkpoint)
+      ? derivedOrderKeys(reader, signer, derivedSeeds, programId, checkpoint, (fresh) =>
+          installOn(reader, fresh),
+        )
       : deviceOrderKeys({
           ownerAddress,
           seeds,
           checkpoint,
           readView: (fresh) => readOwnerView(reader, ownerKey, fresh, programId),
-          install: (fresh) => installOrderKeys(reader, signer, fresh, programId),
+          install: (fresh) => installOn(reader, fresh),
           report,
           now,
           sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),

@@ -40,6 +40,22 @@ export type OpenAccountOutcome =
   /** This deployment opens accounts another way (test funds), not through the invite-gated routes. */
   | { kind: "notAvailable" };
 
+/** How the owner consents to account actions on a deployment: by a message they sign, or by a transaction their wallet signs. */
+export type OwnerAuth = "message" | "transaction";
+
+/**
+ * What a withdrawal signed by an order key came to. `withdrawn` is proven by
+ * the view; `refused` and `tooLarge` moved nothing and left the key live;
+ * `didNotRun` is a send that can no longer run; `undetermined` is a send the
+ * owner's key replacement made unprovable either way.
+ */
+export type KeyWithdrawal =
+  | { kind: "withdrawn" }
+  | { kind: "refused"; code: number | null }
+  | { kind: "tooLarge" }
+  | { kind: "didNotRun" }
+  | { kind: "undetermined" };
+
 /**
  * Every order carries a price: the venue requires one for every order type,
  * including `market` (there it is the worst acceptable execution price, the
@@ -245,6 +261,10 @@ export interface TradingClient {
   accountStatus?(wallet: WalletIdentity): Promise<AccountStatus>;
   /** The rollup connection signed in as the owner, which deposits and withdrawals read the rollup through. Optional: dev mode has no rollup. */
   rollupReader?(wallet: WalletIdentity): Promise<Connection>;
+  /** How the owner consents to account actions here, as the deployment says; "transaction" when it does not. Needs no wallet. Optional: dev mode has no such choice. */
+  ownerAuth?(): Promise<OwnerAuth>;
+  /** Withdraws `atoms` of the seat's free collateral to the owner's own token account, signed by an order key and never by the wallet. Optional: dev mode has no rollup. */
+  withdrawByKey?(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal>;
   /** The symbols of the markets that currently let only listed makers rest orders, read from each market's account. Optional: dev mode has no such list. */
   makersListedMarkets?(wallet: WalletIdentity): Promise<ReadonlySet<string>>;
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */

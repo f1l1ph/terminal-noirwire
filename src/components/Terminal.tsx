@@ -723,6 +723,7 @@ export function Terminal() {
             onRecheck={trading.recheckAccount}
             keys={trading.orderKeys}
             now={now}
+            ownerAuth={trading.ownerAuth}
             depositsOpen={FundsSection !== null}
           />
         ) : null
@@ -808,6 +809,7 @@ export function Terminal() {
             <FundsSection
               identity={ownerIdentity}
               rollupReader={trading.rollupReader}
+              withdrawByKey={trading.withdrawByKey}
               accountOpen={trading.accountStatus === "open"}
               collateral={trading.state.collateral ?? null}
               onSettled={() => void trading.syncMarket(selectedMarketId)}

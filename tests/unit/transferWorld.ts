@@ -4,6 +4,7 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Keypair, PublicKey, Transaction, type AccountInfo } from "@solana/web3.js";
 import { programAddresses } from "@/lib/rollup/sdk";
+import type { KeyWithdrawal } from "@/lib/trading/types";
 import { depositKeyAccount, depositKeyBalance } from "@/lib/transfer/depositKey";
 import { createJournal, type JournalStorage, type OperationRecord } from "@/lib/transfer/journal";
 import { tryLockOwner, type LockManagerLike } from "@/lib/transfer/lock";
@@ -158,8 +159,11 @@ export function browserLocks(): LockManagerLike {
   };
 }
 
-export function makeWorld() {
+export function makeWorld(
+  options: { withdrawByKey?: (atoms: bigint) => Promise<KeyWithdrawal> } = {},
+) {
   const events: string[] = [];
+  const keyed = options.withdrawByKey;
   const keypair = Keypair.generate();
   const depositKey = Keypair.generate();
   const clock = {
@@ -220,6 +224,12 @@ export function makeWorld() {
         return exchangeState.marketIds;
       },
     },
+    withdrawByKey: keyed
+      ? async (atoms) => {
+          events.push("key-withdraw");
+          return keyed(atoms);
+        }
+      : undefined,
     journal,
     lock: (owner) => tryLockOwner(owner, locks),
     depositKey,

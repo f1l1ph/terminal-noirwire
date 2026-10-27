@@ -1,6 +1,7 @@
 import { PublicKey, type Keypair } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { MAINNET_PINS } from "../rollup/pins";
+import type { KeyWithdrawal } from "../trading/types";
 import { rememberToken } from "../rollup/redact";
 import { QUOTE_DECIMALS } from "../rollup/markets";
 import { isMainnetOwnerSigner } from "../rollup/mainnetOwner";
@@ -71,6 +72,8 @@ export interface MainnetTransferParts {
   depositRollup?: () => Promise<SolanaRpc>;
   /** Whether the owner has an open account on the exchange, as the trading session reads it. */
   accountOpen(): Promise<boolean>;
+  /** Given only where the deployment takes the owner's consent as a signed message: the seat's withdrawal is then signed by an order key and the wallet signs no rollup transaction. */
+  withdrawByKey?: (atoms: bigint) => Promise<KeyWithdrawal>;
   /** Reads the Exchange account; by default from `rollup`. Tests pass their own. */
   readExchange?: () => Promise<ExchangeFacts>;
   journal?: Journal;
@@ -143,6 +146,7 @@ export async function createMainnetTransferEnv(parts: MainnetTransferParts): Pro
     depositRollup:
       parts.depositRollup ?? signedInAsKey(parts.depositKey, rollupBaseUrl(parts.rollupEndpoint)),
     exchange: port,
+    withdrawByKey: parts.withdrawByKey,
     journal: parts.journal ?? createJournal(indexedDbStorage()),
     lock: (owner) => tryLockOwner(owner),
     signChecked: (transaction, chain) => signChecked(parts.signer, transaction, chain),

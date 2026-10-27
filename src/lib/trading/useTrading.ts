@@ -22,6 +22,7 @@ import type {
   NewOrderInput,
   OpenAccountOutcome,
   OrderKeyState,
+  OwnerAuth,
   PlaceOrderResult,
   TraderState,
   TransferResult,
@@ -146,6 +147,22 @@ export function useTrading(
   // has no faucet, no wallet is offered test funds again, on this page or
   // after a reload (the client remembers it per deployment).
   const [noFaucet, setNoFaucet] = useState(false);
+  // Also a fact about the deployment: read from its public description, with
+  // no wallet involved. Until it is known, and wherever it is not said, the
+  // owner's consent is a transaction.
+  const [ownerAuth, setOwnerAuth] = useState<OwnerAuth>("transaction");
+  useEffect(() => {
+    let active = true;
+    void client
+      .ownerAuth?.()
+      .then((answer) => {
+        if (active) setOwnerAuth(answer);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [client]);
   const ownTagsRef = useRef<Set<string>>(new Set());
   const rollupSecretsKeyRef = useRef<string | null>(null);
   const grantUsedKeyRef = useRef<string | null>(null);
@@ -424,6 +441,13 @@ export function useTrading(
     return wallet && read ? () => read(wallet) : null;
   }, [client, wallet]);
 
+  const withdrawByKey = useMemo(() => {
+    const withdraw = client.withdrawByKey?.bind(client);
+    return wallet && withdraw && ownerAuth === "message"
+      ? (atoms: bigint) => withdraw(wallet, atoms)
+      : null;
+  }, [client, wallet, ownerAuth]);
+
   const fund = useCallback(async (): Promise<FundOutcome> => {
     if (!wallet) return { kind: "error", message: "No wallet to fund" };
     const outcome = await client.fund(wallet);
@@ -555,6 +579,10 @@ export function useTrading(
     recheckAccount,
     /** Reads the rollup as the owner; null in dev mode and with no wallet. */
     rollupReader,
+    /** How the owner consents to account actions here: "message" only where the deployment says so. */
+    ownerAuth,
+    /** Withdraws free collateral by an order key, with no wallet signature; null unless the deployment takes signed messages. */
+    withdrawByKey,
     /** Where the order keys stand on this device (waiting to replace old keys, installing, ready); null until known. */
     orderKeys: flow.keys,
     /** Symbols of the markets where only listed makers may rest orders; a Limit there is sent as immediate-or-cancel. */

@@ -9,7 +9,7 @@
  * a risk market list any more.
  */
 import "../bufferBigInt";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, type Keypair } from "@solana/web3.js";
 import { getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
 import type { OwnerSigner } from "../wallet/ownerSigner";
 import { sendOwnerSigned } from "./ownerSend";
@@ -24,39 +24,55 @@ import {
   OrderKeyManager,
   ORDER_TYPE,
   OutcomeUnknown as SdkOutcomeUnknown,
+  OWNER_TRANSACTION_ERROR,
   PROGRAM_ID,
   RESULT_STATUS,
   ROLE,
   SIDE,
   TraderClient as SdkTraderClient,
   TransactionFailed as SdkTransactionFailed,
+  WithdrawalUnknown as SdkWithdrawalUnknown,
+  clockOf as sdkClockOf,
   decodeExchange,
   decodeMarket,
+  ownerActionMessage as sdkOwnerActionMessage,
+  ownerExpiry as sdkOwnerExpiry,
   randomSecret,
   receipt as sdkReceipt,
+  replaceKeysSignedTransaction,
+  verifyOwnerSignature as sdkVerifyOwnerSignature,
   websocketUrl,
   type CustodyToken,
   type OrderKeyCheckpoint,
   type OrderResult,
+  type OwnerMessageForm,
   type Placed,
   type Settled,
   type SignMessage,
   type Timing,
   type View,
+  type WithdrawalUndetermined,
+  type Withdrawn,
 } from "@noirwire/orderbook";
 
 export type {
   CustodyToken,
   View,
   OrderResult,
+  OwnerMessageForm,
   Placed,
   Settled,
   SignMessage,
   Timing,
   OrderKeyCheckpoint,
   OrderKeyManager,
+  WithdrawalUndetermined,
+  Withdrawn,
 };
 export { randomSecret };
+/** The program's owner-action errors as a failed transaction reports them (6151 to 6154). */
+export const OWNER_ERROR_CODE = OWNER_TRANSACTION_ERROR;
+export const WithdrawalUnknown = SdkWithdrawalUnknown;
 export const ACCESS_ERROR = SDK_ACCESS_ERROR;
 export const OrderInvalid = SdkOrderInvalid;
 export const TransactionFailed = SdkTransactionFailed;
@@ -97,6 +113,63 @@ export async function installOrderKeys(
 ): Promise<void> {
   const instruction = new Instructions(programId).setOrderKeys(owner.publicKey, keys.publicKeys);
   await sendOwnerSigned(connection, [instruction], owner);
+}
+
+/** The text an owner action asks the wallet to sign (open or replace), exactly as the program rebuilds it. */
+export function ownerActionText(
+  action: "open" | "replace",
+  programId: PublicKey,
+  owner: PublicKey,
+  keys: PublicKey[],
+  expiresAt: bigint,
+  nonce?: number,
+): Uint8Array {
+  return sdkOwnerActionMessage(action, programId, owner, keys, expiresAt, nonce);
+}
+
+/** The expiry for an owner action signed now: 100 seconds past the rollup's clock reading, never past the program's limit. */
+export function ownerActionExpiry(rollupClockSeconds: number): bigint {
+  return sdkOwnerExpiry(rollupClockSeconds);
+}
+
+/** Which form of `message` the owner signed (raw or off-chain envelope), or null when `signature` is neither. */
+export function ownerSignatureForm(
+  message: Uint8Array,
+  signature: Uint8Array,
+  owner: PublicKey,
+): OwnerMessageForm | null {
+  return sdkVerifyOwnerSignature(message, signature, owner);
+}
+
+/** The rollup's clock in unix seconds, as `connection` serves it. */
+export function rollupClockSeconds(connection: Connection): Promise<number> {
+  return sdkClockOf(connection);
+}
+
+/**
+ * The whole `set_order_keys_signed` transaction for an owner's signature over
+ * the replace message: the proof first, then the replacement. The owner does
+ * not sign it, so `feePayer` alone pays and signs.
+ */
+export function signedKeyReplacement(
+  connection: Connection,
+  programId: PublicKey,
+  feePayer: Keypair,
+  replacement: {
+    owner: PublicKey;
+    orderKeys: PublicKey[];
+    nonce: number;
+    expiresAt: bigint;
+    signature: Uint8Array;
+    form: OwnerMessageForm;
+  },
+): Promise<{ raw: Uint8Array; signature: string }> {
+  return replaceKeysSignedTransaction(
+    connection,
+    new Instructions(programId),
+    feePayer,
+    replacement,
+  );
 }
 
 const UNSUPPORTED_MEDIA_TYPE = 415;
@@ -288,6 +361,15 @@ export class TraderClient {
     expirySeconds?: number,
   ): Promise<OrderResult & Timing> {
     return this.inner.transferBetweenBalances(toCollateral, spotToken, amount, expirySeconds);
+  }
+
+  /**
+   * Withdraws collateral to the owner's own token account, signed by a live
+   * order key. May throw `TransactionFailed` (refused, key still live) or
+   * `WithdrawalUnknown` (sent, not seen; its `settled` says what became of it).
+   */
+  withdrawByKey(token: CustodyToken, amount: bigint, expirySeconds?: number): Promise<Withdrawn> {
+    return this.inner.withdrawByKey(token, { collateral: true }, amount, expirySeconds);
   }
 }
 

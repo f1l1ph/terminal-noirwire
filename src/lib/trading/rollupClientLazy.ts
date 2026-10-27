@@ -5,10 +5,12 @@ import type {
   AccountStatus,
   CancelResult,
   FundOutcome,
+  KeyWithdrawal,
   MarketSettingsLookup,
   NewOrderInput,
   OpenAccountOutcome,
   OrderKeyState,
+  OwnerAuth,
   PlaceOrderResult,
   PrivacyCheck,
   TraderState,
@@ -71,6 +73,16 @@ export class LazyRollupTradingClient implements TradingClient {
     if (!client.rollupReader)
       throw new Error("This client has no rollup connection to read through");
     return client.rollupReader(wallet);
+  }
+
+  async ownerAuth(): Promise<OwnerAuth> {
+    return (await (await this.load()).ownerAuth?.()) ?? "transaction";
+  }
+
+  async withdrawByKey(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal> {
+    const client = await this.load();
+    if (!client.withdrawByKey) throw new Error("This client cannot withdraw by order key");
+    return client.withdrawByKey(wallet, atoms);
   }
 
   async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {

@@ -7,6 +7,7 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import type { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { PACKET_DATA_SIZE, Transaction } from "@solana/web3.js";
+import type { KeyWithdrawal } from "../trading/types";
 import type { MainnetChain } from "../wallet/ownerSigner";
 import { depositKeyAccount, depositKeyBalance } from "./depositKey";
 import { redactToken } from "../rollup/redact";
@@ -26,6 +27,10 @@ import {
   type SolanaRpc,
 } from "./solanaRpc";
 import { exitOperation, type ExitOperation, type SeatSend, type SolanaVerdict } from "./verdicts";
+
+/** What to say about a withdrawal an order key sent whose outcome was not proven. It is never sent again. */
+export const ORDER_KEY_WITHDRAWAL_UNPROVEN =
+  "We cannot tell whether this withdrawal went through. Check your wallet's token account in the rollup before trying again. Nothing is sent again.";
 
 export const SOLANA_ARRIVES_WITHIN_MS = 180_000;
 export const SHOWN_IN_ROLLUP_WITHIN_MS = 30_000;
@@ -60,6 +65,12 @@ export interface TransferEnv {
   /** The rollup endpoint signed in as the deposit key, which alone can read the key's token account. Signs in on first use, with no wallet. */
   depositRollup(): Promise<SolanaRpc>;
   exchange: ExchangePort;
+  /**
+   * Present only where the deployment takes the owner's consent as a signed
+   * message: the seat's withdrawal is then signed by an order key through the
+   * trading client, and the wallet signs no rollup transaction at all.
+   */
+  withdrawByKey?(atoms: bigint): Promise<KeyWithdrawal>;
   journal: Journal;
   lock(owner: string): Promise<OwnerLock | null>;
   /** The only way the owner signs: the transaction must be exactly the one `shape` names before the app's own checks run. `chain` is "solana:mainnet" for a send to Solana, and absent for a rollup send. */
@@ -93,6 +104,11 @@ export function createTransferEnv(
     mint: pins.mint,
     validator: pins.validator,
     signChecked: async (transaction, shape, chain) => {
+      if (!chain && parts.withdrawByKey) {
+        throw new Error(
+          "Refusing to sign: this deployment takes no wallet-signed rollup transaction",
+        );
+      }
       const why = await signableRefusal(
         { pins, owner: parts.owner, token: parts.exchange.token },
         transaction,
@@ -656,6 +672,9 @@ export type RollupSendState =
  */
 export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise<RollupSendState> {
   const recordedLanded = seat.state === "landed";
+  if (seat.signer === "order-key") {
+    return recordedLanded ? { kind: "landed", finalized: true } : { kind: "unknown" };
+  }
   if (!seat.signature || seat.lastValidBlockHeight === undefined) {
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
   }
@@ -765,6 +784,15 @@ export async function settledRollupSend(
       id,
       signature: seat.signature ?? "",
       message: `The rollup transaction ${seat.signature} did not go through: it was never shown and its blockhash has expired. It stays on record until it is dismissed, and dismissing it sends nothing. If it is later shown to have landed, the balances will say so.`,
+    };
+  }
+  if (seat.signer === "order-key") {
+    return {
+      status: "unknown",
+      id,
+      subject: "rollup-send",
+      message: ORDER_KEY_WITHDRAWAL_UNPROVEN,
+      answers: [],
     };
   }
   return {

@@ -1,3 +1,4 @@
+import { OwnerActionFailed, OwnerActionRefused } from "./ownerMessages";
 import {
   freshOrderKeys,
   KEYS_NOT_FROM_SEED_MESSAGE,
@@ -24,6 +25,9 @@ const REFUSED = /reject|declin|denied|cancel|refus/i;
 
 /** A plain, token-free reason for a failed key setup. */
 export function keySetupFailureReason(error: unknown): string {
+  if (error instanceof OwnerActionFailed || error instanceof OwnerActionRefused) {
+    return error.message;
+  }
   if (error instanceof Error && REFUSED.test(`${error.name} ${error.message}`)) {
     return "The wallet request was declined.";
   }
