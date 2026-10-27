@@ -1,3 +1,4 @@
+import "../bufferBigInt";
 import {
   delegateEataPermissionIx,
   delegateSpl,
