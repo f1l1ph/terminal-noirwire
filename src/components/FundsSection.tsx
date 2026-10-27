@@ -69,6 +69,7 @@ export default function FundsSection({
   identity,
   rollupReader,
   withdrawByKey,
+  ownerAuthKnown,
   accountOpen,
   collateral,
   onSettled,
@@ -77,6 +78,8 @@ export default function FundsSection({
   rollupReader: (() => Promise<Connection>) | null;
   /** Given only where the deployment takes the owner's consent as a signed message; the seat's withdrawal then needs no wallet signature. */
   withdrawByKey: ((atoms: bigint) => Promise<KeyWithdrawal>) | null;
+  /** False until that is known, so a withdrawal cannot start on the wrong path. */
+  ownerAuthKnown: boolean;
   accountOpen: boolean;
   collateral: Balance | null;
   /** Called when a transfer finished, so the account is read again. */
@@ -369,7 +372,13 @@ export default function FundsSection({
               <button
                 type="button"
                 className={`${btnPrimary} flex-1 text-[12px]`}
-                disabled={busy || blocked || !check.ok || !accountOpen}
+                disabled={
+                  busy ||
+                  blocked ||
+                  !check.ok ||
+                  !accountOpen ||
+                  (kind === "withdraw" && !ownerAuthKnown)
+                }
                 onClick={() => void submit()}
               >
                 {kind === "deposit" ? "Deposit" : "Withdraw"}

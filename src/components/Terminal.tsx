@@ -810,6 +810,7 @@ export function Terminal() {
               identity={ownerIdentity}
               rollupReader={trading.rollupReader}
               withdrawByKey={trading.withdrawByKey}
+              ownerAuthKnown={trading.ownerAuthKnown}
               accountOpen={trading.accountStatus === "open"}
               collateral={trading.state.collateral ?? null}
               onSettled={() => void trading.syncMarket(selectedMarketId)}
