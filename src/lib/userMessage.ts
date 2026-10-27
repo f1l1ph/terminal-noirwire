@@ -34,6 +34,8 @@ const NETWORK_TEXT =
   "The terminal could not confirm that your wallet is on the right network, so nothing was signed. Reload the page and try again.";
 const STALE_SIGNER_TEXT =
   "Your wallet account changed while it was signing. Nothing was sent with the old account.";
+export const SESSION_REFUSED_TEXT =
+  "The exchange stopped accepting your sign-in. Sign in again to continue.";
 const BUSY_TEXT = "The network is busy. Nothing was sent. Try again in a moment.";
 const ROLLUP_UNREADABLE_TEXT =
   "The exchange cannot be reached right now. Nothing was sent. Try again in a moment.";
@@ -91,6 +93,7 @@ export function userMessage(error: unknown, options: Options = {}): UserMessage 
     known: true,
   });
   if (name === "StaleSigner") return say(STALE_SIGNER_TEXT);
+  if (name === "SessionRefused") return say(SESSION_REFUSED_TEXT);
   if (name === "NetworkRefused") return say(NETWORK_TEXT);
   if (isWalletDecline(error)) return say(DECLINED_TEXT);
   if (RATE_LIMITED.test(message)) return say(BUSY_TEXT);

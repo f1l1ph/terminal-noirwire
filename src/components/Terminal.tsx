@@ -760,10 +760,14 @@ export function Terminal() {
       gate={
         tabGuard.elsewhere
           ? "otherTab"
-          : tradeGate(isMainnetBuild(), trading.accountStatus, trading.orderKeys)
+          : trading.sessionStopped
+            ? "signInStopped"
+            : tradeGate(isMainnetBuild(), trading.accountStatus, trading.orderKeys)
       }
       makersListed={trading.makersListed.has(market.id)}
       limits={trading.marketLimits.get(market.id)}
+      limitsState={trading.marketLimitsState}
+      exposureUnreadable={trading.state.exposureUnreadable === true}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
       noFaucet={trading.noFaucet}
@@ -842,6 +846,7 @@ export function Terminal() {
       onClosePosition={requestClose}
       onReducePosition={requestReduce}
       limits={trading.marketLimits}
+      exposureUnreadable={trading.state.exposureUnreadable === true}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
       cancellingOrderIds={
         cancelling ? new Set(trading.state.openOrders.map((order) => order.orderId)) : cancellingIds
@@ -936,6 +941,8 @@ export function Terminal() {
           usingKeptSettings={allData.marketsFromKept}
           tradingElsewhere={tabGuard.elsewhere}
           onUseThisTab={tabGuard.takeOver}
+          sessionStopped={trading.sessionStopped}
+          onSignInAgain={() => void trading.signInAgain()}
         />
       }
     >

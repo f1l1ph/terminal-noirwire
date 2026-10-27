@@ -134,6 +134,30 @@ describe("one sign-in at a time per owner", () => {
     expect(builds()).toBe(2);
   });
 
+  it("signs in on its own at most once when every token it gets is refused, then waits for the owner", async () => {
+    const refusals = Array.from({ length: 20 }, () => new Error("401 Missing token query param"));
+    const { rollup, builds } = harness([], [null, ...refusals]);
+    const stopped: boolean[] = [];
+    rollup.subscribeSessionStopped(WALLET, (value) => stopped.push(value));
+    // The stale-margin timer reads the account every few seconds.
+    const errors: unknown[] = [];
+    for (let tick = 0; tick < 6; tick += 1) {
+      await rollup.fetchState(WALLET).catch((error: unknown) => errors.push(error));
+    }
+    expect(builds()).toBe(2);
+    expect(stopped).toEqual([false, true]);
+    const last = errors.at(-1);
+    expect(last).toBeInstanceOf(Error);
+    expect((last as Error).name).toBe("SessionRefused");
+    expect((last as Error).message).toBe(
+      "The exchange stopped accepting your sign-in. Sign in again to continue.",
+    );
+
+    await rollup.signInAgain(WALLET);
+    expect(stopped).toEqual([false, true, false]);
+    expect(builds()).toBe(3);
+  });
+
   it("does not retry a network refusal or a stale signer", async () => {
     for (const cause of [new NetworkRefused("wrong network"), new StaleSigner()]) {
       const { rollup, builds } = harness([new SessionAuthError(cause)]);

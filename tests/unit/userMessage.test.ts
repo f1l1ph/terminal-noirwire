@@ -111,8 +111,11 @@ describe("userMessage wallet declines", () => {
     ["a 4001 code", Object.assign(new Error("x"), { code: 4001 })],
     ["a plain code object", { code: 4001 }],
     ["the wallet's wording", new Error("User rejected the request.")],
-    ["a wallet adapter class", named("WalletSignTransactionError", "Unexpected error")],
-    ["a wallet adapter sign-message class", named("WalletSignMessageError", "x")],
+    [
+      "a wallet adapter class with a rejection",
+      named("WalletSignTransactionError", "User rejected the request."),
+    ],
+    ["a window the owner closed", named("WalletWindowClosedError", "x")],
     [
       "a decline wrapped as a cause",
       Object.assign(new Error("sign-in failed"), { cause: { code: 4001 } }),
@@ -129,6 +132,7 @@ describe("userMessage wallet declines", () => {
       "a deployment check",
       new Error("https://book.example/v1/deployment refused: the pins do not match"),
     ],
+    ["a wallet signing failure", named("WalletSignTransactionError", "Unexpected error")],
     ["a refused network check", named("NetworkRefused", "the network was refused")],
     ["a refused signed transaction", named("SignedTransactionRefused", "refused to sign")],
   ])("does not read %s as a decline", (_label, error) => {

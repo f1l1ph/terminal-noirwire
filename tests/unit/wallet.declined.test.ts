@@ -9,8 +9,28 @@ describe("isWalletDecline", () => {
   it("accepts the wallet's own signals", () => {
     expect(isWalletDecline({ code: 4001 })).toBe(true);
     expect(isWalletDecline(new Error("User rejected the request."))).toBe(true);
-    expect(isWalletDecline(named("WalletSignTransactionError", "Unexpected error"))).toBe(true);
-    expect(isWalletDecline(named("WalletSignMessageError", "x"))).toBe(true);
+    expect(isWalletDecline(named("WalletSignTransactionError", "User rejected the request."))).toBe(
+      true,
+    );
+    expect(isWalletDecline(named("WalletWindowClosedError", "Window closed"))).toBe(true);
+    expect(
+      isWalletDecline(Object.assign(new Error("Unexpected error"), { cause: { code: 4001 } })),
+    ).toBe(true);
+  });
+
+  it("does not read a signing failure as a decline, next to a real 4001", () => {
+    for (const error of [
+      named("WalletSignTransactionError", "Unexpected error"),
+      named("WalletSignMessageError", "x"),
+      named("WalletSendTransactionError", "Ledger device disconnected"),
+      new Error("fetch failed"),
+      Object.assign(new Error("Internal error"), { code: -32603 }),
+    ]) {
+      expect(isWalletDecline(error)).toBe(false);
+    }
+    expect(isWalletDecline(Object.assign(new Error("Unexpected error"), { code: 4001 }))).toBe(
+      true,
+    );
   });
 
   it("never matches free text from this app's own errors", () => {
@@ -38,7 +58,7 @@ describe("callers of the shared decline check", () => {
 
   it("retriesSignIn does not retry a decline but retries an unrelated failure", () => {
     expect(retriesSignIn({ code: 4001 })).toBe(false);
-    expect(retriesSignIn(named("WalletSignMessageError", "x"))).toBe(false);
+    expect(retriesSignIn(named("WalletWindowClosedError", "x"))).toBe(false);
     expect(retriesSignIn(new Error("No wallet to cancel for"))).toBe(true);
   });
 });

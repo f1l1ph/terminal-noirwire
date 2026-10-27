@@ -3,9 +3,6 @@ import type { Side } from "./types";
 
 /** How far past the mark a market order's worst price sits by default. */
 const DEFAULT_SLIPPAGE_BPS = 100;
-/** A close takes this share of the crossing band, leaving room for the mark to move before the order lands. */
-const CLOSE_BAND_SHARE_NUMERATOR = 9n;
-const CLOSE_BAND_SHARE_DENOMINATOR = 10n;
 const BPS = 10_000n;
 
 function floorToTick(value: bigint, tick: bigint): bigint {
@@ -21,9 +18,12 @@ function ceilToTick(value: bigint, tick: bigint): bigint {
  * The worst price a market order may fill at: a set distance past the mark,
  * rounded to the tick away from the mark, and never outside the crossing band
  * the program enforces (a bid at most `bandBps` above the mark, an ask at most
- * that far below it). A close (`reduceOnly`) takes most of the band so it
- * still finds a fill when the market has moved; any other order takes 1%.
- * `bandBps` is absent until the market account has been read.
+ * that far below it). A close (`reduceOnly`) reaches the outermost tick still
+ * inside the band, rounded toward the mark so it stays inside, so it can hit
+ * any quote the program allows; any other order takes 1%. The mark must be
+ * the freshest one: a bound at the band's edge is only inside the band for the
+ * mark it was built from. `bandBps` is absent until the market account has
+ * been read.
  */
 export function marketOrderBound(params: {
   markPrice: string;
@@ -40,7 +40,7 @@ export function marketOrderBound(params: {
     band === null
       ? BigInt(DEFAULT_SLIPPAGE_BPS)
       : params.reduceOnly
-        ? (band * CLOSE_BAND_SHARE_NUMERATOR) / CLOSE_BAND_SHARE_DENOMINATOR
+        ? band
         : band < BigInt(DEFAULT_SLIPPAGE_BPS)
           ? band
           : BigInt(DEFAULT_SLIPPAGE_BPS);

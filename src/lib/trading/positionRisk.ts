@@ -65,6 +65,35 @@ export function formatLeverage(ratio: number): string {
 }
 
 /**
+ * Risk figures for an account that also holds exposure this terminal cannot
+ * read: nothing about equity, leverage or liquidation can be known, so every
+ * open position shows them as unknown. A position's own break-even still
+ * stands, since it comes from that position alone.
+ */
+export function unknownPositionRisks(positions: Position[]): Map<string, PositionRisk> {
+  const risks = new Map<string, PositionRisk>();
+  for (const position of positions) {
+    if (Number(position.size) === 0) continue;
+    let breakEven: bigint | null = null;
+    if (position.quote !== undefined) {
+      try {
+        breakEven = breakEvenPrice(toFixedPoint(position.size), quoteToAtoms(position.quote));
+      } catch {
+        breakEven = null;
+      }
+    }
+    risks.set(position.market, {
+      pnlAtoms: null,
+      breakEven,
+      liquidation: { kind: "unknown" },
+      notionalAtoms: null,
+      equityAtoms: null,
+    });
+  }
+  return risks;
+}
+
+/**
  * Break-even, P&L and liquidation estimate for every open position of one
  * account, or null when the account does not carry what they need (the
  * program's cash flow per position, each market's maintenance margin, the

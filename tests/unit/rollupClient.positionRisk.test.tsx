@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Keypair } from "@solana/web3.js";
-import { AccountDock } from "@/components/AccountDock";
+import { AccountDock, UNREADABLE_EXPOSURE_NOTE, type Tab } from "@/components/AccountDock";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
@@ -111,10 +111,17 @@ function stateFor(maintenance: ReadonlyMap<number, number> | undefined): Promise
   }).fetchState(WALLET);
 }
 
-function dockFor(state: TraderState): string {
+function dockFor(
+  state: TraderState,
+  {
+    tab = "positions",
+    exposureUnreadable = false,
+  }: { tab?: Tab; exposureUnreadable?: boolean } = {},
+): string {
   return renderToStaticMarkup(
     <AccountDock
-      tab="positions"
+      tab={tab}
+      exposureUnreadable={exposureUnreadable}
       onTabChange={() => {}}
       positions={Object.values(state.positions)}
       openOrders={[]}
@@ -164,6 +171,17 @@ describe("a mapped rollup position carries what the program computes margin from
     expect(html).toContain("1.5x of 10x max");
     const dev = dockFor(await stateFor(undefined));
     expect(dev).not.toContain("Leverage");
+  });
+
+  it("shows liquidation as unavailable, with a note, when the account holds exposure it cannot read", async () => {
+    const state = await stateFor(new Map([[0, 500]]));
+    for (const tab of ["positions", "margin"] as const) {
+      const html = dockFor(state, { tab, exposureUnreadable: true });
+      expect(html).toContain(UNREADABLE_EXPOSURE_NOTE);
+      expect(html).not.toContain("52.63");
+    }
+    expect(dockFor(state, { exposureUnreadable: true })).not.toContain("+500.00 nUSD");
+    expect(dockFor(state, { tab: "positions" })).not.toContain(UNREADABLE_EXPOSURE_NOTE);
   });
 
   it("keeps the older labels when the session knows no maintenance margin", async () => {

@@ -17,6 +17,10 @@ import {
 } from "@/lib/trading/limitLine";
 import { needsAcknowledgement, recordAcknowledgement } from "@/lib/trading/realMoneyAck";
 import {
+  limitsGate,
+  limitsGateText,
+  UNREADABLE_EXPOSURE_ORDERS_NOTICE,
+  type LimitsState,
   offersTestFunds,
   placeLabel,
   sideWord,
@@ -157,6 +161,8 @@ export function OrderEntry({
   gate,
   makersListed,
   limits,
+  limitsState = "ready",
+  exposureUnreadable = false,
   onLimitLineChange,
 }: {
   /** Told the draft limit price and side while the form is a limit order with a valid price, null otherwise; the chart draws it. */
@@ -228,6 +234,10 @@ export function OrderEntry({
   makersListed: boolean;
   /** This market's ratios, price band and minimums as its account states them; undefined until the session has read them, when the estimates assume defaults and the band and minimum checks wait for the program. */
   limits?: MarketLimits;
+  /** Whether the read of those limits is still running or has failed. On mainnet no order is reviewed or sent without them. */
+  limitsState?: LimitsState;
+  /** The account holds exposure in a market this terminal cannot read: orders that could add risk are off. */
+  exposureUnreadable?: boolean;
 }) {
   const mainnet = isMainnetBuild();
   const testCopy = mainnet ? null : TEST_ONLY_COPY;
@@ -590,6 +600,7 @@ export function OrderEntry({
   const openSize = Number(position?.size ?? 0);
   const closesOpenPosition =
     isPerp && ((side === "sell" && openSize > 0) || (side === "buy" && openSize < 0));
+  const limitsBlock = limitsGate(mainnet, limits, limitsState);
   const availableBlocks = unknownCollateralBlocks({
     availableUnknown,
     isPerp,
@@ -628,6 +639,7 @@ export function OrderEntry({
     !gate &&
     !accountUnknown &&
     !availableBlocks &&
+    !limitsBlock &&
     !noFunds &&
     !!market &&
     !!validation?.valid &&
@@ -644,7 +656,12 @@ export function OrderEntry({
     if (gate) return tradeGateLabel(gate);
     if (unknownHold) return "An earlier order may have reached the venue. Check it first.";
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
-    if (availableBlocks) return "Available collateral is unavailable until the price updates.";
+    if (limitsBlock) return limitsGateText(limitsBlock);
+    if (availableBlocks) {
+      return exposureUnreadable
+        ? UNREADABLE_EXPOSURE_ORDERS_NOTICE
+        : "Available collateral is unavailable until the price updates.";
+    }
     if (validation?.errors.quantity) {
       return describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits);
     }
@@ -662,7 +679,18 @@ export function OrderEntry({
   /** The one line that says why the order button is off, only while the form itself is what is missing. */
   const reason: { text: string; tone: ReasonTone } | null = (() => {
     if (!market || !validation) return null;
-    if (!hasWallet || gate || accountUnknown || availableBlocks) return null;
+    if (!hasWallet || gate || accountUnknown) return null;
+    if (limitsBlock) {
+      return {
+        text: limitsGateText(limitsBlock),
+        tone: limitsBlock === "failed" ? "error" : "neutral",
+      };
+    }
+    if (availableBlocks) {
+      return exposureUnreadable
+        ? { text: UNREADABLE_EXPOSURE_ORDERS_NOTICE, tone: "warning" }
+        : null;
+    }
     if (unknownHold || placeOrderPending || needsTransfer) return null;
     if (noFunds) {
       if (!testCopy) return { text: `Deposit ${quoteUnit || "funds"} to trade`, tone: "neutral" };
@@ -810,8 +838,38 @@ export function OrderEntry({
     return null;
   })();
 
-  async function runSubmit(order: FrozenOrder) {
+  /**
+   * A close's worst price sits at the edge of the crossing band around the
+   * mark it was built from, so it is built again from the mark as it is now,
+   * just before sending. Any other order keeps the price that was reviewed.
+   */
+  function withFreshBound(draft: NewOrderInput): NewOrderInput {
+    if (!market || !mark || !limits || draft.type !== "market" || draft.reduceOnly !== true) {
+      return draft;
+    }
+    try {
+      const price = marketOrderBound({
+        markPrice: mark.price,
+        side: draft.side,
+        tick: market.tickSize,
+        priceDecimals,
+        bandBps: limits.bandBps,
+        reduceOnly: true,
+      });
+      return { ...draft, price };
+    } catch {
+      return draft;
+    }
+  }
+
+  async function runSubmit(reviewed: FrozenOrder) {
     if (!market || submittingRef.current) return;
+    const draftNow = withFreshBound(reviewed.draft);
+    const order: FrozenOrder = {
+      ...reviewed,
+      draft: draftNow,
+      descriptor: { ...reviewed.descriptor, price: draftNow.price },
+    };
     // The full check again, on the frozen order and the mark as it is now.
     const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed, limits);
     const marginExpired = unknownCollateralBlocks({
@@ -968,8 +1026,13 @@ export function OrderEntry({
     primaryLabel = accountError ? "Account unavailable" : "Loading account…";
     primaryClass = btnGhost;
     primaryDisabled = true;
+  } else if (limitsBlock) {
+    primaryLabel =
+      limitsBlock === "failed" ? "Market settings unavailable" : "Loading market settings…";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (availableBlocks) {
-    primaryLabel = "Waiting for price";
+    primaryLabel = exposureUnreadable ? "Orders paused" : "Waiting for price";
     primaryClass = btnGhost;
     primaryDisabled = true;
   } else if (unknownHold) {

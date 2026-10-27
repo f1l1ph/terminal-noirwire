@@ -202,6 +202,13 @@ export interface TraderState {
    * market's own base and quote names.
    */
   spotAssets?: Record<string, SpotAssets>;
+  /**
+   * Rollup mode: the account holds a position or resting order in a market
+   * this terminal does not trade (or cannot bind to trustworthy settings). Its
+   * size, margin and liquidation price cannot be known here, so the margin
+   * figures are unknown and orders that could grow risk are blocked.
+   */
+  exposureUnreadable?: boolean;
 }
 
 export interface SpotAssets {
@@ -298,6 +305,13 @@ export interface TradingClient {
   makersListedMarkets?(wallet: WalletIdentity): Promise<ReadonlySet<string>>;
   /** Each market's trading limits as its account states them, by market symbol. Optional: dev mode has no market accounts. */
   marketLimits?(wallet: WalletIdentity): Promise<ReadonlyMap<string, MarketLimits>>;
+  /** Tells the listener whether automatic sign-in has stopped because the exchange refused a freshly signed token, now and at every change. Optional: dev mode has no sign-in. */
+  subscribeSessionStopped?(
+    wallet: WalletIdentity,
+    listener: (stopped: boolean) => void,
+  ): () => void;
+  /** The owner's own action after automatic sign-in stopped: signs in once more. Optional: dev mode has no sign-in. */
+  signInAgain?(wallet: WalletIdentity): Promise<void>;
   /** The deployment the wallet's session was built against. Optional: dev mode has no session. */
   sessionDeployment?(wallet: WalletIdentity): Promise<PublicDeployment>;
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */
