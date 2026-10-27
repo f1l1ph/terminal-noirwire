@@ -67,11 +67,16 @@ export function createTabGuard(
   const channel = open(`noirwire-terminal-trading:${owner}`);
   const listeners = new Set<() => void>();
   let elsewhere = false;
+  let holder: string | null = null;
   let closed = false;
   const set = (value: boolean) => {
     if (elsewhere === value) return;
     elsewhere = value;
     for (const listener of listeners) listener();
+  };
+  const heldBy = (tab: string) => {
+    holder = tab;
+    set(true);
   };
   const send = (kind: Message["kind"], at = clock()) =>
     channel?.postMessage({ kind, from: id, since, at } satisfies Message);
@@ -80,9 +85,10 @@ export function createTabGuard(
     const message = messageOf(event.data);
     if (closed || !message || message.from === id) return;
     if (message.kind === "hello" && !elsewhere) send("holding");
-    else if (message.kind === "holding" && olderThanThis(message)) set(true);
-    else if (message.kind === "claim" && laterClaim(message)) set(true);
-    else if (message.kind === "release" && elsewhere) {
+    else if (message.kind === "holding" && olderThanThis(message)) heldBy(message.from);
+    else if (message.kind === "claim" && laterClaim(message)) heldBy(message.from);
+    else if (message.kind === "release" && elsewhere && message.from === holder) {
+      holder = null;
       set(false);
       send("hello");
     }

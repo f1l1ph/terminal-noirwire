@@ -4,8 +4,10 @@ import { createTabGuard, type OpenChannel, type TabChannel } from "@/lib/trading
 /**
  * An in-memory stand-in for BroadcastChannel: a message reaches every other
  * channel of the same name, at once or, with `held`, only on `flush()`.
+ * `flush(true)` delivers what is waiting newest first, as a slow tab's
+ * message can arrive after a later one from another tab.
  */
-function bus(held = false): OpenChannel & { flush(): void } {
+function bus(held = false): OpenChannel & { flush(newestFirst?: boolean): void } {
   const channels = new Map<string, Set<TabChannel & { deliver(data: unknown): void }>>();
   const queue: Array<() => void> = [];
   const open = (name: string) => {
@@ -34,7 +36,9 @@ function bus(held = false): OpenChannel & { flush(): void } {
     return channel;
   };
   return Object.assign(open, {
-    flush() {
+    flush(newestFirst = false) {
+      const waiting = queue.splice(0);
+      for (const deliver of newestFirst ? waiting.reverse() : waiting) deliver();
       while (queue.length > 0) queue.shift()!();
     },
   });
@@ -104,6 +108,24 @@ describe("one trading tab per account", () => {
     expect(holder.elsewhere()).toBe(true);
     expect(first.elsewhere()).toBe(true);
     expect(second.elsewhere()).toBe(false);
+  });
+
+  it("ignores a late release from a tab that no longer holds trading", () => {
+    const open = bus(true);
+    let now = 1;
+    const clock = () => now;
+    const first = createTabGuard("owner", open, "a", clock);
+    now = 2;
+    const second = createTabGuard("owner", open, "b", clock);
+    now = 3;
+    const third = createTabGuard("owner", open, "c", clock);
+    open.flush();
+    first.close();
+    now = 10;
+    third.takeOver();
+    open.flush(true);
+    expect(third.elsewhere()).toBe(false);
+    expect(second.elsewhere()).toBe(true);
   });
 
   it("keeps accounts apart", () => {
