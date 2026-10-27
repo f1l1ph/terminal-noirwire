@@ -128,6 +128,20 @@ describe("one trading tab per account", () => {
     expect(second.elsewhere()).toBe(true);
   });
 
+  it("ignores a holding answer older than this tab's own takeover", () => {
+    const open = bus(true);
+    let now = 1;
+    const clock = () => now;
+    const first = createTabGuard("owner", open, "a", clock);
+    now = 2;
+    const second = createTabGuard("owner", open, "b", clock);
+    now = 10;
+    second.takeOver();
+    open.flush();
+    expect(second.elsewhere()).toBe(false);
+    expect(first.elsewhere()).toBe(true);
+  });
+
   it("keeps accounts apart", () => {
     const open = bus();
     createTabGuard("owner-one", open, "a");

@@ -85,7 +85,8 @@ export function createTabGuard(
     const message = messageOf(event.data);
     if (closed || !message || message.from === id) return;
     if (message.kind === "hello" && !elsewhere) send("holding");
-    else if (message.kind === "holding" && olderThanThis(message)) heldBy(message.from);
+    else if (message.kind === "holding" && message.at > claimedAt && olderThanThis(message))
+      heldBy(message.from);
     else if (message.kind === "claim" && laterClaim(message)) heldBy(message.from);
     else if (message.kind === "release" && elsewhere && message.from === holder) {
       holder = null;
