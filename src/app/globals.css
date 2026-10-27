@@ -297,7 +297,7 @@ button:disabled {
   border-radius: 2px;
   background-color: var(--color-line-strong);
 }
-.dv-theme-calm .dv-sash-container .dv-sash:hover::after,
-.dv-theme-calm .dv-sash-container .dv-sash:active::after {
+.dv-theme-calm .dv-split-view-container > .dv-sash-container > .dv-sash:hover::after,
+.dv-theme-calm .dv-split-view-container > .dv-sash-container > .dv-sash:active::after {
   background-color: var(--color-ink-strong);
 }
