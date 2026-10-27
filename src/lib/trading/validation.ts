@@ -156,7 +156,7 @@ export function describeFieldError(error: OrderFieldError, market: MarketInfo): 
     case "markStale":
       return `The current price of ${marketDisplayName(market.id)} is too old. Wait for a fresh price.`;
     case "markUnavailable":
-      return `Waiting for the current price of ${marketDisplayName(market.id)}. Try again in a moment.`;
+      return `There is no price for ${marketDisplayName(market.id)} yet, so this order cannot be checked. Your funds are safe. It works as soon as prices load.`;
   }
 }
 

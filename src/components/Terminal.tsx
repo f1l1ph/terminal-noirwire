@@ -39,6 +39,7 @@ import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
 import { TerminalShell } from "@/components/TerminalShell";
+import { TerminalNotices } from "@/components/TerminalNotices";
 import { DesktopWorkspace } from "@/components/DesktopWorkspace";
 import { PhoneLayout, type PhoneView } from "@/components/PhoneLayout";
 import {
@@ -53,6 +54,7 @@ import { AccountDock, type Tab } from "@/components/AccountDock";
 import { TransferRecords } from "@/components/TransferRecords";
 import { holdClearableAtMs, type UnknownHold } from "@/lib/rollup/accountMemory";
 import { formatClockTime, formatDecimal } from "@/lib/format";
+import { userMessageLine } from "@/lib/userMessage";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 
 /**
@@ -393,6 +395,9 @@ export function Terminal() {
         open ? (marketSettings(open.market) ? sizeDecimalsOf(marketSettings(open.market)!) : 4) : 4,
         await trading.cancelAllInMarket(selectedMarketId),
       );
+    } catch (error) {
+      setCancelPending(null);
+      setCancelMessage(userMessageLine(error, { nothingSent: true }));
     } finally {
       setCancelling(false);
     }
@@ -412,6 +417,9 @@ export function Terminal() {
         settings ? sizeDecimalsOf(settings) : 4,
         await trading.cancelOrder(market, orderId),
       );
+    } catch (error) {
+      setCancelPending(null);
+      setCancelMessage(userMessageLine(error, { nothingSent: true }));
     } finally {
       setCancelling(false);
     }
@@ -873,6 +881,12 @@ export function Terminal() {
       wallet={wallet}
       footer={footer}
       onResetLayout={isDesktop && !mainnet ? resetLayout : undefined}
+      notices={
+        <TerminalNotices
+          owner={ownerIdentity?.address ?? null}
+          pricesUnreachable={allData.marketsUnreachable}
+        />
+      }
     >
       {content}
     </TerminalShell>

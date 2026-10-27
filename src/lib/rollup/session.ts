@@ -93,6 +93,8 @@ export interface RollupSession {
   gate: PublicKey;
   /** Market id -> the oldest mark, in seconds, its account accepts an order against (`maxPriceAge`). A test fake may omit it. */
   maxPriceAgeSeconds?: ReadonlyMap<number, number>;
+  /** Market id -> its account's maintenance margin ratio in basis points, which decides when a position is liquidated. A test fake may omit it. */
+  maintenanceMarginBps?: ReadonlyMap<number, number>;
   /** Ids of the markets whose account had the maker list switched on when this session was built. A test fake may omit it. */
   makersListed?: ReadonlySet<number>;
   /** Reads the market account now and says whether its maker list is on; throws when it cannot be read. A test fake may omit it. */
@@ -214,6 +216,7 @@ function tokenIndicesBySymbol(
 interface MatchingMarkets {
   markets: PublicDeployment["markets"];
   maxPriceAgeSeconds: Map<number, number>;
+  maintenanceMarginBps: Map<number, number>;
   makersListed: Set<number>;
 }
 
@@ -232,6 +235,7 @@ async function marketsMatchingChain(
   const matching: MatchingMarkets = {
     markets: [],
     maxPriceAgeSeconds: new Map(),
+    maintenanceMarginBps: new Map(),
     makersListed: new Set(),
   };
   if (deployment.markets.length === 0) return matching;
@@ -251,6 +255,7 @@ async function marketsMatchingChain(
     if (!marketMatchesChain(market, chain, exchangeMints)) return;
     matching.markets.push(market);
     matching.maxPriceAgeSeconds.set(market.marketId, Number(chain.params.maxPriceAge));
+    matching.maintenanceMarginBps.set(market.marketId, chain.params.mmBps);
     if (isMakersListed(chain.params.access)) matching.makersListed.add(market.marketId);
   });
   return matching;
@@ -498,6 +503,7 @@ async function buildSession(
     collateralToken: exchangeTokens.collateral,
     gate: exchangeTokens.gate,
     maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
+    maintenanceMarginBps: matching.maintenanceMarginBps,
     makersListed: matching.makersListed,
     readMakersListed: async (marketId) => {
       const account = await reader.getAccountInfo(programAddresses(programId).market(marketId));

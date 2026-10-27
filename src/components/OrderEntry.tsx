@@ -47,6 +47,7 @@ import {
 import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
+import { userMessageLine } from "@/lib/userMessage";
 import { describeFieldError, markMovedMaterially, validateOrder } from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
 import {
@@ -783,7 +784,7 @@ export function OrderEntry({
       if (error instanceof OrderOutcomeUnknownError) {
         onOrderUnknown(descriptor, error.hold);
       } else {
-        setSubmitError(error instanceof Error ? error.message : "Could not reach the venue");
+        setSubmitError(userMessageLine(error, { nothingSent: true }));
       }
     } finally {
       submittingRef.current = false;
@@ -831,9 +832,7 @@ export function OrderEntry({
             confirmingFundTimeoutRef.current = setTimeout(() => setConfirmingFund(false), 15_000);
           }
         })
-        .catch((error: unknown) =>
-          setFundMessage(error instanceof Error ? error.message : "Could not reach the venue."),
-        )
+        .catch((error: unknown) => setFundMessage(userMessageLine(error, { nothingSent: true })))
         .finally(() => setFunding(false));
       return;
     }

@@ -125,7 +125,12 @@ export interface Balance {
 export interface Position {
   market: string;
   size: string;
+  /** Rollup mode: the position's break-even price (`-quote / base`), which is its average entry only until it has been reduced or had funding settled. */
   entryPrice: string;
+  /** Rollup mode: the slot's signed net quote cash flow in quote units (`quote`), as the program holds it. */
+  quote?: string;
+  /** Rollup mode: the market account's own maintenance margin ratio, in basis points. */
+  maintenanceMarginBps?: number;
 }
 
 export interface OpenOrder {

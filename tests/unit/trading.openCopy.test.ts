@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   depositHelp,
   describeOpenOutcome,
+  feeSolText,
   keysMayNotPersist,
   keysNotice,
   keysSettleFraction,
@@ -10,6 +11,7 @@ import {
   withoutOpenOutcome,
 } from "@/lib/trading/openCopy";
 import type { OpenRefusal } from "@/lib/rollup/openClient";
+import { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "@/lib/transfer/operation";
 import type { OpenAccountOutcome } from "@/lib/trading/types";
 
 const refused = (refusal: OpenRefusal): OpenAccountOutcome => ({ kind: "refused", refusal });
@@ -33,7 +35,8 @@ describe("describeOpenOutcome", () => {
       refused({ kind: "notInvited" }),
       refused({ kind: "inviteUsed" }),
       refused({ kind: "tryLater" }),
-      refused({ kind: "tooManyToday" }),
+      refused({ kind: "addressLimit" }),
+      refused({ kind: "dailyCapReached" }),
       refused({ kind: "prepareExpired" }),
       refused({ kind: "unreachable" }),
       refused({ kind: "badAnswer" }),
@@ -227,9 +230,62 @@ describe("keysMayNotPersist", () => {
   });
 });
 
+describe("gate refusals", () => {
+  const textOf = (refusal: OpenRefusal) => describeOpenOutcome(refused(refusal), "absent").text;
+
+  it("tells a per-address refusal apart from a full day, and neither from a busy service", () => {
+    expect(textOf({ kind: "addressLimit" })).toBe(
+      "Nothing was sent. This network address already opened an account today. Try again tomorrow, or from another connection.",
+    );
+    expect(textOf({ kind: "dailyCapReached" })).toBe(
+      "Nothing was sent. All of today's new accounts are taken. New accounts open again at 00:00 UTC, so come back then.",
+    );
+    expect(textOf({ kind: "tryLater" })).toBe(
+      "Nothing was sent. The service is busy or just starting. Try again in a few seconds.",
+    );
+  });
+
+  it("does not show a status number for a request the service turned away", () => {
+    const text = textOf({ kind: "rejected", status: 400 });
+    expect(text).toBe("Something was wrong with the request. Reload the page and try again.");
+    expect(text).not.toMatch(/400/);
+  });
+});
+
 describe("depositHelp", () => {
   it("points to the Funds section only when deposits are open", () => {
     expect(depositHelp(true)).toContain("Funds section");
+  });
+
+  it("says the wallet needs SOL for network fees before the first deposit, with the real figures", () => {
+    expect(feeSolText(ROUND_TRIP_LAMPORTS)).toBe("0.04 SOL");
+    expect(feeSolText(SOLANA_EXIT_LAMPORTS)).toBe("0.02 SOL");
+    expect(depositHelp(true)).toContain(
+      "Your wallet also needs about 0.04 SOL for network fees on the deposit, and about 0.02 SOL again to withdraw.",
+    );
+  });
+
+  it("rounds a fee up to the hundredth, never down", () => {
+    expect(feeSolText(1)).toBe("0.01 SOL");
+    expect(feeSolText(10_000_000)).toBe("0.01 SOL");
+    expect(feeSolText(10_000_001)).toBe("0.02 SOL");
+  });
+
+  it("says the SOL is short, with the amount held, when the balance is known to be too low", () => {
+    const text = depositHelp(true, 12_500_000n);
+    expect(text).toContain("Your wallet holds 0.0125 SOL, and a deposit needs about 0.04 SOL");
+    expect(text).toContain("Add some SOL first.");
+    expect(text).toContain("Nothing is charged until you deposit.");
+  });
+
+  it("does not claim a shortage when the balance is unknown or enough", () => {
+    expect(depositHelp(true, null)).not.toContain("Add some SOL first");
+    expect(depositHelp(true, BigInt(ROUND_TRIP_LAMPORTS))).not.toContain("Add some SOL first");
+    expect(depositHelp(true, BigInt(ROUND_TRIP_LAMPORTS) - 1n)).toContain("Add some SOL first");
+  });
+
+  it("does not mention SOL when deposits are off", () => {
+    expect(depositHelp(false, 0n)).not.toMatch(/SOL/);
   });
 
   it("says deposits are not open yet, and asks for nothing, when they are off", () => {

@@ -220,6 +220,7 @@ describe("no path offers a resend", () => {
         "deposit",
         "depositKeyStore",
         "dismiss",
+        "journal",
         "leftover",
         "mainnetEnv",
         "operation",
@@ -228,6 +229,7 @@ describe("no path offers a resend", () => {
         "resume",
         "returnToWallet",
         "solanaRpc",
+        "storageGuard",
         "tokenAccounts",
         "withdraw",
       ]).toContain(name);

@@ -19,6 +19,7 @@ export function TerminalShell({
   wallet,
   footer,
   onResetLayout,
+  notices,
   children,
 }: {
   connectionState: ConnectionState;
@@ -27,6 +28,8 @@ export function TerminalShell({
   footer: ReactNode;
   /** Present only once the desktop workspace layout differs from its default - the control itself appears only then. */
   onResetLayout?: () => void;
+  /** Lines that stay above the workspace while they are true. */
+  notices?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -51,6 +54,7 @@ export function TerminalShell({
           <WalletWidget wallet={wallet} />
         </div>
       </header>
+      {notices}
       <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 pb-2 sm:px-4">
         {children}
       </main>

@@ -88,10 +88,11 @@ export async function fetchDeployment(
   simUrl: string,
   overrides: DeploymentOverrides = {},
   fetchFn: typeof fetch = fetch,
+  sleep?: (ms: number) => Promise<void>,
 ): Promise<PublicDeployment> {
   let promise = cache.get(simUrl);
   if (!promise) {
-    promise = load(simUrl, fetchFn);
+    promise = load(simUrl, fetchFn, sleep);
     cache.set(simUrl, promise);
     const loading = promise;
     loading.catch(() => {
@@ -121,12 +122,42 @@ function accepted(
   };
 }
 
-async function load(simUrl: string, fetchFn: typeof fetch): Promise<PublicDeployment> {
-  const response = await fetchFn(`${simUrl}/v1/deployment`, {
-    headers: { accept: "application/json" },
-  });
+const LOAD_ATTEMPTS = 3;
+const LOAD_FIRST_WAIT_MS = 1_000;
+
+/** A service that is busy or unreachable may answer on the next try; a refusal or a malformed answer will not change. */
+class TransientLoadError extends Error {}
+
+async function loadOnce(simUrl: string, fetchFn: typeof fetch): Promise<PublicDeployment> {
+  let response: Response;
+  try {
+    response = await fetchFn(`${simUrl}/v1/deployment`, {
+      headers: { accept: "application/json" },
+    });
+  } catch (error) {
+    throw new TransientLoadError(error instanceof Error ? error.message : "the request failed");
+  }
   if (!response.ok) {
-    throw new Error(`${simUrl}/v1/deployment answered ${response.status}`);
+    const message = `${simUrl}/v1/deployment answered ${response.status}`;
+    throw response.status >= 500 || response.status === 429
+      ? new TransientLoadError(message)
+      : new Error(message);
   }
   return deploymentSchema.parse(await response.json());
+}
+
+/** Asks up to three times, waiting 1 s then 2 s, so a blip in the service does not stop a session from being built. */
+async function load(
+  simUrl: string,
+  fetchFn: typeof fetch,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<PublicDeployment> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await loadOnce(simUrl, fetchFn);
+    } catch (error) {
+      if (!(error instanceof TransientLoadError) || attempt >= LOAD_ATTEMPTS) throw error;
+      await sleep(LOAD_FIRST_WAIT_MS * 2 ** (attempt - 1));
+    }
+  }
 }
