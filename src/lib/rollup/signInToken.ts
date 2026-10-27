@@ -15,10 +15,22 @@ interface StoredToken {
   expiresAtMs: number;
 }
 
+/**
+ * The tokens signed for in this page, per store: storage that cannot keep a
+ * write must not make a rebuilt session ask the wallet to sign in again.
+ */
+const inMemory = new WeakMap<KeyValueStore, Map<string, StoredToken>>();
+
+const memoryTokens = (storage: KeyValueStore): Map<string, StoredToken> => {
+  const tokens = inMemory.get(storage) ?? new Map<string, StoredToken>();
+  inMemory.set(storage, tokens);
+  return tokens;
+};
+
 const readStored = (storage: KeyValueStore, owner: string): StoredToken | null => {
   try {
     const raw = storage.getItem(ownerDataKeys.signInToken(owner));
-    if (!raw) return null;
+    if (!raw) return memoryTokens(storage).get(owner) ?? null;
     const parsed = JSON.parse(raw) as Partial<StoredToken> | null;
     if (
       typeof parsed?.token !== "string" ||
@@ -30,7 +42,7 @@ const readStored = (storage: KeyValueStore, owner: string): StoredToken | null =
     }
     return { token: parsed.token, expiresAtMs: parsed.expiresAtMs };
   } catch {
-    return null;
+    return memoryTokens(storage).get(owner) ?? null;
   }
 };
 
@@ -62,6 +74,7 @@ export function saveSignInToken(
   expiresAtMs: number,
 ): void {
   rememberToken(token);
+  memoryTokens(storage).set(owner, { token, expiresAtMs });
   try {
     storage.setItem(ownerDataKeys.signInToken(owner), JSON.stringify({ token, expiresAtMs }));
   } catch {
@@ -104,6 +117,7 @@ export function clearSignInToken(storage: KeyValueStore, owner: string): void {
   wipes.set(owner, (wipes.get(owner) ?? 0) + 1);
   const stored = readStored(storage, owner);
   if (stored) forgetToken(stored.token);
+  memoryTokens(storage).delete(owner);
   try {
     storage.removeItem(ownerDataKeys.signInToken(owner));
   } catch {

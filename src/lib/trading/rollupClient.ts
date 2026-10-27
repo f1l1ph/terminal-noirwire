@@ -915,7 +915,8 @@ export class RollupTradingClient implements TradingClient {
       return this.afterRefusal(wallet, refusal);
     }
     if (!usesOwnerMessages(fresh.deployment)) return this.afterRefusal(wallet, refusal);
-    if ((await this.settledStatus(wallet)) === "open") {
+    const status = await this.viewStatus(fresh).catch(() => "unknown");
+    if (status === "open") {
       markAccountOpened(this.storage, wallet.address);
       return { kind: "alreadyOpen" };
     }
