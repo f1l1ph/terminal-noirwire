@@ -8,6 +8,7 @@
  * order-key call itself, read from the Exchange account, so no caller passes
  * a risk market list any more.
  */
+import "../bufferBigInt";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
 import type { OwnerSigner } from "../wallet/ownerSigner";
