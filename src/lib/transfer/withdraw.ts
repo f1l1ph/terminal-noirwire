@@ -43,7 +43,7 @@ import {
   readTokenBalance,
   simulationError,
 } from "./solanaRpc";
-import { NotDispatched } from "./keyedWithdrawal";
+import { NotDispatched, blockhashOf } from "./keyedWithdrawal";
 import { signatureOf } from "./send";
 import { tokenAtoms } from "./verdicts";
 
@@ -163,8 +163,9 @@ async function balanceInRollup(
  * The seat's withdrawal signed by an order key, with no wallet signature. The
  * trading client builds, signs and sends it, but the key signs here in the
  * browser, so the signed bytes are handed over before they are dispatched and
- * their signature and blockhash expiry are written to the record first: from
- * then on the send is judged by its status like any rollup send. A call that
+ * their signature and exact blockhash are written to the record first, one
+ * entry for each distinct signed attempt: from then on the send is judged by
+ * the status of every attempt like any rollup send. A call that
  * threw having dispatched nothing clears the pending record and refuses; one
  * that threw otherwise, or whose outcome the client could not prove, stays on
  * record and is never sent again. A refusal leaves the key live and moves
@@ -185,13 +186,11 @@ async function seatWithdrawnByKey(
     before: held.toString(),
     signer: "order-key",
   });
-  const writeSignature = async (raw: Uint8Array) => {
-    const { lastValidBlockHeight } = await freshBlockhash(env.rollup);
-    await env.journal.attachSeatSignature(owner, id, {
+  const writeSignature = (raw: Uint8Array) =>
+    env.journal.addSeatAttempt(owner, id, {
       signature: signatureOf(raw),
-      lastValidBlockHeight,
+      blockhash: blockhashOf(raw),
     });
-  };
   const deadline = env.clock.now() + FRESH_MARK_WITHIN_MS;
   for (;;) {
     let result: KeyWithdrawal;
@@ -313,7 +312,7 @@ async function seatWithdrawn(
     held,
   );
   if ("status" in sent) return sent;
-  const result = await sentOnRollup(env, sent);
+  const result = await sentOnRollup(env, sent, env.rollup, id);
   if (result.state === "failed") {
     await env.journal.clearSeatSend(owner, id);
     return refuse("rollup-refused", `The withdrawal was refused: ${result.error}. Nothing moved.`);

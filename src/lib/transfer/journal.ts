@@ -72,17 +72,19 @@ export interface Journal {
    */
   recordSeatSend(owner: string, id: string, seat: SeatSend): Promise<void>;
   /**
-   * Writes the signature and last valid block height of the signed bytes an
-   * order key's withdrawal is about to be dispatched with onto its pending
-   * seat record. Resolves only once durable; the bytes are dispatched after,
-   * never before. A re-signed call replaces the earlier signature, which the
-   * network refused outright.
+   * Adds the signature and blockhash of the signed bytes an order key's
+   * withdrawal is about to be dispatched with to its pending seat record.
+   * Resolves only once durable; the bytes are dispatched after, never before.
+   * Every distinct signature is kept, since a client that re-signs may have
+   * had either one run; the same signature again changes nothing.
    */
-  attachSeatSignature(
+  addSeatAttempt(
     owner: string,
     id: string,
-    signed: { signature: string; lastValidBlockHeight: number },
+    attempt: { signature: string; blockhash: string },
   ): Promise<void>;
+  /** Records that a read saw the seat's rollup transaction `signature` at processed or better, so a missing status is never taken as proof afterwards. */
+  markSeatSighted(owner: string, id: string, signature: string): Promise<void>;
   /** Marks the recorded seat send as landed. */
   markSeatLanded(owner: string, id: string): Promise<void>;
   /** Marks a deposit as stranded: its seat step was refused for good. */
@@ -181,15 +183,42 @@ export function createJournal(storage: JournalStorage, now: () => number = Date.
       });
     },
 
-    async attachSeatSignature(owner, id, signed) {
-      if (!Number.isSafeInteger(signed.lastValidBlockHeight) || signed.lastValidBlockHeight <= 0) {
-        throw new Error("The send has no valid last block height, so it cannot be judged later");
+    async addSeatAttempt(owner, id, attempt) {
+      if (!attempt.signature || !attempt.blockhash) {
+        throw new Error("The send has no signature or blockhash, so it cannot be judged later");
       }
       await storage.update(owner, id, (existing) => {
-        if (existing?.seat?.signer !== "order-key" || existing.seat.state !== "pending") {
+        const seat = existing?.seat;
+        if (!existing || seat?.signer !== "order-key" || seat.state !== "pending") {
           throw new Error(`No pending order key withdrawal for operation ${id}`);
         }
-        return { ...existing, seat: { ...existing.seat, ...signed }, updatedAt: now() };
+        const attempts = seat.attempts ?? [];
+        if (attempts.some((known) => known.signature === attempt.signature)) return existing;
+        return {
+          ...existing,
+          seat: { ...seat, signature: attempt.signature, attempts: [...attempts, attempt] },
+          updatedAt: now(),
+        };
+      });
+    },
+
+    async markSeatSighted(owner, id, signature) {
+      await storage.update(owner, id, (existing) => {
+        const seat = existing?.seat;
+        if (!existing || !seat) return existing ?? null;
+        const attempts = seat.attempts?.map((attempt) =>
+          attempt.signature === signature ? { ...attempt, seen: true as const } : attempt,
+        );
+        const sighted =
+          seat.attempts === undefined
+            ? seat.signature === signature
+            : seat.attempts.some((attempt) => attempt.signature === signature);
+        if (!sighted) return existing;
+        return {
+          ...existing,
+          seat: { ...seat, ...(attempts ? { attempts } : { seen: true as const }) },
+          updatedAt: now(),
+        };
       });
     },
 

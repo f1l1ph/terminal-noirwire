@@ -1,7 +1,8 @@
 import type { OperationRecord } from "./journal";
 
 /** What a rollup send stands at, as `rollupSendState` judges it from its signature's status. */
-export type SeatJudgement = "landed" | "failed" | "pending" | "not-seen" | "unreadable" | "unknown";
+export type SeatJudgement =
+  "landed" | "failed" | "pending" | "not-seen" | "vanished" | "unreadable" | "unknown";
 
 export type AttentionKind = "waiting" | "not-landed" | "unknown";
 
@@ -53,8 +54,10 @@ const lastSignature = (record: OperationRecord): string | undefined =>
  * How one record is shown. Only a rollup send that is past its blockhash's
  * life and was read as absent is `not-landed`, and only that can be
  * dismissed; one that cannot be placed is `unknown`; everything else is
- * still `waiting`, and one whose status could not be read just now can be
- * carried on, which only reads it again. `seat` is the judgement of the record's pending rollup
+ * still `waiting`, and one whose status could not be read just now, or is
+ * missing after it was seen, can be carried on, which only reads it again; so
+ * can an order key's withdrawal that was never signed through the hook, which
+ * says plainly that it cannot be placed. `seat` is the judgement of the record's pending rollup
  * send, or null when none was made (no pending send, or transfers are off in
  * this build, where nothing can be judged).
  */
@@ -87,7 +90,7 @@ export function attentionOf(
       ...base,
       kind: "unknown",
       signature: pending.signature,
-      resumable: false,
+      resumable: pending.signer === "order-key" && !behindReturn,
       returnable: false,
     };
   }
@@ -96,7 +99,7 @@ export function attentionOf(
     ...base,
     kind: "waiting",
     signature: pending?.signature ?? lastSignature(record),
-    resumable: (settled || seat === "unreadable") && !behindReturn,
+    resumable: (settled || seat === "unreadable" || seat === "vanished") && !behindReturn,
     returnable:
       settled &&
       operation === "deposit" &&

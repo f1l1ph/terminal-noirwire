@@ -253,7 +253,7 @@ async function sendAndSettle(
   keyRollup: SolanaRpc,
 ): Promise<DepositOutcome> {
   const owner = env.owner.toBase58();
-  const result = await sentOnRollup(env, sent, keyRollup);
+  const result = await sentOnRollup(env, sent, keyRollup, id);
   if (result.state === "failed") {
     return strand(env, id, result.error);
   }

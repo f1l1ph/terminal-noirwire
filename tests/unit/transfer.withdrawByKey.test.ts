@@ -3,11 +3,11 @@ import { Transaction } from "@solana/web3.js";
 import type { KeyWithdrawal } from "@/lib/trading/types";
 import { actionsOf, attentionOf } from "@/lib/transfer/attention";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
-import { NotDispatched } from "@/lib/transfer/keyedWithdrawal";
+import { blockhashOf, NotDispatched } from "@/lib/transfer/keyedWithdrawal";
 import { ORDER_KEY_WITHDRAWAL_UNPROVEN } from "@/lib/transfer/operation";
 import { signatureOf } from "@/lib/transfer/send";
 import { withdraw } from "@/lib/transfer/withdraw";
-import { USDC, makeWorld, type World } from "./transferWorld";
+import { USDC, makeWorld, signedAttempt, type World } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
 const FREE = 5n * USDC;
@@ -15,16 +15,8 @@ const STALE_PRICE = 6038;
 
 const ask = (world: World) => withdraw(world.env, { amount: "2.5", freeCollateral: FREE });
 
-/** Signed bytes as far as the journal can tell: a count, a signature, nothing else. */
-const signedBytes = (call: number) => {
-  const raw = new Uint8Array(65);
-  raw[0] = 1;
-  raw.fill(call + 1, 1);
-  return raw;
-};
-
-/** What the client does on one try: answers, or throws after having handed over its signed bytes (or before). */
-type Try = KeyWithdrawal | { throws: Error; signedFirst: boolean };
+/** What the client does on one try: answers, or throws; `signs` are the attempts it hands over before dispatching (the call's own number by default; none for a client that never hands any over). */
+type Try = (KeyWithdrawal | { throws: Error }) & { signs?: number[] };
 
 /** A world whose seat withdrawal is signed by an order key; `answers` are what the client says to each try, the last one repeating. */
 function keyWorld(answers: Try[], onWithdrawn?: () => void) {
@@ -33,7 +25,7 @@ function keyWorld(answers: Try[], onWithdrawn?: () => void) {
     withdrawByKey: async (_atoms, onSigned) => {
       const answer = answers[Math.min(calls, answers.length - 1)];
       calls += 1;
-      if (!("throws" in answer) || answer.signedFirst) await onSigned?.(signedBytes(calls));
+      for (const attempt of answer.signs ?? [calls]) await onSigned?.(signedAttempt(attempt));
       if ("throws" in answer) throw answer.throws;
       if (answer.kind === "withdrawn") {
         world.seatEffect(ATOMS)();
@@ -46,6 +38,10 @@ function keyWorld(answers: Try[], onWithdrawn?: () => void) {
   world.solana.script({ fate: "land", effect: world.shuttleEffect(ATOMS) });
   return { world, calls: () => calls };
 }
+
+const signatureOfAttempt = (call: number) => signatureOf(signedAttempt(call));
+const status = (world: World, call: number, confirmationStatus: string, err: unknown = null) =>
+  world.rollup.statuses.set(signatureOfAttempt(call), { err, confirmationStatus });
 
 describe("a withdrawal signed by an order key", () => {
   it("pays the seat out with no rollup transaction signed by the wallet, writing the send down first", async () => {
@@ -125,20 +121,20 @@ describe("a withdrawal signed by an order key", () => {
     expect(world.record()?.seat).toBeUndefined();
   });
 
-  it("writes the signature and expiry of the signed bytes down before they are dispatched", async () => {
+  it("writes the signature and the exact blockhash of the signed bytes down before they are dispatched", async () => {
     const { world } = keyWorld([{ kind: "undetermined" }]);
     await ask(world);
     expect(world.record()?.seat).toMatchObject({
       state: "pending",
       signer: "order-key",
-      signature: signatureOf(signedBytes(1)),
-      lastValidBlockHeight: world.rollup.height + 150,
+      signature: signatureOfAttempt(1),
+      attempts: [{ signature: signatureOfAttempt(1), blockhash: blockhashOf(signedAttempt(1)) }],
     });
   });
 });
 
 describe("an order key withdrawal whose outcome the client could not prove", () => {
-  const undetermined = () => keyWorld([{ kind: "undetermined" }]);
+  const undetermined = (signs?: number[]) => keyWorld([{ kind: "undetermined", signs }]);
 
   it("is never called done or undone by what it asked, kept on record and never sent again", async () => {
     const { world, calls } = undetermined();
@@ -148,7 +144,7 @@ describe("an order key withdrawal whose outcome the client could not prove", () 
     expect(ORDER_KEY_WITHDRAWAL_UNPROVEN).not.toMatch(/withdrawn|nothing happened/i);
     const again = await ask(world);
     expect(again).toMatchObject({ status: "waiting" });
-    expect(again.status === "waiting" && again.message).toContain(signatureOf(signedBytes(1)));
+    expect(again.status === "waiting" && again.message).toContain(signatureOfAttempt(1));
     expect(calls()).toBe(1);
     expect(world.solana.sent).toEqual([]);
   });
@@ -156,8 +152,7 @@ describe("an order key withdrawal whose outcome the client could not prove", () 
   it("is settled by its signature's status like any rollup send: landed at finalized goes on", async () => {
     const { world, calls } = undetermined();
     await ask(world);
-    const signature = signatureOf(signedBytes(1));
-    world.rollup.statuses.set(signature, { err: null, confirmationStatus: "finalized" });
+    status(world, 1, "finalized");
     expect(await ask(world)).toMatchObject({ status: "done" });
     expect(calls()).toBe(1);
     expect(world.rows.size).toBe(0);
@@ -166,32 +161,9 @@ describe("an order key withdrawal whose outcome the client could not prove", () 
   it("is cleared when its status shows a finalized error", async () => {
     const { world } = undetermined();
     await ask(world);
-    world.rollup.statuses.set(signatureOf(signedBytes(1)), {
-      err: { InstructionError: [0, { Custom: 6001 }] },
-      confirmationStatus: "finalized",
-    });
+    status(world, 1, "finalized", { InstructionError: [0, { Custom: 6001 }] });
     expect(await ask(world)).toMatchObject({ status: "refused", reason: "rollup-refused" });
     expect(world.rows.size).toBe(0);
-  });
-
-  it("can be dismissed, and then only, once its blockhash has expired with the status still absent", async () => {
-    const { world, calls } = undetermined();
-    await ask(world);
-    const record = world.record()!;
-    expect(attentionOf(record, "pending", [record])).toMatchObject({
-      kind: "waiting",
-      resumable: false,
-    });
-    expect(await dismissRollupSend(world.env)).toMatchObject({ reason: "not-dismissable" });
-    world.clock.t += 60 * 60_000;
-    expect(await ask(world)).toMatchObject({ status: "waiting" });
-    world.rollup.height += 200;
-    expect(await ask(world)).toMatchObject({ status: "not-landed", id: record.id });
-    expect(actionsOf(attentionOf(record, "not-seen", [record]))).toContain("dismiss");
-    expect(await dismissRollupSend(world.env)).toMatchObject({ status: "dismissed" });
-    expect(world.rows.size).toBe(0);
-    expect(calls()).toBe(1);
-    expect(world.solana.sent).toEqual([]);
   });
 
   it("is not taken as landed by an unrelated credit to the owner's token account", async () => {
@@ -202,33 +174,171 @@ describe("an order key withdrawal whose outcome the client could not prove", () 
     expect(world.record()?.seat?.state).toBe("pending");
     expect(world.solana.sent).toEqual([]);
   });
+
+  it("is judged by the blockhash it was signed with, not by the rollup's latest one or its height", async () => {
+    const { world } = undetermined();
+    await ask(world);
+    world.rollup.height += 100_000;
+    world.rollup.expiredBlockhashes.add(blockhashOf(signedAttempt(2)));
+    expect(await ask(world)).toMatchObject({ status: "waiting" });
+    world.rollup.expiredBlockhashes.add(blockhashOf(signedAttempt(1)));
+    expect(await ask(world)).toMatchObject({ status: "not-landed" });
+  });
+
+  it("can be dismissed only when never seen, expired, and absent on two reads apart", async () => {
+    const { world, calls } = undetermined();
+    await ask(world);
+    const record = world.record()!;
+    expect(attentionOf(record, "pending", [record])).toMatchObject({
+      kind: "waiting",
+      resumable: false,
+    });
+    expect(await dismissRollupSend(world.env)).toMatchObject({ reason: "not-dismissable" });
+    world.rollup.expireAllBlockhashes();
+    const started = world.clock.now();
+    expect(await ask(world)).toMatchObject({ status: "not-landed", id: record.id });
+    expect(world.clock.now() - started).toBeGreaterThanOrEqual(3_000);
+    expect(actionsOf(attentionOf(record, "not-seen", [record]))).toContain("dismiss");
+    expect(await dismissRollupSend(world.env)).toMatchObject({ status: "dismissed" });
+    expect(world.rows.size).toBe(0);
+    expect(calls()).toBe(1);
+    expect(world.solana.sent).toEqual([]);
+  });
+
+  it("is not dismissed when the second read finds it", async () => {
+    const { world } = undetermined();
+    await ask(world);
+    world.rollup.expireAllBlockhashes();
+    const read = world.rollup.getSignatureStatus.bind(world.rollup);
+    let reads = 0;
+    world.rollup.getSignatureStatus = async (signature: string) => {
+      reads += 1;
+      if (reads === 2) status(world, 1, "finalized");
+      return read(signature);
+    };
+    expect(await dismissRollupSend(world.env)).toMatchObject({ reason: "not-dismissable" });
+    expect(world.record()?.seat?.state).toBe("pending");
+  });
+
+  it("remembers a sighting, and a status missing after it is never unable to land", async () => {
+    const { world } = undetermined();
+    await ask(world);
+    status(world, 1, "processed");
+    expect(await ask(world)).toMatchObject({ status: "waiting" });
+    expect(world.record()?.seat?.attempts?.[0]).toMatchObject({ seen: true });
+    world.rollup.statuses.delete(signatureOfAttempt(1));
+    world.rollup.expireAllBlockhashes();
+    world.rollup.height += 100_000;
+    const outcome = await ask(world);
+    expect(outcome).toMatchObject({ status: "waiting" });
+    expect(outcome.status === "waiting" && outcome.message).toContain("was seen");
+    expect(await dismissRollupSend(world.env)).toMatchObject({ reason: "not-dismissable" });
+    const record = world.record()!;
+    expect(attentionOf(record, "vanished", [record])).toMatchObject({
+      kind: "waiting",
+      resumable: true,
+    });
+    expect(actionsOf(attentionOf(record, "vanished", [record]))).not.toContain("dismiss");
+    status(world, 1, "finalized");
+    expect(await ask(world)).toMatchObject({ status: "done" });
+  });
+
+  it("still clears on a finalized refusal after a sighting", async () => {
+    const { world } = undetermined();
+    await ask(world);
+    status(world, 1, "processed");
+    await ask(world);
+    status(world, 1, "finalized", { InstructionError: [0, { Custom: 6001 }] });
+    expect(await ask(world)).toMatchObject({ status: "refused", reason: "rollup-refused" });
+    expect(world.rows.size).toBe(0);
+  });
+});
+
+describe("an order key withdrawal the client signed more than once", () => {
+  const resigned = () => keyWorld([{ kind: "undetermined", signs: [1, 2] }]);
+
+  it("keeps every distinct attempt, and the same signature again changes nothing", async () => {
+    const { world } = keyWorld([{ kind: "undetermined", signs: [1, 2, 2, 1] }]);
+    await ask(world);
+    const seat = world.record()!.seat!;
+    expect(seat.attempts?.map((attempt) => attempt.signature)).toEqual([
+      signatureOfAttempt(1),
+      signatureOfAttempt(2),
+    ]);
+    expect(seat.signature).toBe(signatureOfAttempt(2));
+  });
+
+  it("goes on if the first attempt ran, however the second fared", async () => {
+    const { world } = resigned();
+    await ask(world);
+    status(world, 1, "finalized");
+    status(world, 2, "finalized", { InstructionError: [0, { Custom: 6001 }] });
+    expect(await ask(world)).toMatchObject({ status: "done" });
+  });
+
+  it("is not cleared by the second attempt's refusal while the first may still run", async () => {
+    const { world } = resigned();
+    await ask(world);
+    status(world, 2, "finalized", { InstructionError: [0, { Custom: 6001 }] });
+    expect(await ask(world)).toMatchObject({ status: "waiting" });
+    expect(world.record()?.seat?.state).toBe("pending");
+    expect(world.solana.sent).toEqual([]);
+  });
+
+  it("is cleared only when every attempt is refused", async () => {
+    const { world } = resigned();
+    await ask(world);
+    status(world, 2, "finalized", { InstructionError: [0, { Custom: 6001 }] });
+    status(world, 1, "finalized", { InstructionError: [0, { Custom: 6001 }] });
+    expect(await ask(world)).toMatchObject({ status: "refused", reason: "rollup-refused" });
+    expect(world.rows.size).toBe(0);
+  });
+
+  it("can be dismissed only when every attempt is expired and unseen, one refused and one absent counting", async () => {
+    const { world } = resigned();
+    await ask(world);
+    status(world, 2, "finalized", { InstructionError: [0, { Custom: 6001 }] });
+    expect(await dismissRollupSend(world.env)).toMatchObject({ reason: "not-dismissable" });
+    world.rollup.expiredBlockhashes.add(blockhashOf(signedAttempt(1)));
+    expect(await dismissRollupSend(world.env)).toMatchObject({ status: "dismissed" });
+  });
+
+  it("is not dismissed while one attempt was seen and has gone missing", async () => {
+    const { world } = resigned();
+    await ask(world);
+    status(world, 1, "processed");
+    await ask(world);
+    world.rollup.statuses.delete(signatureOfAttempt(1));
+    world.rollup.expireAllBlockhashes();
+    expect(await dismissRollupSend(world.env)).toMatchObject({ reason: "not-dismissable" });
+  });
 });
 
 describe("an order key withdrawal whose client threw", () => {
   const boom = new Error("socket closed");
 
   it("clears the pending record and refuses when it was stopped before anything was sent", async () => {
-    const { world } = keyWorld([{ throws: new NotDispatched(boom), signedFirst: false }]);
+    const { world } = keyWorld([{ throws: new NotDispatched(boom), signs: [] }]);
     const outcome = await ask(world);
     expect(outcome).toMatchObject({ status: "refused", reason: "send-failed" });
     expect(world.rows.size).toBe(0);
     expect(world.solana.sent).toEqual([]);
   });
 
-  it("keeps the record, with its signature, when the bytes had been handed over", async () => {
-    const { world, calls } = keyWorld([{ throws: boom, signedFirst: true }]);
+  it("keeps the record, with its attempt, when the bytes had been handed over", async () => {
+    const { world, calls } = keyWorld([{ throws: boom }]);
     expect(await ask(world)).toMatchObject({ status: "waiting" });
     expect(world.record()?.seat).toMatchObject({
       state: "pending",
       signer: "order-key",
-      signature: signatureOf(signedBytes(1)),
+      signature: signatureOfAttempt(1),
     });
     expect(world.solana.sent).toEqual([]);
     expect(calls()).toBe(1);
   });
 
   it("never clears it on elapsed time or a balance that has not risen", async () => {
-    const { world } = keyWorld([{ throws: boom, signedFirst: true }]);
+    const { world } = keyWorld([{ throws: boom }]);
     await ask(world);
     world.clock.t += 24 * 60 * 60_000;
     expect(await ask(world)).toMatchObject({ status: "waiting" });
@@ -236,23 +346,26 @@ describe("an order key withdrawal whose client threw", () => {
   });
 
   it("goes on to the Solana step once the status shows the withdrawal ran", async () => {
-    const { world } = keyWorld([{ throws: boom, signedFirst: true }]);
+    const { world } = keyWorld([{ throws: boom }]);
     await ask(world);
     world.seatEffect(ATOMS)();
-    world.rollup.statuses.set(signatureOf(signedBytes(1)), {
-      err: null,
-      confirmationStatus: "finalized",
-    });
+    status(world, 1, "finalized");
     expect(await ask(world)).toMatchObject({ status: "done" });
     expect(world.rows.size).toBe(0);
   });
 
-  it("stays on record without a signature when nothing could be told about the call, and sends nothing", async () => {
-    const { world } = keyWorld([{ throws: boom, signedFirst: false }]);
+  it("stays on record without an attempt when the client never handed any over, and has a way forward", async () => {
+    const { world } = keyWorld([{ throws: boom, signs: [] }]);
     expect(await ask(world)).toMatchObject({ status: "waiting" });
     expect(world.record()?.seat).toMatchObject({ state: "pending", signer: "order-key" });
-    expect(world.record()?.seat?.signature).toBeUndefined();
-    expect(await ask(world)).toMatchObject({ status: "unknown", subject: "rollup-send" });
+    expect(world.record()?.seat?.attempts).toBeUndefined();
+    const again = await ask(world);
+    expect(again).toMatchObject({ status: "unknown", subject: "rollup-send" });
+    expect(again.status === "unknown" && again.message).toContain("transfer id");
+    const record = world.record()!;
+    const attention = attentionOf(record, "unknown", [record]);
+    expect(attention).toMatchObject({ kind: "unknown", resumable: true });
+    expect(actionsOf(attention)).toContain("resume");
     expect(world.solana.sent).toEqual([]);
   });
 });

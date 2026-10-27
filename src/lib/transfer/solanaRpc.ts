@@ -24,6 +24,10 @@ export interface SolanaRpc extends SolanaReader {
   simulateTransaction(
     transaction: Transaction,
   ): Promise<{ value: { err: unknown; logs: string[] | null; unitsConsumed?: number } }>;
+  isBlockhashValid(
+    blockhash: string,
+    config?: { commitment?: "confirmed" },
+  ): Promise<{ value: boolean }>;
   getRecentPrioritizationFees(config?: {
     lockedWritableAccounts?: PublicKey[];
   }): Promise<Array<{ slot: number; prioritizationFee: number }>>;

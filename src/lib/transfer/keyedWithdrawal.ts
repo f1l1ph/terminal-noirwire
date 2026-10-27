@@ -1,10 +1,8 @@
 import "../bufferBigInt";
 import { discriminator } from "@noirwire/orderbook";
-import { Transaction, type PublicKey } from "@solana/web3.js";
-import type { KeyWithdrawal } from "../trading/types";
-import type { SolanaRpc } from "./solanaRpc";
+import { Transaction, type Connection, type PublicKey } from "@solana/web3.js";
 
-/** The client threw having signed and dispatched nothing: no signed bytes ever reached the rollup connection, so no withdrawal can be running. */
+/** The client threw having dispatched nothing: no signed bytes of the withdrawal ever reached the rollup connection's broadcast, so no withdrawal can be running. */
 export class NotDispatched extends Error {
   constructor(cause: unknown) {
     super("The withdrawal was stopped before anything was sent", { cause });
@@ -27,45 +25,45 @@ export function isKeyedWithdrawal(raw: Uint8Array, programId: PublicKey): boolea
   }
 }
 
+/** The blockhash a signed transaction was signed with, read from its own bytes. */
+export function blockhashOf(raw: Uint8Array): string {
+  const blockhash = Transaction.from(raw).recentBlockhash;
+  if (!blockhash) throw new Error("The transaction carries no blockhash");
+  return blockhash;
+}
+
+/** How many of the withdrawal's signed transactions were handed to the connection's real broadcast. */
+export interface DispatchCount {
+  dispatched: number;
+}
+
 /**
- * `withdrawByKey` with the order key's signed bytes handed to `onSigned` before
- * they are dispatched. The trading client signs the withdrawal with a key held
- * in this browser and sends it through its rollup connection, which is the one
- * `currentRollup` gives; while the call runs, that connection's broadcast waits
- * for `onSigned` for any transaction that is the withdrawal and fails, sending
- * nothing, if it does. The signature is therefore on record before any node
- * can have it.
- *
- * A call that throws is `NotDispatched` only when no withdrawal reached the
- * connection and the connection is still the one the client uses; anything
- * else is rethrown as it was, because a throw says nothing about a call that
- * may already be running.
+ * Makes `connection` hand every signed withdrawal by order key to `onSigned`
+ * before it is dispatched, and fail without sending if `onSigned` fails.
+ * `count.dispatched` goes up just before the real broadcast is called, so it
+ * counts transactions that may be running and never one a failed `onSigned`
+ * stopped. The trading client signs with a key held in this browser and sends
+ * through this connection, so the signed bytes are on record before any node
+ * can have them. Returns the function that gives the connection back as it
+ * was; it awaits nothing.
  */
-export function withdrawalWatched(
-  currentRollup: () => Promise<Pick<SolanaRpc, "sendRawTransaction">>,
+export function hookKeyedWithdrawals(
+  connection: Pick<Connection, "sendRawTransaction">,
   programId: PublicKey,
-  withdrawByKey: (atoms: bigint) => Promise<KeyWithdrawal>,
-): (atoms: bigint, onSigned?: (raw: Uint8Array) => Promise<void>) => Promise<KeyWithdrawal> {
-  return async (atoms, onSigned) => {
-    const rollup = await currentRollup();
-    const own = Object.getOwnPropertyDescriptor(rollup, "sendRawTransaction");
-    const send = rollup.sendRawTransaction.bind(rollup);
-    let signed = 0;
-    rollup.sendRawTransaction = async (raw, options) => {
-      if (onSigned && isKeyedWithdrawal(raw, programId)) {
-        signed += 1;
-        await onSigned(raw);
-      }
-      return send(raw, options);
-    };
-    try {
-      return await withdrawByKey(atoms);
-    } catch (error) {
-      const unchanged = (await currentRollup().catch(() => null)) === rollup;
-      throw signed === 0 && unchanged ? new NotDispatched(error) : error;
-    } finally {
-      if (own) Object.defineProperty(rollup, "sendRawTransaction", own);
-      else delete (rollup as Partial<typeof rollup>).sendRawTransaction;
+  onSigned: (raw: Uint8Array) => Promise<void>,
+  count: DispatchCount,
+): () => void {
+  const own = Object.getOwnPropertyDescriptor(connection, "sendRawTransaction");
+  const send = connection.sendRawTransaction.bind(connection);
+  connection.sendRawTransaction = async (raw, options) => {
+    if (isKeyedWithdrawal(raw instanceof Uint8Array ? raw : Uint8Array.from(raw), programId)) {
+      await onSigned(raw instanceof Uint8Array ? raw : Uint8Array.from(raw));
+      count.dispatched += 1;
     }
+    return send(raw, options);
+  };
+  return () => {
+    if (own) Object.defineProperty(connection, "sendRawTransaction", own);
+    else delete (connection as Partial<typeof connection>).sendRawTransaction;
   };
 }

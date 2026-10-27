@@ -35,14 +35,26 @@ export type SeatSend = SentRecord & {
   before: string;
   /**
    * Set when the deposit key, not the owner, signed it: its status is read through the deposit key's own rollup session.
-   * `order-key` is a withdrawal an order key signed through the client: it has no signature to look up, so its record
-   * is judged by what the client proved and says nothing else.
+   * `order-key` is a withdrawal an order key signed through the client: the client may sign it more than once, so it is
+   * judged by every signed attempt in `attempts`, each written down just before it was dispatched.
    */
   signer?: "deposit-key" | "order-key";
-  /** The rollup transaction's signature and the last block height of its blockhash, written before it was sent, so a later read can prove it can no longer land. */
+  /** The rollup transaction's signature and the last block height of its blockhash, written before it was sent, so a later read can prove it can no longer land. For an order key's withdrawal, the latest attempt's signature, for showing. */
   signature?: string;
   lastValidBlockHeight?: number;
+  /** Set once any read has seen the rollup transaction at processed or better: from then on a missing status is never taken as proof that it cannot land. */
+  seen?: true;
+  /** Every distinct signed attempt of an order key's withdrawal. It is safe to clear only when every one is shown unable to land, and it landed if any one did. */
+  attempts?: SeatAttempt[];
 };
+
+/** One signed transaction of an order key's withdrawal, judged by whether its exact blockhash is still valid. */
+export interface SeatAttempt {
+  signature: string;
+  blockhash: string;
+  /** Set once a read has seen it at processed or better. */
+  seen?: true;
+}
 
 export interface ExitOperation {
   id: string;

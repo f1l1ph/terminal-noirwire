@@ -452,7 +452,8 @@ export function useTrading(
   const withdrawByKey = useMemo(() => {
     const withdraw = client.withdrawByKey?.bind(client);
     return wallet && withdraw && ownerAuth === "message"
-      ? (atoms: bigint) => withdraw(wallet, atoms)
+      ? (atoms: bigint, onSigned?: (raw: Uint8Array) => Promise<void>) =>
+          withdraw(wallet, atoms, onSigned)
       : null;
   }, [client, wallet, ownerAuth]);
 

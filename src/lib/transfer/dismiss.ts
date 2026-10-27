@@ -29,11 +29,11 @@ export function dismissRollupSend(env: TransferEnv): Promise<DismissOutcome> {
         "No rollup send is waiting on record. Nothing was changed.",
       );
     }
-    const state = await rollupSendState(env, record.seat);
+    const state = await rollupSendState(env, record.seat, record.id);
     if (state.kind !== "not-seen") {
       return refuse(
         "not-dismissable",
-        "Only a rollup send that is past its blockhash's life and was read as absent can be dismissed. This one landed, failed, may still land or could not be read. Nothing was changed.",
+        "Only a rollup send that was never seen, whose blockhash has expired and whose status was read as absent twice can be dismissed. This one landed, was seen, failed, may still land or could not be read. Nothing was changed.",
       );
     }
     await env.journal.clearSeatSend(owner, record.id);

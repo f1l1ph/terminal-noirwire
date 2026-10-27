@@ -2,17 +2,17 @@ import { discriminator } from "@noirwire/orderbook";
 import { Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
 import {
-  NotDispatched,
+  blockhashOf,
+  hookKeyedWithdrawals,
   isKeyedWithdrawal,
-  withdrawalWatched,
+  type DispatchCount,
 } from "@/lib/transfer/keyedWithdrawal";
 import { signatureOf } from "@/lib/transfer/send";
-import { FakeRpc } from "./transferWorld";
+import { FakeRpc, signedAttempt } from "./transferWorld";
 
 const PROGRAM = PublicKey.unique();
 
-/** Signed bytes of one instruction with the given data, as the SDK sends them. */
-function signedWith(data: Buffer, programId = PROGRAM) {
+const order = () => {
   const key = Keypair.generate();
   const transaction = new Transaction({
     feePayer: key.publicKey,
@@ -20,141 +20,119 @@ function signedWith(data: Buffer, programId = PROGRAM) {
     lastValidBlockHeight: 1,
   }).add(
     new TransactionInstruction({
-      programId,
+      programId: PROGRAM,
       keys: [{ pubkey: key.publicKey, isSigner: true, isWritable: false }],
-      data,
+      data: Buffer.concat([Buffer.from(discriminator("place_order")), Buffer.alloc(8)]),
     }),
   );
   transaction.sign(key);
   return transaction.serialize();
-}
-
-const withdrawal = () =>
-  signedWith(Buffer.concat([Buffer.from(discriminator("withdraw_by_key")), Buffer.alloc(8)]));
-const order = () =>
-  signedWith(Buffer.concat([Buffer.from(discriminator("place_order")), Buffer.alloc(8)]));
+};
 
 const rollupOf = () => new FakeRpc("rollup", []);
 
-describe("isKeyedWithdrawal", () => {
+describe("isKeyedWithdrawal and blockhashOf", () => {
   it("knows the order book's withdrawal by order key from anything else", () => {
-    expect(isKeyedWithdrawal(withdrawal(), PROGRAM)).toBe(true);
+    expect(isKeyedWithdrawal(signedAttempt(1, PROGRAM), PROGRAM)).toBe(true);
     expect(isKeyedWithdrawal(order(), PROGRAM)).toBe(false);
-    expect(isKeyedWithdrawal(withdrawal(), PublicKey.unique())).toBe(false);
+    expect(isKeyedWithdrawal(signedAttempt(1, PROGRAM), PublicKey.unique())).toBe(false);
     expect(isKeyedWithdrawal(new Uint8Array(3), PROGRAM)).toBe(false);
+  });
+
+  it("reads the blockhash a transaction was signed with from its own bytes", () => {
+    expect(blockhashOf(signedAttempt(1, PROGRAM, 7))).toBe(
+      new PublicKey(new Uint8Array(32).fill(7)).toBase58(),
+    );
+    expect(blockhashOf(signedAttempt(2, PROGRAM, 7))).toBe(
+      blockhashOf(signedAttempt(1, PROGRAM, 7)),
+    );
+    expect(blockhashOf(signedAttempt(1, PROGRAM, 8))).not.toBe(
+      blockhashOf(signedAttempt(1, PROGRAM, 7)),
+    );
   });
 });
 
-describe("withdrawalWatched", () => {
-  it("hands the signed bytes over before they are dispatched, once the signature is theirs", async () => {
+describe("hookKeyedWithdrawals", () => {
+  it("hands the signed bytes over before they are dispatched, and counts the dispatch after the hand-over", async () => {
     const rollup = rollupOf();
-    const raw = withdrawal();
+    const raw = signedAttempt(1, PROGRAM);
+    const count: DispatchCount = { dispatched: 0 };
     const seen: string[] = [];
-    const watched = withdrawalWatched(
-      async () => rollup,
+    const restore = hookKeyedWithdrawals(
+      rollup,
       PROGRAM,
-      async () => {
-        await rollup.sendRawTransaction(raw, {});
-        return { kind: "withdrawn" };
+      async (bytes) => {
+        seen.push(`signed:${signatureOf(bytes)}`);
+        expect(rollup.sent).toEqual([]);
+        expect(count.dispatched).toBe(0);
       },
+      count,
     );
-    const result = await watched(1n, async (bytes) => {
-      seen.push(`signed:${signatureOf(bytes)}`);
-      expect(rollup.sent).toEqual([]);
-    });
-    expect(result).toEqual({ kind: "withdrawn" });
+    await rollup.sendRawTransaction(raw, {});
+    restore();
     expect(seen).toEqual([`signed:${signatureOf(raw)}`]);
     expect(rollup.sent).toEqual([signatureOf(raw)]);
+    expect(count.dispatched).toBe(1);
+  });
+
+  it("hands over each distinct signed attempt", async () => {
+    const rollup = rollupOf();
+    const count: DispatchCount = { dispatched: 0 };
+    const seen: string[] = [];
+    const restore = hookKeyedWithdrawals(
+      rollup,
+      PROGRAM,
+      async (bytes) => void seen.push(signatureOf(bytes)),
+      count,
+    );
+    await rollup.sendRawTransaction(signedAttempt(1, PROGRAM), {});
+    await rollup.sendRawTransaction(signedAttempt(2, PROGRAM), {});
+    restore();
+    expect(seen).toEqual([
+      signatureOf(signedAttempt(1, PROGRAM)),
+      signatureOf(signedAttempt(2, PROGRAM)),
+    ]);
+    expect(count.dispatched).toBe(2);
   });
 
   it("leaves every other transaction alone", async () => {
     const rollup = rollupOf();
+    const count: DispatchCount = { dispatched: 0 };
     let handed = 0;
-    const watched = withdrawalWatched(
-      async () => rollup,
-      PROGRAM,
-      async () => {
-        await rollup.sendRawTransaction(order(), {});
-        return { kind: "withdrawn" };
-      },
-    );
-    await watched(1n, async () => {
-      handed += 1;
-    });
+    const restore = hookKeyedWithdrawals(rollup, PROGRAM, async () => void (handed += 1), count);
+    await rollup.sendRawTransaction(order(), {});
+    restore();
     expect(handed).toBe(0);
+    expect(count.dispatched).toBe(0);
     expect(rollup.sent).toHaveLength(1);
   });
 
-  it("sends nothing when the signature cannot be written down", async () => {
+  it("sends nothing and counts nothing when the signature cannot be written down", async () => {
     const rollup = rollupOf();
-    const watched = withdrawalWatched(
-      async () => rollup,
+    const count: DispatchCount = { dispatched: 0 };
+    const restore = hookKeyedWithdrawals(
+      rollup,
       PROGRAM,
       async () => {
-        await rollup.sendRawTransaction(withdrawal(), {});
-        return { kind: "withdrawn" };
-      },
-    );
-    await expect(
-      watched(1n, async () => {
         throw new Error("journal write failed");
-      }),
-    ).rejects.toThrow("journal write failed");
+      },
+      count,
+    );
+    await expect(rollup.sendRawTransaction(signedAttempt(1, PROGRAM), {})).rejects.toThrow(
+      "journal write failed",
+    );
+    restore();
     expect(rollup.sent).toEqual([]);
+    expect(count.dispatched).toBe(0);
   });
 
-  it("gives the connection back as it was", async () => {
+  it("gives the connection back as it was, with nothing to await", async () => {
     const rollup = rollupOf();
     const before = rollup.sendRawTransaction;
-    const watched = withdrawalWatched(
-      async () => rollup,
-      PROGRAM,
-      async () => {
-        throw new Error("x");
-      },
-    );
-    await expect(watched(1n, async () => {})).rejects.toBeDefined();
+    const restore = hookKeyedWithdrawals(rollup, PROGRAM, async () => {}, { dispatched: 0 });
+    expect(rollup.sendRawTransaction).not.toBe(before);
+    expect(restore()).toBeUndefined();
     expect(rollup.sendRawTransaction).toBe(before);
     expect(Object.getOwnPropertyNames(rollup)).not.toContain("sendRawTransaction");
-  });
-
-  it("calls a throw before any signed bytes NotDispatched, and only then", async () => {
-    const rollup = rollupOf();
-    const boom = new Error("failed to fetch");
-    const before = withdrawalWatched(
-      async () => rollup,
-      PROGRAM,
-      async () => {
-        throw boom;
-      },
-    );
-    const refused = await before(1n, async () => {}).catch((error: unknown) => error);
-    expect(refused).toBeInstanceOf(NotDispatched);
-    expect((refused as NotDispatched).cause).toBe(boom);
-
-    const after = withdrawalWatched(
-      async () => rollup,
-      PROGRAM,
-      async () => {
-        await rollup.sendRawTransaction(withdrawal(), {});
-        throw boom;
-      },
-    );
-    await expect(after(1n, async () => {})).rejects.toBe(boom);
-  });
-
-  it("does not vouch for a call when the connection it watched is no longer the client's", async () => {
-    const first = rollupOf();
-    const second = rollupOf();
-    let reads = 0;
-    const boom = new Error("session refreshed");
-    const watched = withdrawalWatched(
-      async () => (reads++ === 0 ? first : second),
-      PROGRAM,
-      async () => {
-        throw boom;
-      },
-    );
-    await expect(watched(1n, async () => {})).rejects.toBe(boom);
   });
 });

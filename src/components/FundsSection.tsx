@@ -11,7 +11,6 @@ import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { depositKeyLeftover } from "@/lib/transfer/leftover";
 import { loadOrCreateDepositKey } from "@/lib/transfer/depositKeyStore";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
-import { withdrawalWatched } from "@/lib/transfer/keyedWithdrawal";
 import { createJournal, indexedDbStorage } from "@/lib/transfer/journal";
 import { checkDepositStorage } from "@/lib/transfer/storageGuard";
 import { createMainnetTransferEnv, mainnetTransferPins } from "@/lib/transfer/mainnetEnv";
@@ -79,7 +78,9 @@ export default function FundsSection({
   identity: WalletIdentity | null;
   rollupReader: (() => Promise<Connection>) | null;
   /** Given only where the deployment takes the owner's consent as a signed message; the seat's withdrawal then needs no wallet signature. */
-  withdrawByKey: ((atoms: bigint) => Promise<KeyWithdrawal>) | null;
+  withdrawByKey:
+    | ((atoms: bigint, onSigned?: (raw: Uint8Array) => Promise<void>) => Promise<KeyWithdrawal>)
+    | null;
   /** False until that is known, so a withdrawal cannot start on the wrong path. */
   ownerAuthKnown: boolean;
   accountOpen: boolean;
@@ -109,15 +110,7 @@ export default function FundsSection({
       rollupEndpoint: rollup.rpcEndpoint,
       depositKey: await loadOrCreateDepositKey(signer.publicKey.toBase58()),
       accountOpen: async () => accountOpenRef.current,
-      ...(withdrawByKey
-        ? {
-            withdrawByKey: withdrawalWatched(
-              rollupReader,
-              mainnetTransferPins().programId,
-              withdrawByKey,
-            ),
-          }
-        : {}),
+      ...(withdrawByKey ? { withdrawByKey } : {}),
     });
   }, [signer, rollupReader, solana, withdrawByKey, ownerAuthKnown]);
 
@@ -141,7 +134,9 @@ export default function FundsSection({
                 {};
               for (const record of records) {
                 if (record.seat?.state === "pending") {
-                  judged[record.id] = (await rollupSendState(transfer, record.seat)).kind;
+                  judged[record.id] = (
+                    await rollupSendState(transfer, record.seat, record.id)
+                  ).kind;
                 }
               }
               return judged;

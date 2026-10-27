@@ -264,7 +264,12 @@ export interface TradingClient {
   /** How the owner consents to account actions here, as the deployment says; "transaction" when it does not. Needs no wallet. Optional: dev mode has no such choice. */
   ownerAuth?(): Promise<OwnerAuth>;
   /** Withdraws `atoms` of the seat's free collateral to the owner's own token account, signed by an order key and never by the wallet. Optional: dev mode has no rollup. */
-  withdrawByKey?(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal>;
+  withdrawByKey?(
+    wallet: WalletIdentity,
+    atoms: bigint,
+    /** Called with each signed withdrawal before it is dispatched; if it fails the withdrawal is not sent. When given, a call that fails having dispatched nothing throws `NotDispatched`. */
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal>;
   /** The symbols of the markets that currently let only listed makers rest orders, read from each market's account. Optional: dev mode has no such list. */
   makersListedMarkets?(wallet: WalletIdentity): Promise<ReadonlySet<string>>;
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */

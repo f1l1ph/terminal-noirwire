@@ -104,6 +104,11 @@ import type {
   WalletIdentity,
 } from "./types";
 import { OrderOutcomeUnknownError } from "./unknownOutcome";
+import {
+  NotDispatched,
+  hookKeyedWithdrawals,
+  type DispatchCount,
+} from "../transfer/keyedWithdrawal";
 
 /**
  * One unsigned read, with a real three-way outcome: a thrown request
@@ -553,8 +558,48 @@ export class RollupTradingClient implements TradingClient {
    * the client stopped waiting for is settled by the view, and one that an
    * owner key replacement made unprovable is reported as such, never as done.
    */
-  async withdrawByKey(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal> {
-    return this.withSession(wallet, async (session): Promise<KeyWithdrawal> => {
+  async withdrawByKey(
+    wallet: WalletIdentity,
+    atoms: bigint,
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal> {
+    const count: DispatchCount = { dispatched: 0 };
+    try {
+      return await this.withSession(wallet, (session) =>
+        this.withdrawByKeyIn(session, atoms, onSigned, count),
+      );
+    } catch (error) {
+      throw onSigned && count.dispatched === 0 ? new NotDispatched(error) : error;
+    }
+  }
+
+  /**
+   * The withdrawal in this one session. With `onSigned`, the session's own
+   * sending connection (the one its trading client was built on, so the SDK
+   * sends through nothing else) hands each signed withdrawal over before it is
+   * dispatched, for as long as the call runs and no longer; the session cannot
+   * change in between, and the connection is given back in a `finally` that
+   * awaits nothing. A connection that cannot be hooked is not used.
+   */
+  private async withdrawByKeyIn(
+    session: RollupSession,
+    atoms: bigint,
+    onSigned: ((raw: Uint8Array) => Promise<void>) | undefined,
+    count: DispatchCount,
+  ): Promise<KeyWithdrawal> {
+    let restore = () => {};
+    if (onSigned) {
+      if (typeof session.reader?.sendRawTransaction !== "function") {
+        throw new Error("This session's connection cannot be watched, so it cannot withdraw");
+      }
+      restore = hookKeyedWithdrawals(
+        session.reader,
+        new PublicKey(session.deployment.programId),
+        onSigned,
+        count,
+      );
+    }
+    try {
       try {
         if (!session.client.withdrawByKey) {
           throw new Error("This session cannot withdraw by order key");
@@ -564,6 +609,7 @@ export class RollupTradingClient implements TradingClient {
         if (error instanceof TransactionFailed) return { kind: "refused", code: error.code };
         if (error instanceof WithdrawalUnknown) {
           const settled = await error.settled;
+          if (onSigned && count.dispatched === 0) throw new NotDispatched(error);
           if (settled === null) return { kind: "didNotRun" };
           if ("undetermined" in settled) return { kind: "undetermined" };
         } else if (error instanceof Error && /transaction too large/i.test(error.message)) {
@@ -572,9 +618,11 @@ export class RollupTradingClient implements TradingClient {
           throw error;
         }
       }
-      session.saveKeyCheckpoint();
-      return { kind: "withdrawn" };
-    });
+    } finally {
+      restore();
+    }
+    session.saveKeyCheckpoint();
+    return { kind: "withdrawn" };
   }
 
   async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {

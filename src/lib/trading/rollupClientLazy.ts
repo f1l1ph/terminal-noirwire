@@ -79,10 +79,14 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await (await this.load()).ownerAuth?.()) ?? "transaction";
   }
 
-  async withdrawByKey(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal> {
+  async withdrawByKey(
+    wallet: WalletIdentity,
+    atoms: bigint,
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal> {
     const client = await this.load();
     if (!client.withdrawByKey) throw new Error("This client cannot withdraw by order key");
-    return client.withdrawByKey(wallet, atoms);
+    return client.withdrawByKey(wallet, atoms, onSigned);
   }
 
   async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {

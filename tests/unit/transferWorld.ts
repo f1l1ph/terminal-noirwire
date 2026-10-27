@@ -2,7 +2,14 @@ import {
   DELEGATION_PROGRAM_ID,
   delegationRecordPdaFromDelegatedAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { Keypair, PublicKey, Transaction, type AccountInfo } from "@solana/web3.js";
+import { discriminator } from "@noirwire/orderbook";
+import {
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  type AccountInfo,
+} from "@solana/web3.js";
 import { programAddresses } from "@/lib/rollup/sdk";
 import type { KeyWithdrawal } from "@/lib/trading/types";
 import { depositKeyAccount, depositKeyBalance } from "@/lib/transfer/depositKey";
@@ -18,6 +25,29 @@ import { signatureOf } from "@/lib/transfer/send";
 import type { SolanaRpc } from "@/lib/transfer/solanaRpc";
 
 export const USDC = 1_000_000n;
+
+/**
+ * The signed bytes of one attempt of an order key's withdrawal: a real
+ * transaction, so its signature and blockhash can be read from it. `call`
+ * picks the signing key and `blockhashOf` the blockhash (by default its own),
+ * so two attempts can share a blockhash or not.
+ */
+export function signedAttempt(call: number, programId = PublicKey.default, blockhashOf = call) {
+  const key = Keypair.fromSeed(new Uint8Array(32).fill(call));
+  const transaction = new Transaction({
+    feePayer: key.publicKey,
+    blockhash: new PublicKey(new Uint8Array(32).fill(blockhashOf)).toBase58(),
+    lastValidBlockHeight: 1,
+  }).add(
+    new TransactionInstruction({
+      programId,
+      keys: [{ pubkey: key.publicKey, isSigner: true, isWritable: false }],
+      data: Buffer.concat([Buffer.from(discriminator("withdraw_by_key")), Buffer.alloc(8)]),
+    }),
+  );
+  transaction.sign(key);
+  return transaction.serialize();
+}
 
 const tokenAccount = (amount: bigint): AccountInfo<Buffer> => {
   const data = Buffer.alloc(165);
@@ -89,6 +119,19 @@ export class FakeRpc implements SolanaRpc {
 
   async getSlot() {
     return this.height;
+  }
+
+  /** Blockhashes the node no longer accepts. */
+  expiredBlockhashes = new Set<string>();
+  private everyBlockhashExpired = false;
+
+  /** Every blockhash a transaction was signed with so far has expired. */
+  expireAllBlockhashes() {
+    this.everyBlockhashExpired = true;
+  }
+
+  async isBlockhashValid(blockhash: string) {
+    return { value: !this.everyBlockhashExpired && !this.expiredBlockhashes.has(blockhash) };
   }
 
   async getSignatureStatuses(signatures: string[]) {

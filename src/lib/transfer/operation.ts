@@ -18,6 +18,7 @@ import { signableRefusal, validatedPins, type TransferPins, type TransferShape }
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 import type { OwnerLock } from "./lock";
 import { judgeSend, recordThenBroadcast, signatureOf } from "./send";
+import { MISSING_RECHECK_MS } from "./verdicts";
 import {
   computeUnitsAfterSimulation,
   microLamportsFromFees,
@@ -675,52 +676,138 @@ export type RollupSendState =
   /** Its status shows an error at finalized commitment, so it moved nothing and cannot be replayed. */
   | { kind: "failed"; error: string }
   | { kind: "pending" }
-  /** Past its blockhash's last valid height and the status was read successfully as absent. */
+  /** Never seen at processed or better, its blockhash expired, and the status was read as absent twice, apart. */
   | { kind: "not-seen" }
+  /** Seen at processed or better once, and the status is missing now: a lagging node may not show it, so it is never taken as unable to land. Reading again settles it. */
+  | { kind: "vanished" }
   /** The status could not be read just now. Never taken as absent; reading again settles it. */
   | { kind: "unreadable" }
   /** The send was not written down with its signature, so there is nothing to look it up by. */
   | { kind: "unknown" };
 
+/** One signed rollup transaction of a seat send, as it is looked up. */
+interface Attempt {
+  signature: string;
+  /** Judged by whether this exact blockhash is still valid, for an order key's withdrawal. */
+  blockhash?: string;
+  /** Judged by the block height, for a send whose blockhash was read when it was signed. */
+  lastValidBlockHeight?: number;
+  seen: boolean;
+}
+
+const attemptsOf = (seat: SeatSend): Attempt[] =>
+  seat.attempts
+    ? seat.attempts.map((attempt) => ({ ...attempt, seen: attempt.seen === true }))
+    : seat.signature && seat.lastValidBlockHeight !== undefined
+      ? [
+          {
+            signature: seat.signature,
+            lastValidBlockHeight: seat.lastValidBlockHeight,
+            seen: seat.seen === true,
+          },
+        ]
+      : [];
+
+type Look =
+  | { kind: "success"; finalized: boolean }
+  | { kind: "failed"; error: string }
+  /** Seen at processed, or with an error that is not final: in flight or not yet settled. */
+  | { kind: "processed" }
+  | { kind: "absent"; expired: boolean };
+
+/** One look at an attempt. Whether it can still land is read before its status, so an attempt that lands between the two reads is seen and never taken as absent. */
+async function lookAt(rollup: SolanaRpc, attempt: Attempt): Promise<Look> {
+  const expired =
+    attempt.blockhash !== undefined
+      ? !(await rollup.isBlockhashValid(attempt.blockhash, { commitment: "confirmed" })).value
+      : (await rollup.getBlockHeight("confirmed")) > (attempt.lastValidBlockHeight ?? Infinity);
+  const { value } = await rollup.getSignatureStatus(attempt.signature, {
+    searchTransactionHistory: true,
+  });
+  if (!value) return { kind: "absent", expired };
+  if (value.confirmationStatus === "processed") return { kind: "processed" };
+  if (value.err) {
+    return value.confirmationStatus === "finalized"
+      ? { kind: "failed", error: JSON.stringify(value.err) }
+      : { kind: "processed" };
+  }
+  return { kind: "success", finalized: value.confirmationStatus === "finalized" };
+}
+
 /**
- * Where a recorded rollup send stands, from its signature's status alone: a
- * success is `landed` (final once finalized), an error is `failed` only once
- * finalized (a confirmed error may still be rolled back, so it waits), no
- * status within its blockhash's life is `pending`, and none past it, read
- * successfully, is `not-seen`. The height is read before the status, so a
- * send that lands between the two reads is seen and never taken as absent.
+ * What a set of looks at every attempt of a send comes to. It landed if any
+ * attempt did; it is in flight if any attempt is, or may still be, valid; a
+ * missing status after any sighting is `vanished`, never unable to land; it
+ * failed if every attempt was refused at finalized; and only attempts that
+ * were never seen, are expired and are absent make `not-seen`, which the
+ * caller confirms with a second look.
+ */
+function combined(attempts: Attempt[], looks: Look[]): RollupSendState | { kind: "candidate" } {
+  const success = looks.find((look) => look.kind === "success");
+  if (success) {
+    const finalized = looks.some((look) => look.kind === "success" && look.finalized);
+    return { kind: "landed", finalized };
+  }
+  if (looks.some((look) => look.kind === "processed")) return { kind: "pending" };
+  const absent = looks.flatMap((look, at) => (look.kind === "absent" ? [{ look, at }] : []));
+  if (absent.some(({ look }) => !look.expired)) return { kind: "pending" };
+  if (absent.some(({ at }) => attempts[at].seen)) return { kind: "vanished" };
+  const refused = looks.flatMap((look) => (look.kind === "failed" ? [look.error] : []));
+  if (absent.length === 0 && refused.length > 0) return { kind: "failed", error: refused[0] };
+  return { kind: "candidate" };
+}
+
+/**
+ * Where a recorded rollup send stands, from the status of every signed attempt
+ * of it. It is `landed` if any attempt succeeded (final once finalized), and
+ * `failed` only once every attempt is refused at finalized (a confirmed error
+ * may still be rolled back, so it waits). An attempt whose blockhash is still
+ * valid is `pending`. Any sighting at processed or better is written to the
+ * journal, and a status missing after one is `vanished`, never `not-seen`: only
+ * a send that was never seen, whose blockhash has expired, and whose status was
+ * read as absent twice, apart, is `not-seen`. Whether an attempt can still
+ * land is read before its status, so one that lands between the reads is seen.
  * A balance never decides: the seat and the owner's token account can both be
  * moved by something else. A status read that fails is `unreadable`, never
  * absent. An order key's withdrawal recorded as landed was proven by the
  * client from the account's own view, so it is final as recorded; before that
- * it is judged by the signature written down just before it was dispatched,
- * and one that was never signed or never dispatched has none and is `unknown`.
+ * it is judged by the attempts written down just before they were dispatched,
+ * and one with none has nothing to look up and is `unknown`. `id` is the
+ * operation's, and lets sightings be written down.
  */
-export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise<RollupSendState> {
+export async function rollupSendState(
+  env: TransferEnv,
+  seat: SeatSend,
+  id?: string,
+): Promise<RollupSendState> {
   const recordedLanded = seat.state === "landed";
   if (seat.signer === "order-key" && recordedLanded) return { kind: "landed", finalized: true };
-  if (!seat.signature || seat.lastValidBlockHeight === undefined) {
+  const attempts = attemptsOf(seat);
+  if (attempts.length === 0) {
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
   }
+  const owner = env.owner.toBase58();
+  const settle = (state: RollupSendState): RollupSendState =>
+    recordedLanded && (state.kind === "pending" || state.kind === "vanished")
+      ? { kind: "landed", finalized: false }
+      : state;
+  const lookAll = async (rollup: SolanaRpc) => {
+    const looks = await Promise.all(attempts.map((attempt) => lookAt(rollup, attempt)));
+    for (const [at, look] of looks.entries()) {
+      if (look.kind === "absent" || attempts[at].seen) continue;
+      if (id !== undefined) await env.journal.markSeatSighted(owner, id, attempts[at].signature);
+      attempts[at] = { ...attempts[at], seen: true };
+    }
+    return combined(attempts, looks);
+  };
   try {
     const rollup = seat.signer === "deposit-key" ? await env.depositRollup() : env.rollup;
-    const height = await rollup.getBlockHeight("confirmed");
-    const { value } = await rollup.getSignatureStatus(seat.signature, {
-      searchTransactionHistory: true,
-    });
-    if (value) {
-      if (value.confirmationStatus === "processed") {
-        return recordedLanded ? { kind: "landed", finalized: false } : { kind: "pending" };
-      }
-      if (value.err) {
-        return value.confirmationStatus === "finalized"
-          ? { kind: "failed", error: JSON.stringify(value.err) }
-          : { kind: "pending" };
-      }
-      return { kind: "landed", finalized: value.confirmationStatus === "finalized" };
-    }
-    if (recordedLanded) return { kind: "landed", finalized: false };
-    return height > seat.lastValidBlockHeight ? { kind: "not-seen" } : { kind: "pending" };
+    const first = await lookAll(rollup);
+    if (first.kind !== "candidate") return settle(first);
+    await env.clock.sleep(MISSING_RECHECK_MS);
+    const second = await lookAll(rollup);
+    if (second.kind !== "candidate") return settle(second);
+    return recordedLanded ? { kind: "landed", finalized: false } : { kind: "not-seen" };
   } catch {
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unreadable" };
   }
@@ -734,7 +821,7 @@ export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise
  */
 export async function operationFinal(env: TransferEnv, record: OperationRecord): Promise<boolean> {
   if (record.seat) {
-    const state = await rollupSendState(env, record.seat);
+    const state = await rollupSendState(env, record.seat, record.id);
     if (state.kind !== "landed" || !state.finalized) return false;
   }
   try {
@@ -810,7 +897,7 @@ export async function settledRollupSend(
 ): Promise<"none" | "landed" | { failed: string } | Stopped> {
   if (!seat) return "none";
   const owner = env.owner.toBase58();
-  const state = await rollupSendState(env, seat);
+  const state = await rollupSendState(env, seat, id);
   if (state.kind === "landed") {
     if (seat.state === "pending") await env.journal.markSeatLanded(owner, id);
     if (requireFinal && !state.finalized) {
@@ -828,7 +915,17 @@ export async function settledRollupSend(
   if (state.kind === "pending") {
     return waiting(
       id,
-      `The rollup transaction ${seat.signature} may still land until the rollup passes block height ${seat.lastValidBlockHeight}. Nothing is sent again.`,
+      `The rollup transaction ${seat.signature} may still land until ${
+        seat.lastValidBlockHeight === undefined
+          ? "its blockhash expires"
+          : `the rollup passes block height ${seat.lastValidBlockHeight}`
+      }. Nothing is sent again.`,
+    );
+  }
+  if (state.kind === "vanished") {
+    return waiting(
+      id,
+      `The rollup transaction ${seat.signature} was seen, and its status is missing now. A node may be behind, so it may still be on the chain. It is read again next time; nothing is sent again.`,
     );
   }
   if (state.kind === "unreadable") {
@@ -850,7 +947,8 @@ export async function settledRollupSend(
       status: "unknown",
       id,
       subject: "rollup-send",
-      message: ORDER_KEY_WITHDRAWAL_UNPROVEN,
+      message:
+        "We cannot tell whether this withdrawal went through, and it was not written down with a signature to look up. Check your wallet's token account in the rollup, or contact support with the transfer id. Nothing is sent again.",
       answers: [],
     };
   }
@@ -873,6 +971,8 @@ export async function sentOnRollup(
   env: TransferEnv,
   sent: { raw: Uint8Array; signature: string },
   rollup: SolanaRpc = env.rollup,
+  /** The operation's id: any sighting of the transaction is written to its record. */
+  recordId?: string,
 ): Promise<
   | { state: "confirmed" }
   | { state: "failed"; error: string }
@@ -887,6 +987,9 @@ export async function sentOnRollup(
     clock: env.clock,
     timeoutMs: ROLLUP_CONFIRMS_WITHIN_MS,
   });
+  if (recordId !== undefined && result.seen !== undefined) {
+    await env.journal.markSeatSighted(env.owner.toBase58(), recordId, sent.signature);
+  }
   if (result.state === "confirmed") return { state: "confirmed" };
   if (result.state === "failed" && result.seen === "finalized") {
     return { state: "failed", error: result.error };
