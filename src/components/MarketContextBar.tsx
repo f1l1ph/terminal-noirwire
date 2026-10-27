@@ -105,12 +105,15 @@ export function MarketContextBar({
   mark,
   now,
   quoteSymbol,
+  takerFeeBps = ASSUMED_TAKER_FEE_BPS,
 }: {
   market: MarketInfo | undefined;
   mark: Mark;
   now: number;
   /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
   quoteSymbol: string;
+  /** The market account's taker fee in basis points; the assumed one until it is known. */
+  takerFeeBps?: number;
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const reference = useReferenceHistory("1D");
@@ -143,7 +146,7 @@ export function MarketContextBar({
           />
         )}
         {isPerp && <BarStat label="Max leverage" value={`${market.maxLeverage}x`} />}
-        {isPerp && <BarStat label="Taker fee" value={`${ASSUMED_TAKER_FEE_BPS / 100}%`} />}
+        {isPerp && <BarStat label="Taker fee" value={`${takerFeeBps / 100}%`} />}
         {showVolume && (
           <BarStat
             label="24h volume"

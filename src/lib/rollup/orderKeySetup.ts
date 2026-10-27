@@ -1,3 +1,4 @@
+import { isWalletDecline } from "../wallet/declined";
 import { OwnerActionFailed, OwnerActionRefused } from "./ownerMessages";
 import {
   freshOrderKeys,
@@ -21,14 +22,12 @@ export type OrderKeyStatus =
   /** Setting up the keys did not finish; `reason` is plain text for the trader. Building the session again retries. */
   | { stage: "failed"; reason: string };
 
-const REFUSED = /reject|declin|denied|cancel|refus/i;
-
 /** A plain, token-free reason for a failed key setup. */
 export function keySetupFailureReason(error: unknown): string {
   if (error instanceof OwnerActionFailed || error instanceof OwnerActionRefused) {
     return error.message;
   }
-  if (error instanceof Error && REFUSED.test(`${error.name} ${error.message}`)) {
+  if (isWalletDecline(error)) {
     return "The wallet request was declined.";
   }
   return "Trading keys could not be set up on this device.";

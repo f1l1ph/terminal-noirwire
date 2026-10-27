@@ -78,6 +78,10 @@ export function orderFunds(params: {
   exposure?: MarketExposure;
   /** Perp only: capped to the position and charged only if it still raises the worst-case size. */
   reduceOnly?: boolean;
+  /** The market account's initial margin ratio in basis points; implied by `maxLeverage` when absent. */
+  imBps?: number;
+  /** The market account's taker fee in basis points; the assumed one when absent. */
+  takerFeeBps?: number;
 }): OrderFunds {
   if (params.mode === "spot" && params.side === "sell") {
     const available = params.availableBase ?? "0";
@@ -96,6 +100,7 @@ export function orderFunds(params: {
     price: params.price,
     leverage: params.maxLeverage,
     maxLeverage: params.maxLeverage,
+    takerFeeBps: params.takerFeeBps,
   });
   const requiredQuote = cost.notional + cost.fee;
   return fundsOutcome(requiredQuote, 0n, false, params.availableQuote);
@@ -130,6 +135,8 @@ function perpFunds(params: {
   availableQuote: string;
   exposure?: MarketExposure;
   reduceOnly?: boolean;
+  imBps?: number;
+  takerFeeBps?: number;
 }): OrderFunds {
   const exposure = params.exposure ?? { position: "0" };
   const base = toFixedPoint(exposure.position);
@@ -150,10 +157,11 @@ function perpFunds(params: {
   }
   const price = toFixedPoint(params.price);
   const mark = toFixedPoint(params.markPrice ?? params.price);
-  const marginBps = BigInt(impliedInitialMarginBps(params.maxLeverage) ?? 10_000);
+  const marginBps = BigInt(params.imBps ?? impliedInitialMarginBps(params.maxLeverage) ?? 10_000);
   const marginQuote = ceilDiv(grown * mark * marginBps, FIXED_POINT_SCALE * BPS);
   const notional = ceilDiv(quantity * price, FIXED_POINT_SCALE);
-  const fee = ceilToQuoteAtom(ceilDiv(notional * BigInt(ASSUMED_TAKER_FEE_BPS), BPS));
+  const feeBps = BigInt(params.takerFeeBps ?? ASSUMED_TAKER_FEE_BPS);
+  const fee = ceilToQuoteAtom(ceilDiv(notional * feeBps, BPS));
   return fundsOutcome(
     fee + marginQuote,
     marginQuote,

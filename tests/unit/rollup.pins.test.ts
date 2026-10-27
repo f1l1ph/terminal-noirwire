@@ -64,12 +64,51 @@ describe("a mainnet build checking /v1/deployment", () => {
     ).rejects.toThrow(/prices a market in token/);
   });
 
-  it("refuses a market other than the launched one", async () => {
+  it("ignores a market the pins do not list instead of refusing the deployment", async () => {
     const body = deployment();
     const second = { ...body.markets[0], marketId: 1 };
+    const accepted = await fetchOf({ ...body, markets: [body.markets[0], second] }, MAINNET_PINS);
+    expect(accepted.markets.map((market) => market.marketId)).toEqual([0]);
+  });
+
+  it("does not check the mint of a market it ignores", async () => {
+    const body = deployment();
+    const other = {
+      ...body.markets[0],
+      marketId: 1,
+      quoteToken: { ...body.markets[0].quoteToken, mint: "Other" },
+    };
+    const accepted = await fetchOf({ ...body, markets: [body.markets[0], other] }, MAINNET_PINS);
+    expect(accepted.markets).toHaveLength(1);
+  });
+
+  it("keeps a description as last-known only after this build accepts it", async () => {
+    const storage = new Map<string, string>();
+    const store = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+      removeItem: (key: string) => void storage.delete(key),
+    };
+    const answer = (body: unknown) =>
+      (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
     await expect(
-      fetchOf({ ...body, markets: [body.markets[0], second] }, MAINNET_PINS),
-    ).rejects.toThrow(/not launched/);
+      fetchDeployment(
+        "https://sim-keep-refused.example",
+        { pins: MAINNET_PINS },
+        answer(deployment({ network: "devnet" })),
+        undefined,
+        store,
+      ),
+    ).rejects.toThrow(/devnet network/);
+    expect(storage.size).toBe(0);
+    await fetchDeployment(
+      "https://sim-keep-accepted.example",
+      { pins: MAINNET_PINS },
+      answer(deployment()),
+      undefined,
+      store,
+    );
+    expect(storage.size).toBe(1);
   });
 
   it("refuses the answer a test-build caller already fetched, on the same service", async () => {

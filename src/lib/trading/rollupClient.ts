@@ -11,10 +11,12 @@ import {
   type OpenRefusal,
 } from "../rollup/openClient";
 import { messageDeclined, OwnerActionRefused, signOwnerAction } from "../rollup/ownerMessages";
+import { isWalletDecline } from "../wallet/declined";
+import { userMessage } from "../userMessage";
 import { orderSeedPersisted } from "../rollup/orderSeedStore";
 import type { OrderKeyStatus } from "../rollup/orderKeySetup";
 import { redactToken, scrubError } from "../rollup/redact";
-import { TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
+import { clearSignInToken, TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
 import {
   fetchDeployment,
   quoteSymbolOf,
@@ -48,6 +50,7 @@ import {
 import { trackSecret, untrackSecret } from "../rollup/secretStore";
 import {
   buildRealSession,
+  looksUnauthorized,
   retriesSignIn,
   SessionAuthError,
   trustedProgramId,
@@ -91,6 +94,7 @@ import type {
   MarketSettingsLookup,
   NewOrderInput,
   OpenAccountOutcome,
+  MarketLimits,
   OpenOrder,
   OrderKeyState,
   OwnerAuth,
@@ -512,7 +516,17 @@ export class RollupTradingClient implements TradingClient {
       open = this.replaceSession(wallet, open);
       session = await open.session;
     }
-    return fn(session);
+    try {
+      return await fn(session);
+    } catch (error) {
+      if (looksUnauthorized(error)) {
+        // The rollup no longer accepts this token: forget it and start a new
+        // session, so the next call signs in again instead of failing until a reload.
+        clearSignInToken(this.storage, wallet.address);
+        this.replaceSession(wallet, open);
+      }
+      throw error;
+    }
   }
 
   private bindings(session: RollupSession): Map<string, MarketBinding> {
@@ -525,6 +539,7 @@ export class RollupTradingClient implements TradingClient {
       const view = await session.client.view();
       return view ? "open" : "absent";
     } catch (error) {
+      if (looksUnauthorized(error)) throw error;
       const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
       return notReadable ? "absent" : "unknown";
     }
@@ -577,11 +592,15 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
-  async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
+  async accountStatus(
+    wallet: WalletIdentity,
+    options: { fresh?: boolean } = {},
+  ): Promise<AccountStatus> {
+    if (options.fresh) return this.settledStatus(wallet);
     try {
       return await this.withSession(wallet, (session) => this.viewStatus(session));
-    } catch {
-      return "unknown";
+    } catch (error) {
+      return signInDeclined(error) ? "declined" : "unknown";
     }
   }
 
@@ -611,12 +630,35 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
+  async marketLimits(wallet: WalletIdentity): Promise<ReadonlyMap<string, MarketLimits>> {
+    return this.withSession(wallet, async (session) => {
+      const limits = new Map<string, MarketLimits>();
+      for (const [symbol, binding] of this.bindings(session)) {
+        const chain = session.limits?.get(binding.numericId);
+        if (!chain) continue;
+        limits.set(symbol, {
+          imBps: chain.imBps,
+          mmBps: chain.mmBps,
+          takerFeeBps: chain.takerFeeBps,
+          bandBps: chain.bandBps,
+          minSize: lotsToSize(binding.units, chain.minSize),
+          minNotional: quoteAtomsToAmount(chain.minNotional),
+        });
+      }
+      return limits;
+    });
+  }
+
+  async sessionDeployment(wallet: WalletIdentity): Promise<PublicDeployment> {
+    return this.withSession(wallet, async (session) => session.deployment);
+  }
+
   /** The view as a fresh session reads it, which sees an account opened after the earlier session was built. */
   private async settledStatus(wallet: WalletIdentity): Promise<AccountStatus> {
     try {
       return await this.viewStatus(await this.refreshSession(wallet));
-    } catch {
-      return "unknown";
+    } catch (error) {
+      return signInDeclined(error) ? "declined" : "unknown";
     }
   }
 
@@ -639,9 +681,7 @@ export class RollupTradingClient implements TradingClient {
       const reason =
         error instanceof SignedTransactionRefused || error instanceof OwnerActionRefused
           ? error.reason
-          : error instanceof Error
-            ? error.message
-            : "the account could not be opened";
+          : userMessage(error, { nothingSent: true }).text;
       return { kind: "notSent", reason: redactToken(reason) };
     }
   }
@@ -658,13 +698,13 @@ export class RollupTradingClient implements TradingClient {
     invite?: string,
   ): Promise<OpenAccountOutcome> {
     const session = await this.withSession(wallet, (built) => Promise.resolve(built));
-    const before = await this.viewStatus(session);
+    const before = await this.withSession(wallet, (current) => this.viewStatus(current));
     if (before === "open") {
       markAccountOpened(this.storage, wallet.address);
       return { kind: "alreadyOpen" };
     }
     if (before === "unknown") {
-      throw new Error("Your account could not be read, so it was not opened. Try again shortly.");
+      throw new Error("Your account could not be read, so it was not opened. Nothing was sent.");
     }
     if (usesOwnerMessages(session.deployment)) return this.openByMessage(wallet, session, invite);
     const owner = session.owner.publicKey;
@@ -926,6 +966,7 @@ export class RollupTradingClient implements TradingClient {
       maxPriceAgeSeconds: session.maxPriceAgeSeconds?.get(binding.numericId),
       isPerp: binding.isPerp,
       side: order.side,
+      reduceOnly: !!order.reduceOnly,
     };
     // Tracked before the send, so an order that lands after this call
     // gave up on it still has its fills recognised as this trader's own.
@@ -1310,6 +1351,7 @@ export class RollupTradingClient implements TradingClient {
         sizePerLot: binding.units.sizePerLot,
         mark: freshMark,
         maxLeverage: settings?.maxLeverage ?? 0,
+        imBps: session.limits?.get(market.marketId)?.imBps,
       });
       if (slot.base === 0n) continue;
       const entryPrice =
@@ -1421,6 +1463,11 @@ export class RollupTradingClient implements TradingClient {
     if (snapshotBinding && !snapshotBinding.isPerp) listed.push(...mapOrders(snapshotBinding));
     return listed;
   }
+}
+
+/** Whether the session could not be built because the owner turned down the sign-in message. */
+function signInDeclined(error: unknown): boolean {
+  return error instanceof SessionAuthError && isWalletDecline(error.cause);
 }
 
 function expiryFor(goodFor: NewOrderInput["goodFor"], now: () => number): bigint | undefined {

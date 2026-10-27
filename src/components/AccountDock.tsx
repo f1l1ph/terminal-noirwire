@@ -1,6 +1,6 @@
 "use client";
 
-import { fromFixedPoint } from "@/lib/trading/decimal";
+import { fromFixedPoint, withoutSign } from "@/lib/trading/decimal";
 import {
   accountLeverage,
   formatLeverage,
@@ -25,12 +25,43 @@ import {
   MAINTENANCE_MARGIN_BPS,
 } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
-import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
+import type {
+  Balance,
+  MarketLimits,
+  MarketSettingsLookup,
+  OpenOrder,
+  Position,
+  Side,
+} from "@/lib/trading/types";
+import type { MarketInfo } from "@/lib/market-data/types";
 import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 import { isMainnetBuild } from "@/lib/network";
 import { walletlessDockText } from "@/lib/trading/uiRules";
+
+const NO_LIMITS: ReadonlyMap<string, MarketLimits> = new Map();
+
+/** An existing position's cost at the market's maximum leverage, from the market account's own ratios once they are known. */
+function positionCost(
+  side: Side,
+  quantity: string,
+  price: string,
+  settings: MarketInfo,
+  limits: MarketLimits | undefined,
+) {
+  return estimateOrderCost({
+    side,
+    quantity,
+    price,
+    leverage: limits ? 10_000 / limits.imBps : settings.maxLeverage,
+    maxLeverage: settings.maxLeverage,
+    takerFeeBps: limits?.takerFeeBps,
+    maintenanceBps: limits?.mmBps,
+  });
+}
+
+const percentOfBps = (bps: number): string => `${bps / 100}%`;
 
 export type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
 
@@ -60,7 +91,8 @@ export function AccountDock({
   onClosePosition,
   onReducePosition,
   onCancelOrder,
-  cancellingOrderId,
+  cancellingOrderIds,
+  limits = NO_LIMITS,
   transfers = null,
   bordered = true,
 }: {
@@ -87,7 +119,10 @@ export function AccountDock({
   /** Prefills the order form with this position's closing direction and size, without submitting. */
   onReducePosition: (position: Position) => void;
   onCancelOrder: ((market: string, orderId: string) => void) | null;
-  cancellingOrderId: string | null;
+  /** Ids of the orders whose cancel is running; each row's cancel is off by its own id. */
+  cancellingOrderIds: ReadonlySet<string>;
+  /** Each market's ratios as its account states them, by symbol; the estimates assume defaults for a market not listed. */
+  limits?: ReadonlyMap<string, MarketLimits>;
   /** Deposits, withdrawals and the transfers that did not finish, shown above the tabs. */
   transfers?: React.ReactNode;
   /** False inside the desktop Account panel frame, which already supplies the border. True (default) on phone, where this renders standalone. */
@@ -132,6 +167,7 @@ export function AccountDock({
             marksByMarket={marksByMarket}
             now={now}
             quoteSymbol={quoteSymbol}
+            limits={limits}
             onClose={onClosePosition}
             onReduce={onReducePosition}
           />
@@ -143,7 +179,7 @@ export function AccountDock({
             firstSeenAtMs={openOrderFirstSeenAtMs}
             now={now}
             onCancel={onCancelOrder}
-            cancellingOrderId={cancellingOrderId}
+            cancellingOrderIds={cancellingOrderIds}
           />
         )}
         {hasWallet && tab === "fills" && (
@@ -166,6 +202,7 @@ export function AccountDock({
             now={now}
             marketSettings={marketSettings}
             quoteSymbol={quoteSymbol}
+            limits={limits}
           />
         )}
       </div>
@@ -234,6 +271,7 @@ function PositionsTable({
   marksByMarket,
   now,
   quoteSymbol,
+  limits,
   onClose,
   onReduce,
 }: {
@@ -243,6 +281,7 @@ function PositionsTable({
   marksByMarket: Record<string, { price: string; time: number } | null>;
   now: number;
   quoteSymbol: string;
+  limits: ReadonlyMap<string, MarketLimits>;
   onClose: (position: Position) => void;
   onReduce: (position: Position) => void;
 }) {
@@ -278,13 +317,13 @@ function PositionsTable({
         let marginUsed: string | null = null;
         let liquidation: string | null = null;
         if (settings && settings.kind === "perp") {
-          const estimate = estimateOrderCost({
-            side: long ? "buy" : "sell",
-            quantity: String(Math.abs(size)),
-            price: position.entryPrice,
-            leverage: settings.maxLeverage,
-            maxLeverage: settings.maxLeverage,
-          });
+          const estimate = positionCost(
+            long ? "buy" : "sell",
+            withoutSign(position.size),
+            position.entryPrice,
+            settings,
+            limits.get(position.market),
+          );
           const display = displayOrderCost(estimate, priceDecimals);
           marginUsed = display.initialMargin;
           liquidation = display.liquidationPrice;
@@ -293,7 +332,7 @@ function PositionsTable({
           ? liquidationCell(risk, priceDecimals)
           : {
               value: liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE,
-              title: `Estimate: a ${MAINTENANCE_MARGIN_BPS / 100}% maintenance margin, computed on this device. Not confirmed by the exchange.`,
+              title: `Estimate: a ${percentOfBps(limits.get(position.market)?.mmBps ?? MAINTENANCE_MARGIN_BPS)} maintenance margin, computed on this device. Not confirmed by the exchange.`,
             };
 
         const leverageShown = leverageCell(
@@ -431,14 +470,14 @@ function OpenOrdersTable({
   firstSeenAtMs,
   now,
   onCancel,
-  cancellingOrderId,
+  cancellingOrderIds,
 }: {
   openOrders: OpenOrder[];
   marketSettings: MarketSettingsLookup;
   firstSeenAtMs: Record<string, number>;
   now: number;
   onCancel: ((market: string, orderId: string) => void) | null;
-  cancellingOrderId: string | null;
+  cancellingOrderIds: ReadonlySet<string>;
 }) {
   if (openOrders.length === 0) {
     return (
@@ -490,10 +529,10 @@ function OpenOrdersTable({
                   <button
                     type="button"
                     className={`${btnGhost} px-2 text-[11px]`}
-                    disabled={cancellingOrderId === order.orderId}
+                    disabled={cancellingOrderIds.has(order.orderId)}
                     onClick={() => onCancel(order.market, order.orderId)}
                   >
-                    {cancellingOrderId === order.orderId
+                    {cancellingOrderIds.has(order.orderId)
                       ? "Cancelling…"
                       : `Cancel #${order.orderId}`}
                   </button>
@@ -637,6 +676,7 @@ function MarginTable({
   now,
   marketSettings,
   quoteSymbol,
+  limits,
 }: {
   positions: Position[];
   collateral: Balance | null;
@@ -644,6 +684,7 @@ function MarginTable({
   now: number;
   marketSettings: MarketSettingsLookup;
   quoteSymbol: string;
+  limits: ReadonlyMap<string, MarketLimits>;
 }) {
   const risks = positionRisks(
     positions,
@@ -663,6 +704,9 @@ function MarginTable({
     );
   }
   const accountLeverageShown = leverageCell(risks ? accountLeverage(risks) : null, null);
+  const noted = limits.get(perpPositions[0].market);
+  const noteFee = percentOfBps(noted?.takerFeeBps ?? ASSUMED_TAKER_FEE_BPS);
+  const noteMaintenance = percentOfBps(noted?.mmBps ?? MAINTENANCE_MARGIN_BPS);
   return (
     <>
       <table className="tnum w-full text-left text-[13px]">
@@ -684,13 +728,13 @@ function MarginTable({
             // existing position, only its size and entry price, so the
             // leverage behind it is unknown; this shows the closest
             // (most conservative) estimate, at the market's maximum leverage.
-            const estimate = estimateOrderCost({
-              side: size > 0 ? "buy" : "sell",
-              quantity: String(Math.abs(size)),
-              price: position.entryPrice,
-              leverage: settings.maxLeverage,
-              maxLeverage: settings.maxLeverage,
-            });
+            const estimate = positionCost(
+              size > 0 ? "buy" : "sell",
+              withoutSign(position.size),
+              position.entryPrice,
+              settings,
+              limits.get(position.market),
+            );
             const display = displayOrderCost(estimate, priceDecimalsOf(settings));
             return (
               <tr key={position.market} className="border-line-subtle border-t">
@@ -717,8 +761,8 @@ function MarginTable({
       <p className={`${sectionLabel} mt-2`}>Estimate, not a guarantee</p>
       <p className="text-faint mt-1 text-[11px] leading-relaxed">
         {risks
-          ? `Liquidation prices use your collateral, all your open positions and each market's own maintenance margin, worked out on this device. ${FUNDING_NOTE} Margin at max leverage assumes a ${ASSUMED_TAKER_FEE_BPS / 100}% trading fee. The exchange decides the real threshold.`
-          : `These figures are worked out on this device from your entry price. They assume a ${MAINTENANCE_MARGIN_BPS / 100}% maintenance margin as the liquidation threshold and a ${ASSUMED_TAKER_FEE_BPS / 100}% trading fee. The exchange decides the real threshold.`}
+          ? `Liquidation prices use your collateral, all your open positions and each market's own maintenance margin, worked out on this device. ${FUNDING_NOTE} Margin at max leverage assumes a ${noteFee} trading fee. The exchange decides the real threshold.`
+          : `These figures are worked out on this device from your entry price. They assume a ${noteMaintenance} maintenance margin as the liquidation threshold and a ${noteFee} trading fee. The exchange decides the real threshold.`}
       </p>
     </>
   );

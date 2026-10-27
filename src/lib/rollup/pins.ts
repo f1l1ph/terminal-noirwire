@@ -37,7 +37,10 @@ interface DeploymentFacts {
   markets: readonly { marketId: number; quoteToken: { mint: string } }[];
 }
 
-/** The first way `deployment` disagrees with `pins`, or null when it agrees. */
+/**
+ * The first way `deployment` disagrees with `pins`, or null when it agrees. A
+ * market the pins do not list is not checked and not traded: the caller drops it.
+ */
 export function pinRefusal(pins: NetworkPins, deployment: DeploymentFacts): string | null {
   if (deployment.network !== pins.network) {
     return `the service describes the ${deployment.network} network, but this build trades on ${pins.network}`;
@@ -45,11 +48,9 @@ export function pinRefusal(pins: NetworkPins, deployment: DeploymentFacts): stri
   if (deployment.programId !== pins.programId) {
     return `the service describes program ${deployment.programId}, but this build trades on ${pins.programId}`;
   }
-  const unlaunched = deployment.markets.find((market) => !pins.marketIds.includes(market.marketId));
-  if (unlaunched) {
-    return `the service lists market ${unlaunched.marketId}, which is not launched on ${pins.network}`;
-  }
-  const wrongMint = deployment.markets.find((market) => market.quoteToken.mint !== pins.usdcMint);
+  const wrongMint = deployment.markets
+    .filter((market) => pins.marketIds.includes(market.marketId))
+    .find((market) => market.quoteToken.mint !== pins.usdcMint);
   if (wrongMint) {
     return `the service prices a market in token ${wrongMint.quoteToken.mint}, but this build trades only in ${pins.usdcMint}`;
   }

@@ -3,6 +3,7 @@ import { PublicKey } from "@solana/web3.js";
 import { isMainnetBuild } from "../network";
 import type { WalletIdentity } from "../trading/types";
 import { browserLocalStorage } from "../wallet/index";
+import { isWalletDecline } from "../wallet/declined";
 import { StaleSigner, type OwnerSigner } from "../wallet/ownerSigner";
 import { NetworkRefused } from "./networkCheck";
 import { secretOwner, type DerivedOrderSeeds } from "../wallet/secretSigner";
@@ -86,6 +87,23 @@ export interface TraderClientLike {
   ): Promise<OrderResult & Timing>;
 }
 
+/**
+ * What a market account states about trading in it, as the program holds
+ * it: ratios in basis points, `minSize` in lots and `minNotional` in quote
+ * atoms (price in quote atoms per lot times size in lots).
+ */
+export interface ChainMarketLimits {
+  /** Initial margin ratio. */
+  imBps: number;
+  /** Maintenance margin ratio. */
+  mmBps: number;
+  takerFeeBps: number;
+  /** How far a crossing price may sit from the mark: a bid above it or an ask below it is refused. */
+  bandBps: number;
+  minSize: bigint;
+  minNotional: bigint;
+}
+
 export interface RollupSession {
   /** The owner's signer port; the session never holds the owner key itself. */
   owner: OwnerSigner;
@@ -104,6 +122,8 @@ export interface RollupSession {
   maxPriceAgeSeconds?: ReadonlyMap<number, number>;
   /** Market id -> its account's maintenance margin ratio in basis points, which decides when a position is liquidated. A test fake may omit it. */
   maintenanceMarginBps?: ReadonlyMap<number, number>;
+  /** Market id -> the trading limits its account states, in the program's own units. A test fake may omit it. */
+  limits?: ReadonlyMap<number, ChainMarketLimits>;
   /** Ids of the markets whose account had the maker list switched on when this session was built. A test fake may omit it. */
   makersListed?: ReadonlySet<number>;
   /** Reads the market account now and says whether its maker list is on; throws when it cannot be read. A test fake may omit it. */
@@ -154,8 +174,6 @@ export class SessionAuthError extends Error {
   }
 }
 
-const USER_REFUSAL = /reject|declin|denied|cancel|refus/i;
-
 /**
  * Whether building the session again is worth doing automatically after a
  * failed sign-in. It is not when the owner refused the wallet prompt, the
@@ -165,10 +183,7 @@ const USER_REFUSAL = /reject|declin|denied|cancel|refus/i;
  */
 export function retriesSignIn(cause: unknown): boolean {
   if (cause instanceof NetworkRefused || cause instanceof StaleSigner) return false;
-  if (typeof cause === "object" && cause !== null && (cause as { code?: unknown }).code === 4001) {
-    return false;
-  }
-  return !(cause instanceof Error && USER_REFUSAL.test(`${cause.name} ${cause.message}`));
+  return !isWalletDecline(cause);
 }
 
 interface ExchangeTokens {
@@ -228,6 +243,7 @@ interface MatchingMarkets {
   markets: PublicDeployment["markets"];
   maxPriceAgeSeconds: Map<number, number>;
   maintenanceMarginBps: Map<number, number>;
+  limits: Map<number, ChainMarketLimits>;
   makersListed: Set<number>;
 }
 
@@ -247,6 +263,7 @@ async function marketsMatchingChain(
     markets: [],
     maxPriceAgeSeconds: new Map(),
     maintenanceMarginBps: new Map(),
+    limits: new Map(),
     makersListed: new Set(),
   };
   if (deployment.markets.length === 0) return matching;
@@ -267,6 +284,14 @@ async function marketsMatchingChain(
     matching.markets.push(market);
     matching.maxPriceAgeSeconds.set(market.marketId, Number(chain.params.maxPriceAge));
     matching.maintenanceMarginBps.set(market.marketId, chain.params.mmBps);
+    matching.limits.set(market.marketId, {
+      imBps: chain.params.imBps,
+      mmBps: chain.params.mmBps,
+      takerFeeBps: chain.params.takerFeeBps,
+      bandBps: chain.params.bandBps,
+      minSize: chain.params.minSize,
+      minNotional: chain.params.minNotional,
+    });
     if (isMakersListed(chain.params.access)) matching.makersListed.add(market.marketId);
   });
   return matching;
@@ -340,7 +365,7 @@ async function derivedOrderKeys(
 }
 
 /** A read the rollup refused for want of a valid token, as opposed to any other failure. */
-const looksUnauthorized = (error: unknown) =>
+export const looksUnauthorized = (error: unknown) =>
   error instanceof Error &&
   /\b401\b|unauthori[sz]ed|missing token|invalid token|token (?:expired|invalid)/i.test(
     error.message,
@@ -522,6 +547,7 @@ async function buildSession(
     gate: exchangeTokens.gate,
     maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
     maintenanceMarginBps: matching.maintenanceMarginBps,
+    limits: matching.limits,
     makersListed: matching.makersListed,
     readMakersListed: async (marketId) => {
       const account = await reader.getAccountInfo(programAddresses(programId).market(marketId));

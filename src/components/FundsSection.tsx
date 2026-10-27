@@ -28,6 +28,9 @@ import { readTokenBalance } from "@/lib/transfer/solanaRpc";
 import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
 import { withdraw } from "@/lib/transfer/withdraw";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
+import { needsAcknowledgement, recordAcknowledgement } from "@/lib/trading/realMoneyAck";
+import { browserLocalStorage } from "@/lib/wallet";
+import { RealMoneyDialog } from "@/components/OrderDialogs";
 import { btnGhost, btnPrimary, input, sectionLabel } from "@/components/ui/styles";
 import { TransferRecords, type RecordsEngine } from "@/components/TransferRecords";
 
@@ -180,6 +183,8 @@ export default function FundsSection({
   const [result, setResult] = useState<OutcomeLine | null>(null);
   const [storageCaution, setStorageCaution] = useState(false);
   const [funds, setFunds] = useState<WalletFunds>({ usdc: null, lamports: null });
+  const [ackedBy, setAckedBy] = useState<string | null>(null);
+  const [showAck, setShowAck] = useState(false);
 
   const readFunds = useCallback(async (): Promise<WalletFunds | null> => {
     if (!owner) return null;
@@ -381,7 +386,16 @@ export default function FundsSection({
                   !accountOpen ||
                   (kind === "withdraw" && !ownerAuthKnown)
                 }
-                onClick={() => void submit()}
+                onClick={() => {
+                  if (
+                    kind === "deposit" &&
+                    needsAcknowledgement(browserLocalStorage(), owner, ackedBy)
+                  ) {
+                    setShowAck(true);
+                    return;
+                  }
+                  void submit();
+                }}
               >
                 {kind === "deposit" ? "Deposit" : "Withdraw"}
                 {check.ok ? ` ${atomsText(check.atoms, QUOTE_DECIMALS)} USDC` : ""}
@@ -409,6 +423,17 @@ export default function FundsSection({
           </div>
         )}
       </div>
+      {showAck && (
+        <RealMoneyDialog
+          onBack={() => setShowAck(false)}
+          onAccept={() => {
+            recordAcknowledgement(browserLocalStorage(), owner);
+            setAckedBy(owner);
+            setShowAck(false);
+            void submit();
+          }}
+        />
+      )}
     </div>
   );
 }

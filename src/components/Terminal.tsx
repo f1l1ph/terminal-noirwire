@@ -27,6 +27,7 @@ import {
 import { deploymentOverrides } from "@/lib/trading";
 import type { CancelResult, Position } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
+import { withoutSign } from "@/lib/trading/decimal";
 import type { LimitLine } from "@/lib/trading/limitLine";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { UNCONFIRMED_PLACE_RESULT } from "@/lib/rollup/outcome";
@@ -167,19 +168,22 @@ export function Terminal() {
   // the same cached fetch `RollupTradingClient` makes once a wallet
   // exists), so a speed figure never claims "local" for a public network
   // or vice versa (second design review, item 3).
-  const [deployment, setDeployment] = useState<PublicDeployment | null>(null);
+  // The session's own deployment wins once it exists, and so is retried with
+  // the session; this one fetch only covers the time before a wallet connects.
+  const [fetchedDeployment, setFetchedDeployment] = useState<PublicDeployment | null>(null);
   useEffect(() => {
     if (trading.client.mode !== "rollup") return;
     let cancelled = false;
     fetchDeployment(env.simUrl, deploymentOverrides)
       .then((described) => {
-        if (!cancelled) setDeployment(described);
+        if (!cancelled) setFetchedDeployment(described);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [trading.client.mode]);
+  const deployment = trading.sessionDeployment ?? fetchedDeployment;
   const network = deployment?.network ?? (mainnet ? "mainnet" : "localnet");
 
   // One session per market, not one session total: switching markets must
@@ -187,6 +191,8 @@ export function Terminal() {
   const [orderSessions, setOrderSessions] = useState<Record<string, OrderSession>>({});
   const [clientDurationMs, setClientDurationMs] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  /** Ids of the resting orders whose own cancel is running; each row's cancel is off by its own id. */
+  const [cancellingIds, setCancellingIds] = useState<ReadonlySet<string>>(new Set());
   const [cancelPending, setCancelPending] = useState<{ expiresAtMs: number } | null>(null);
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [prefillRequest, setPrefillRequest] = useState<PrefillRequest | null>(null);
@@ -356,7 +362,9 @@ export function Terminal() {
    * the cancel so it is still known once the order disappears from state)
    * or shows a plain reason it could not be sent at all (e.g. every
    * order-key slot busy); a pending one shows the countdown and recurses
-   * once it settles.
+   * once it settles. A cancel of one order marks the rail only when that
+   * order is the one the rail tracks; a cancel of every order in the market
+   * always does.
    */
   async function applyCancelOutcome(
     market: string,
@@ -364,12 +372,13 @@ export function Terminal() {
     size: string | null,
     sizeDecimals: number,
     result: CancelResult,
+    singleOrder: boolean,
   ): Promise<void> {
     if (result.pending) {
       setCancelPending({ expiresAtMs: result.pending.expiresAtMs });
       const settled = await result.pending.settled;
       setCancelPending(null);
-      await applyCancelOutcome(market, orderId, size, sizeDecimals, settled);
+      await applyCancelOutcome(market, orderId, size, sizeDecimals, settled, singleOrder);
       return;
     }
     if (result.cancelled > 0) {
@@ -377,10 +386,14 @@ export function Terminal() {
         orderId && size
           ? `Cancelled order ${orderId} · ${formatDecimal(size, sizeDecimals)} remaining.`
           : "Cancelled by request.";
-      updateSession(market, (prev) => ({
-        ...prev,
-        baseSteps: appendStep(prev.baseSteps, "cancelled", Date.now(), detail),
-      }));
+      updateSession(market, (prev) =>
+        singleOrder && prev.trackedOrderId !== orderId
+          ? prev
+          : {
+              ...prev,
+              baseSteps: appendStep(prev.baseSteps, "cancelled", Date.now(), detail),
+            },
+      );
       return;
     }
     if (result.reason) setCancelMessage(result.reason);
@@ -401,6 +414,7 @@ export function Terminal() {
         open?.remainingSize ?? null,
         open ? (marketSettings(open.market) ? sizeDecimalsOf(marketSettings(open.market)!) : 4) : 4,
         await trading.cancelAllInMarket(selectedMarketId),
+        false,
       );
     } catch (error) {
       setCancelPending(null);
@@ -411,12 +425,12 @@ export function Terminal() {
   }
 
   async function handleCancelOrder(market: string, orderId: string): Promise<void> {
-    if (!trading.cancelOrder) return;
+    if (!trading.cancelOrder || cancellingIds.has(orderId)) return;
     if (tabGuard.elsewhere) {
       setCancelMessage(TRADING_IN_OTHER_TAB_NOTICE);
       return;
     }
-    setCancelling(true);
+    setCancellingIds((prev) => new Set(prev).add(orderId));
     setCancelMessage(null);
     const open = trading.state.openOrders.find((order) => order.orderId === orderId);
     const settings = marketSettings(market);
@@ -427,22 +441,26 @@ export function Terminal() {
         open?.remainingSize ?? null,
         settings ? sizeDecimalsOf(settings) : 4,
         await trading.cancelOrder(market, orderId),
+        true,
       );
     } catch (error) {
       setCancelPending(null);
       setCancelMessage(userMessageLine(error, { nothingSent: true }));
     } finally {
-      setCancelling(false);
+      setCancellingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(orderId);
+        return next;
+      });
     }
   }
 
   function requestReduceOnly(position: Position, submit: boolean): void {
-    const size = Number(position.size);
     setChosenMarketId(position.market);
     setPrefillRequest({
       market: position.market,
-      side: size > 0 ? "sell" : "buy",
-      size: String(Math.abs(size)),
+      side: position.size.trim().startsWith("-") ? "buy" : "sell",
+      size: withoutSign(position.size),
       reduceOnly: true,
       submit,
       requestId: Date.now(),
@@ -730,7 +748,7 @@ export function Terminal() {
             needsInvite={trading.needsInvite}
             opening={trading.opening}
             outcome={trading.openOutcome}
-            onOpen={() => void trading.openAccount()}
+            onOpen={(invite) => void trading.openAccount(invite)}
             onRecheck={trading.recheckAccount}
             keys={trading.orderKeys}
             now={now}
@@ -745,6 +763,7 @@ export function Terminal() {
           : tradeGate(isMainnetBuild(), trading.accountStatus, trading.orderKeys)
       }
       makersListed={trading.makersListed.has(market.id)}
+      limits={trading.marketLimits.get(market.id)}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
       noFaucet={trading.noFaucet}
@@ -795,7 +814,9 @@ export function Terminal() {
           ? () => void handleCancelOrder(selectedMarketId, trackedOpenOrder.orderId)
           : null
       }
-      cancelling={cancelling}
+      cancelling={
+        cancelling || (trackedOpenOrder !== null && cancellingIds.has(trackedOpenOrder.orderId))
+      }
       cancelPending={cancelPending}
       cancelMessage={cancelMessage}
       now={now}
@@ -820,8 +841,11 @@ export function Terminal() {
       onTransfer={transferBetweenBalances}
       onClosePosition={requestClose}
       onReducePosition={requestReduce}
+      limits={trading.marketLimits}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
-      cancellingOrderId={cancelling ? (trackedOpenOrder?.orderId ?? null) : null}
+      cancellingOrderIds={
+        cancelling ? new Set(trading.state.openOrders.map((order) => order.orderId)) : cancellingIds
+      }
       transfers={
         FundsSection ? (
           <Suspense fallback={null}>
@@ -850,6 +874,7 @@ export function Terminal() {
       mark={mark}
       now={now}
       quoteSymbol={quoteSymbol}
+      takerFeeBps={trading.marketLimits.get(selectedMarketId)?.takerFeeBps}
       candles={candles}
       tape={tape}
       ownSequences={ownSequences}
