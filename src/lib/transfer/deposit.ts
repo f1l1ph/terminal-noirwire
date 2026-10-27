@@ -66,7 +66,10 @@ export interface DepositInput {
  * Whether the deposit may start, checked before any signature is asked for:
  * the account is open, the exchange is not paused, custody has room under its
  * cap (read from the custody account itself, equal allowed), and the wallet
- * holds the tokens and the SOL for the steps.
+ * holds the tokens and the SOL for the steps. A private rollup serves the
+ * custody account only to its owner, a program address no reader can sign in
+ * as, so there the cap is left to the program: a deposit it refuses leaves the
+ * tokens in the owner's rollup balance, from where they can be returned.
  */
 async function depositRefusal(
   env: TransferEnv,
@@ -86,13 +89,7 @@ async function depositRefusal(
     );
   }
   const custody = await readTokenBalance(env.rollup, custodyAccount(env));
-  if (custody === null) {
-    return refuse(
-      "custody-unreadable",
-      "What custody holds cannot be read, so the cap cannot be checked. Nothing was sent.",
-    );
-  }
-  if (custody + atoms > exchange.custodyCap) {
+  if (custody !== null && custody + atoms > exchange.custodyCap) {
     return refuse(
       "custody-cap",
       `The deposit would take custody to ${custody + atoms} atoms, past the cap of ${exchange.custodyCap}. Nothing was sent.`,

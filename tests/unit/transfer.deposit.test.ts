@@ -61,12 +61,12 @@ describe("deposit preconditions", () => {
     expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
   });
 
-  it("refuses when custody cannot be read, rather than counting it as empty", async () => {
+  it("leaves the cap to the program when the rollup does not serve custody", async () => {
     const world = makeWorld();
     world.rollup.accounts.delete(world.custody.toBase58());
+    landing(world);
     const outcome = await deposit(world.env, { amount: AMOUNT });
-    expect(outcome).toMatchObject({ status: "refused", reason: "custody-unreadable" });
-    expect(world.events).toEqual([]);
+    expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
   });
 
   it("refuses when the wallet holds less SOL than the steps cost, before any signature", async () => {
