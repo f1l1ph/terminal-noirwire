@@ -48,9 +48,11 @@ the real service.
 6. **No risk-engine read endpoint is documented.** The concept
    (section 7) calls for "an estimated liquidation price from the risk
    engine." There is nothing to read it from, so `src/lib/trading/risk.ts`
-   computes a liquidation **estimate** client-side (fixed-point, a flat
-   0.50% maintenance-margin assumption against notional) and every place it
-   is shown is labelled `(est.)`. At minimum leverage this estimate is
+   computes a liquidation **estimate** client-side (fixed-point, against
+   notional) and every place it is shown is labelled `(est.)`. The ratios
+   come from the market account on chain (maintenance margin, initial
+   margin, taker fee) once the session has read them; until then the
+   estimate assumes a 5% maintenance margin (500 bps) and a 0.05% taker fee. At minimum leverage this estimate is
    correctly very close to zero (it would take price falling by roughly the
    inverse of leverage to erase the margin) - a near-zero number at 1x is
    expected output, not a bug.
