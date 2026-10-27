@@ -1115,7 +1115,7 @@ export function OrderEntry({
           {slider && (
             <input
               type="range"
-              aria-label="Limit price, within 10 percent of the current price"
+              aria-label="Price slider, within 10 percent of the current price"
               min={slider.min}
               max={slider.max}
               step={1}
