@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { Connection, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import nacl from "tweetnacl";
+import { WALLET_ASSERTION_PROGRAM } from "@/lib/rollup/signedCheck";
+import { signatureOf } from "@/lib/transfer/send";
 import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { programAddresses } from "@/lib/rollup/sdk";
@@ -10,6 +13,34 @@ import { USDC, legacyDeposit, makeWorld, type World } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
 const AMOUNT = "2.5";
+
+const isAssertion = (instruction: TransactionInstruction) =>
+  instruction.programId.toBase58() === WALLET_ASSERTION_PROGRAM;
+
+/** A wallet that signs the transaction with `count` assertion instructions appended, each carrying `bytes(message length of the transaction it was given)` bytes of data. */
+function widenedByWallet(world: World, count: number, bytes = (_base: number) => 32) {
+  world.env.signChecked = async (transaction) => {
+    const data = Buffer.alloc(bytes(transaction.serializeMessage().length));
+    const widened = new Transaction({
+      feePayer: transaction.feePayer!,
+      blockhash: transaction.recentBlockhash!,
+      lastValidBlockHeight: transaction.lastValidBlockHeight!,
+    }).add(
+      ...transaction.instructions,
+      ...Array.from(
+        { length: count },
+        () =>
+          new TransactionInstruction({
+            programId: new PublicKey(WALLET_ASSERTION_PROGRAM),
+            keys: [{ pubkey: PublicKey.unique(), isSigner: false, isWritable: false }],
+            data,
+          }),
+      ),
+    );
+    widened.partialSign(world.keypair);
+    return widened;
+  };
+}
 
 /** A deposit whose two steps both land. */
 function landing(world: World) {
@@ -153,6 +184,40 @@ describe("deposit steps", () => {
     const sent = Transaction.from(raw);
     expect(sent.verifySignatures()).toBe(true);
     expect(sent.signatures.filter((entry) => entry.signature !== null)).toHaveLength(2);
+  });
+
+  it("has the deposit key sign the message the wallet returned with its assertions, and journals what is broadcast", async () => {
+    const world = makeWorld();
+    landing(world);
+    widenedByWallet(world, 3);
+    await deposit(world.env, { amount: AMOUNT });
+    const [raw] = world.solana.rawSent;
+    const sent = Transaction.from(raw);
+    expect(sent.instructions.filter((entry) => isAssertion(entry))).toHaveLength(3);
+    const key = sent.signatures.find((entry) => entry.publicKey.equals(world.depositKey.publicKey));
+    expect(
+      nacl.sign.detached.verify(
+        sent.serializeMessage(),
+        key!.signature!,
+        world.depositKey.publicKey.toBytes(),
+      ),
+    ).toBe(true);
+    expect(sent.verifySignatures()).toBe(true);
+    expect(world.solana.sent[0]).toBe(signatureOf(raw));
+    expect(world.events.indexOf("journal:record")).toBeLessThan(
+      world.events.indexOf("broadcast:solana"),
+    );
+  });
+
+  it("refuses a wallet-widened transaction over 1,232 bytes before anything is broadcast", async () => {
+    const world = makeWorld();
+    landing(world);
+    widenedByWallet(world, 1, (base) => 1110 - base - 75);
+    const outcome = await deposit(world.env, { amount: AMOUNT });
+    expect(outcome).toMatchObject({ status: "refused", reason: "transaction-not-allowed" });
+    expect((outcome as { message: string }).message).toMatch(/1232.*Nothing was sent/);
+    expect(world.solana.rawSent).toEqual([]);
+    expect(world.rows.size).toBe(0);
   });
 
   it("does not let the deposit key sign when the wallet is refused", async () => {

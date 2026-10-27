@@ -1,4 +1,5 @@
 import type { Transaction } from "@solana/web3.js";
+import type { MainnetChain } from "../wallet/ownerSigner";
 import type { TransferShape } from "./guard";
 import type { TransferEnv } from "./operation";
 
@@ -39,9 +40,9 @@ export function withProgress(env: TransferEnv, report: (phase: Phase) => void): 
     rollup: watchedBroadcast(env.rollup, () => report("finality")),
     depositRollup: async () =>
       watchedBroadcast(await env.depositRollup(), () => report("finality")),
-    signChecked: async (transaction: Transaction, shape: TransferShape) => {
+    signChecked: async (transaction: Transaction, shape: TransferShape, chain?: MainnetChain) => {
       report("approve");
-      const signed = await env.signChecked(transaction, shape);
+      const signed = await env.signChecked(transaction, shape, chain);
       report("sending");
       return signed;
     },

@@ -1,4 +1,4 @@
-import { PublicKey, type Keypair, type Transaction } from "@solana/web3.js";
+import { PublicKey, type Keypair } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { MAINNET_PINS } from "../rollup/pins";
 import { rememberToken } from "../rollup/redact";
@@ -12,7 +12,7 @@ import {
   signInWithExpiry,
   type CustodyToken,
 } from "../rollup/sdk";
-import type { MainnetChain, OwnerSigner } from "../wallet/ownerSigner";
+import type { OwnerSigner } from "../wallet/ownerSigner";
 import type { TransferPins } from "./guard";
 import { createJournal, indexedDbStorage, type Journal } from "./journal";
 import { tryLockOwner } from "./lock";
@@ -55,17 +55,6 @@ export async function readExchange(
     token: { mint: collateral.mint, custodyNonce: collateral.custodyNonce },
     perpMarketIds,
   };
-}
-
-/**
- * The chain the wallet is told about: a transaction for the order book program
- * is a rollup transaction and is signed with no chain; every other transfer
- * transaction is a Solana mainnet one.
- */
-export function chainOf(transaction: Transaction, programId: PublicKey): MainnetChain | undefined {
-  return transaction.instructions.some((instruction) => instruction.programId.equals(programId))
-    ? undefined
-    : "solana:mainnet";
 }
 
 export interface MainnetTransferParts {
@@ -156,8 +145,7 @@ export async function createMainnetTransferEnv(parts: MainnetTransferParts): Pro
     exchange: port,
     journal: parts.journal ?? createJournal(indexedDbStorage()),
     lock: (owner) => tryLockOwner(owner),
-    signChecked: (transaction) =>
-      signChecked(parts.signer, transaction, chainOf(transaction, pins.programId)),
+    signChecked: (transaction, chain) => signChecked(parts.signer, transaction, chain),
     clock: parts.clock ?? browserClock,
     newId: parts.newId ?? (() => crypto.randomUUID()),
   });
