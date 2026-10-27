@@ -5,7 +5,7 @@ import type { Wallet } from "@wallet-standard/base";
 import { formatShortAddress } from "@/lib/format";
 import { isMainnetBuild } from "@/lib/network";
 import { userMessage } from "@/lib/userMessage";
-import { useStandardWallet } from "@/lib/wallet/standardWallet";
+import { type SessionEnd, useStandardWallet } from "@/lib/wallet/standardWallet";
 import {
   browserLocalStorage,
   keptWalletAddress,
@@ -173,6 +173,11 @@ export function openWalletMenu() {
   window.dispatchEvent(new Event(OPEN_WALLET_MENU_EVENT));
 }
 
+const endedLine = (ended: SessionEnd) =>
+  ended.reason === "locked"
+    ? "Your wallet is locked or no longer shares this account with this page. Open it and connect again."
+    : "Your wallet switched to another account. Connect again to continue.";
+
 /** Phantom, Solflare and any other Wallet Standard wallet that signs for Solana mainnet: connect, show and copy the address, disconnect. */
 function ExternalWalletWidget() {
   const { wallets, rejected, signer, connecting, ended, dismissEnded, connect, disconnect } =
@@ -227,11 +232,7 @@ function ExternalWalletWidget() {
           role="status"
           className={`${panel} absolute right-0 z-10 mt-2 w-[min(20rem,calc(100vw-2rem))] p-4`}
         >
-          <p className="text-ink text-[13px]">
-            {ended.reason === "locked"
-              ? "Your wallet locked. Unlock it and connect again."
-              : "Your wallet switched to another account. Connect again to continue."}
-          </p>
+          <p className="text-ink text-[13px]">{endedLine(ended)}</p>
           <p className="text-faint tnum mt-1 text-[12px]">
             Previous account: {formatShortAddress(ended.address)}
           </p>
@@ -246,6 +247,11 @@ function ExternalWalletWidget() {
       )}
       {open && (
         <div className={`${panel} absolute right-0 z-10 mt-2 w-[min(20rem,calc(100vw-2rem))] p-4`}>
+          {ended && !address && (
+            <p role="status" className="text-ink mb-3 text-[13px]">
+              {endedLine(ended)}
+            </p>
+          )}
           {address ? (
             <>
               <p className="text-faint text-[12px]">Connected wallet</p>

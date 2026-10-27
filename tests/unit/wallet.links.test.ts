@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import { isMobileBrowser, phantomBrowseUrl, solflareBrowseUrl } from "@/lib/wallet/walletLinks";
 
 describe("the mobile browser check", () => {
-  it("trusts userAgentData when the browser has it", () => {
+  it("counts either userAgentData or the user agent saying mobile", () => {
     expect(isMobileBrowser({ userAgentData: { mobile: true }, userAgent: "Macintosh" })).toBe(true);
-    expect(isMobileBrowser({ userAgentData: { mobile: false }, userAgent: "iPhone" })).toBe(false);
+    expect(
+      isMobileBrowser({ userAgentData: { mobile: false }, userAgent: "Linux; Android 14; Tab" }),
+    ).toBe(true);
+    expect(
+      isMobileBrowser({ userAgentData: { mobile: false }, userAgent: "Windows NT 10.0" }),
+    ).toBe(false);
   });
 
   it("reads the user agent otherwise", () => {

@@ -4,8 +4,7 @@ const MOBILE_AGENT = /Android|iPhone|iPad|iPod|Mobile/i;
 
 /** Whether this is a phone or tablet browser, where there is no extension to find: the wallet apps open the page in their own browser instead. */
 export function isMobileBrowser(nav: NavigatorLike): boolean {
-  if (typeof nav.userAgentData?.mobile === "boolean") return nav.userAgentData.mobile;
-  return MOBILE_AGENT.test(nav.userAgent ?? "");
+  return nav.userAgentData?.mobile === true || MOBILE_AGENT.test(nav.userAgent ?? "");
 }
 
 /** The link that opens `pageUrl` inside the Phantom app's browser. */
