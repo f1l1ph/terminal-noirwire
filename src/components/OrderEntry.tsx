@@ -8,6 +8,13 @@ import type { MarketInfo } from "@/lib/market-data/types";
 import { isMainnetBuild } from "@/lib/network";
 import { browserLocalStorage } from "@/lib/wallet";
 import { limitSentAsIoc } from "@/lib/trading/orderType";
+import {
+  limitLineFor,
+  priceAtTick,
+  sliderPosition,
+  tickSlider,
+  type LimitLine,
+} from "@/lib/trading/limitLine";
 import { needsAcknowledgement, recordAcknowledgement } from "@/lib/trading/realMoneyAck";
 import {
   offersTestFunds,
@@ -141,7 +148,10 @@ export function OrderEntry({
   setup,
   gate,
   makersListed,
+  onLimitLineChange,
 }: {
+  /** Told the draft limit price and side while the form is a limit order with a valid price, null otherwise; the chart draws it. */
+  onLimitLineChange?: (line: LimitLine | null) => void;
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
   now: number;
@@ -284,6 +294,18 @@ export function OrderEntry({
     return aligned.toFixed(priceDecimals);
   }, [orderType, mark, side, market, priceDecimals]);
   const priceText = priceOverride ?? defaultBoundPrice;
+  const tickSize = market ? Number(market.tickSize) : NaN;
+  const markNumber = mark ? Number(mark.price) : NaN;
+  const slider = tickSlider(markNumber, tickSize);
+  const limitLine = limitLineFor({ orderType, priceText, side });
+  const linePrice = limitLine?.price ?? null;
+  const lineSide = limitLine?.side ?? null;
+  useEffect(() => {
+    onLimitLineChange?.(
+      linePrice === null || lineSide === null ? null : { price: linePrice, side: lineSide },
+    );
+  }, [onLimitLineChange, linePrice, lineSide]);
+  useEffect(() => () => onLimitLineChange?.(null), [onLimitLineChange]);
 
   const baseUnit = spotAssets?.base ?? market?.base ?? "";
   const baseName = displayBase(baseUnit);
@@ -1091,6 +1113,20 @@ export function OrderEntry({
             value={priceText}
             onChange={(event) => setPriceOverride(event.target.value)}
           />
+          {slider && (
+            <input
+              type="range"
+              aria-label="Limit price, within 10 percent of the current price"
+              min={slider.min}
+              max={slider.max}
+              step={1}
+              value={sliderPosition(priceText, markNumber, tickSize, slider)}
+              onChange={(event) =>
+                setPriceOverride(priceAtTick(Number(event.target.value), tickSize, priceDecimals))
+              }
+              className={`${rangeBrand} mt-3`}
+            />
+          )}
           <p className="text-faint mt-1 text-[11px]">Fills only at this price or better.</p>
         </div>
       )}

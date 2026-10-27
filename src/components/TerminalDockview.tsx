@@ -115,6 +115,7 @@ function ChartPanel() {
           ownSequences={data.ownSequences}
           loading={data.candlesLoading}
           markStale={data.markStale}
+          limitLine={data.limitLine}
         />
       </div>
     </div>
