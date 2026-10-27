@@ -99,8 +99,17 @@ const ASSUMED_CENTRE_COLUMN_HEIGHT = 560;
 
 const MAINNET_TICKET_WIDTH = 360;
 const MAINNET_WIDE_TICKET_WIDTH = 400;
-const MAINNET_ACCOUNT_HEIGHT = 260;
-const MAINNET_SHORT_ACCOUNT_HEIGHT = 210;
+/**
+ * One open position card, measured from the rendered classes: tab bar 61px
+ * (8 + 44 + 8 padding, 1 border), panel padding 12 + 12, and the card itself
+ * 165px (P&L row 39, stats row 36, buttons 44, 12px padding and 1px border
+ * each side, 8 + 12 of gaps). That is 250px; the defaults add room for a
+ * notice line or the tools tab header so the Reduce and Close buttons are
+ * never on the edge.
+ */
+export const MAINNET_POSITION_CARD_PANEL_HEIGHT = 250;
+const MAINNET_ACCOUNT_HEIGHT = 300;
+const MAINNET_SHORT_ACCOUNT_HEIGHT = 270;
 /** The real-money ticket column keeps a width in this range so it neither clips nor swallows the chart. */
 export const MAINNET_MIN_TICKET_WIDTH = 340;
 export const MAINNET_MAX_TICKET_WIDTH = 440;
@@ -148,7 +157,7 @@ export function defaultPanelSizes(
 // ---------------------------------------------------------------------------
 
 export const LAYOUT_STORAGE_KEY = "noirwire-terminal-dockview-layout";
-export const LAYOUT_VERSION = 2;
+export const LAYOUT_VERSION = 3;
 
 /** The minimal storage surface the component needs - matches `window.localStorage`, but lets tests pass a fake (including one that throws). */
 export interface DockviewLayoutStorage {

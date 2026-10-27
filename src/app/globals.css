@@ -269,3 +269,35 @@ button:disabled {
 .dv-theme-noirwire .dv-sash-container .dv-sash:active::after {
   background-color: var(--color-ink-strong);
 }
+
+/*
+ * Real-money workspace only: the dividers carry a short, always-visible grip
+ * centred on the sash so they can be found without hunting for a hover. The
+ * hit area stays the 8px box above; the library already sets the resize
+ * cursor per direction (ew-resize on a vertical divider, ns-resize on the
+ * one under the chart).
+ */
+.dv-theme-calm .dv-split-view-container.dv-horizontal > .dv-sash-container > .dv-sash::after {
+  top: 50%;
+  bottom: auto;
+  left: 0.5px;
+  width: 3px;
+  height: 28px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background-color: var(--color-line-strong);
+}
+.dv-theme-calm .dv-split-view-container.dv-vertical > .dv-sash-container > .dv-sash::after {
+  left: 50%;
+  right: auto;
+  top: 0.5px;
+  height: 3px;
+  width: 28px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background-color: var(--color-line-strong);
+}
+.dv-theme-calm .dv-sash-container .dv-sash:hover::after,
+.dv-theme-calm .dv-sash-container .dv-sash:active::after {
+  background-color: var(--color-ink-strong);
+}

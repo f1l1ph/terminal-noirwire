@@ -7,6 +7,8 @@ import {
   PANEL_IDS,
   activePanelIds,
   mainnetPanelSizes,
+  MAINNET_POSITION_CARD_PANEL_HEIGHT,
+  MIN_CHART_HEIGHT,
   clearStoredLayout,
   defaultPanelSizes,
   isValidStoredLayout,
@@ -213,6 +215,15 @@ describe("mainnetPanelSizes", () => {
     for (const width of [1024, 1440]) {
       const { ticketWidth } = mainnetPanelSizes(width, 900);
       expect((width - ticketWidth) / width).toBeGreaterThanOrEqual(0.62);
+    }
+  });
+
+  it("fits one open position card at laptop heights and keeps the chart above its minimum", () => {
+    for (const height of [768, 900, 1080]) {
+      const { accountHeight } = mainnetPanelSizes(1440, height);
+      expect(accountHeight).toBeGreaterThanOrEqual(MAINNET_POSITION_CARD_PANEL_HEIGHT);
+      const assumedChrome = 100;
+      expect(height - assumedChrome - accountHeight).toBeGreaterThanOrEqual(MIN_CHART_HEIGHT);
     }
   });
 
