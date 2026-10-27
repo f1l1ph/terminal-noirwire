@@ -82,6 +82,12 @@ export class MarketDataStore {
     this.setState({ markets, marketsUnreachable: true, marketsFromKept: true });
   }
 
+  /** Takes the kept market settings off screen, for when the service answers with a refusal or something malformed; a live list is left alone. */
+  dropKeptMarkets(): void {
+    if (!this.state.marketsFromKept) return;
+    this.setState({ markets: [], marketsUnreachable: true, marketsFromKept: false });
+  }
+
   setMarketsUnreachable(marketsUnreachable: boolean): void {
     if (this.state.marketsUnreachable === marketsUnreachable) return;
     this.setState({ marketsUnreachable });

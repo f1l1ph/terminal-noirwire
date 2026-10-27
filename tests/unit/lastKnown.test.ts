@@ -169,6 +169,29 @@ describe("market list", () => {
     expect(store.getState().marketsUnreachable).toBe(true);
   });
 
+  it("takes the kept list off screen when the service later refuses", async () => {
+    const storage = memoryStore();
+    keepLastKnown(storage, "markets", SIM, settingsOnly([MARKET]));
+    const store = new MarketDataStore();
+    let sawKept = false;
+    store.subscribe(() => {
+      if (store.getState().marketsFromKept) sawKept = true;
+    });
+    let attempts = 0;
+    await loadMarketList({
+      ...options(store, storage, async () => {
+        attempts += 1;
+        if (attempts === 1) throw unreachable;
+        throw new MarketDataRequestError("refused", `${SIM}/v1/markets`, 403);
+      }),
+      isCancelled: () => attempts >= 3,
+    });
+    expect(sawKept).toBe(true);
+    expect(store.getState().markets).toEqual([]);
+    expect(store.getState().marketsFromKept).toBe(false);
+    expect(store.getState().marketsUnreachable).toBe(true);
+  });
+
   it("uses the kept list for a busy service", async () => {
     const storage = memoryStore();
     keepLastKnown(storage, "markets", SIM, settingsOnly([MARKET]));

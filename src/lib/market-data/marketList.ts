@@ -54,7 +54,8 @@ export async function loadMarketList({
     isCancelled,
     sleep,
     onFailure: (error) => {
-      if (!triedKept && isServiceUnreachable(error)) {
+      if (!isServiceUnreachable(error)) store.dropKeptMarkets();
+      else if (!triedKept) {
         triedKept = true;
         const kept = loadLastKnown(storage, MARKETS_NAME, simUrl, keptMarketsSchema);
         if (kept && kept.length > 0 && store.getState().markets.length === 0) {
