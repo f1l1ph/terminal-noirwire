@@ -1,3 +1,4 @@
+import { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "../transfer/computeBudget";
 import type { AccountStatus, OpenAccountOutcome, OrderKeyState } from "./types";
 
 export interface OpenNotice {
@@ -80,16 +81,24 @@ export function describeOpenOutcome(
       return notice("error", "Nothing was sent. This address's invite has already been used.", {
         nothingSent: true,
       });
-    case "tooManyToday":
+    case "addressLimit":
       return notice(
         "error",
-        "Nothing was sent. All of today's new accounts are taken. Try again tomorrow.",
+        "Nothing was sent. This network address already opened an account today. Try again tomorrow, or from another connection.",
+        { nothingSent: true },
+      );
+    case "dailyCapReached":
+      return notice(
+        "error",
+        "Nothing was sent. All of today's new accounts are taken. New accounts open again at 00:00 UTC, so come back then.",
         { nothingSent: true },
       );
     case "tryLater":
-      return notice("error", "Nothing was sent. The service is busy. Try again shortly.", {
-        nothingSent: true,
-      });
+      return notice(
+        "error",
+        "Nothing was sent. The service is busy or just starting. Try again in a few seconds.",
+        { nothingSent: true },
+      );
     case "prepareExpired":
       return notice("error", "Nothing was sent. The request timed out. Try again.", {
         nothingSent: true,
@@ -103,7 +112,10 @@ export function describeOpenOutcome(
         nothingSent: true,
       });
     case "rejected":
-      return notice("error", `The request was turned away (status ${refusal.status}).`);
+      return notice(
+        "error",
+        "Something was wrong with the request. Reload the page and try again.",
+      );
   }
 }
 
@@ -207,11 +219,34 @@ export function setupSteps(input: {
   return { steps, ready: currentId === undefined };
 }
 
-/** What the deposit step says to do; it never asks for an action the page cannot offer. */
-export function depositHelp(depositsOpen: boolean): string {
-  return depositsOpen
-    ? "Add USDC from your wallet in the Funds section below the chart."
-    : "Deposits open soon. You can explore the market until then.";
+const LAMPORTS_PER_SOL = 1_000_000_000;
+const LAMPORTS_PER_CENT_OF_SOL = LAMPORTS_PER_SOL / 100;
+
+/** A fee need in SOL rounded up to the hundredth, such as "0.04 SOL", so it is never understated. */
+export function feeSolText(lamports: number): string {
+  return `${(Math.ceil(lamports / LAMPORTS_PER_CENT_OF_SOL) / 100).toFixed(2)} SOL`;
+}
+
+function heldSolText(lamports: bigint): string {
+  const sol = Number(lamports) / LAMPORTS_PER_SOL;
+  return `${sol.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")} SOL`;
+}
+
+/**
+ * What the deposit step says to do; it never asks for an action the page
+ * cannot offer. It names the SOL a deposit and a later withdrawal cost in
+ * network fees, and when the wallet's SOL is known to be short of that, says
+ * so here rather than letting the deposit fail. `walletLamports` is null while
+ * the balance is unknown.
+ */
+export function depositHelp(depositsOpen: boolean, walletLamports: bigint | null = null): string {
+  if (!depositsOpen) return "Deposits open soon. You can explore the market until then.";
+  const addUsdc = "Add USDC from your wallet in the Funds section below the chart.";
+  const depositFee = feeSolText(ROUND_TRIP_LAMPORTS);
+  if (walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS)) {
+    return `${addUsdc} Your wallet holds ${heldSolText(walletLamports)}, and a deposit needs about ${depositFee} for network fees. Add some SOL first. Nothing is charged until you deposit.`;
+  }
+  return `${addUsdc} Your wallet also needs about ${depositFee} for network fees on the deposit, and about ${feeSolText(SOLANA_EXIT_LAMPORTS)} again to withdraw.`;
 }
 
 /** How far through the trading-key wait this device is, 0 to 1. */

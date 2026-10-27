@@ -1,3 +1,4 @@
+import { userMessageLine } from "../userMessage";
 import { atomsText } from "./amount";
 import type { DepositOutcome } from "./deposit";
 import type { Refusal } from "./operation";
@@ -31,7 +32,8 @@ const REFUSALS: Record<Refusal, string> = {
     "The network would refuse this transaction, so it was not sent. Nothing moved.",
   "stale-price":
     "Prices are not fresh enough to withdraw right now. Try again in a few minutes. Nothing moved.",
-  "rollup-refused": "The rollup refused the transfer. Nothing moved.",
+  "rollup-refused":
+    "The exchange refused the transfer, so nothing moved. Your free collateral may be lower than that, or withdrawals may be paused while a price problem or an unpaid loss is cleared. Your funds are safe. Try again later.",
   "rollup-unreadable": "Your rollup balance could not be read, so nothing was sent.",
   "send-failed":
     "The transaction did not go through and can no longer. Nothing moved. You can start again.",
@@ -116,9 +118,8 @@ export function outcomeLine(
 
 /** What a thrown error says: the wallet was declined, the network check refused, or something else went wrong before anything was sent. */
 export function failureLine(error: unknown): OutcomeLine {
-  const reason = error instanceof Error ? error.message : "something went wrong";
   return {
     tone: "error",
-    text: `The transfer stopped: ${reason.replace(/\.?$/, ".")} If part of it was already sent, it shows under transfers that need attention.`,
+    text: `The transfer stopped. ${userMessageLine(error)} If part of it was already sent, it shows under transfers that need attention.`,
   };
 }

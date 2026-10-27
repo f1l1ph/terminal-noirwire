@@ -24,9 +24,12 @@ export type OpenRefusal =
   | { kind: "notInvited" }
   | { kind: "inviteUsed" }
   | { kind: "accountOpen" }
-  /** The desk is busy, the day's new accounts are all given out, or the service is starting. */
+  /** The desk is busy, the service is starting, or a short request throttle applies. */
   | { kind: "tryLater" }
-  | { kind: "tooManyToday" }
+  /** All of today's new accounts are given out; the count resets at 00:00 UTC. */
+  | { kind: "dailyCapReached" }
+  /** This network address already opened its account today. */
+  | { kind: "addressLimit" }
   /** Nothing is prepared any more: prepare again. */
   | { kind: "prepareExpired" }
   /** The rollup did not answer in time: the account MAY be open. Read the view before retrying. */
@@ -53,15 +56,18 @@ const ACCOUNT_EXISTS_409: readonly string[] = [
   "the account was not opened: it exists already. Nothing changed",
 ];
 
+const DAILY_CAP_503: readonly string[] = [
+  "today's new accounts are all given out: try again tomorrow, it resets at 00:00 UTC",
+  "daily limit reached: no more new accounts can be opened today, try again tomorrow",
+];
+
 const NOTHING_SENT_503: readonly string[] = [
   "the service is still starting, try again",
   "the service is waking up, try again in a few seconds",
   "the rollup cannot be reached right now, try again",
   "the desk is busy with another request, try again",
   "the service is still starting, try again in a few seconds",
-  "today's new accounts are all given out: try again tomorrow, it resets at 00:00 UTC",
   "the gate could not write its seat record, so it signed nothing. Nothing changed: try again, and tell the operator if it keeps happening",
-  "daily limit reached: no more new accounts can be opened today, try again tomorrow",
 ];
 
 function sameInstruction(
@@ -164,9 +170,10 @@ export function openRefusalOf(status: number, reason: string, step: Step): OpenR
   if (status === 410) return { kind: "prepareExpired" };
   if (status === 429) {
     return /opened its account for today/i.test(reason)
-      ? { kind: "tooManyToday" }
+      ? { kind: "addressLimit" }
       : { kind: "tryLater" };
   }
+  if (status === 503 && DAILY_CAP_503.includes(reason)) return { kind: "dailyCapReached" };
   if (status === 503 && (step === "prepare" || NOTHING_SENT_503.includes(reason))) {
     return { kind: "tryLater" };
   }

@@ -12,6 +12,7 @@ import {
 import { atomsText } from "@/lib/transfer/amount";
 import { newTransferBlocked } from "@/lib/transfer/resume";
 import type { DismissOutcome } from "@/lib/transfer/dismiss";
+import { userMessageLine } from "@/lib/userMessage";
 import { createJournal, indexedDbStorage, type OperationRecord } from "@/lib/transfer/journal";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 
@@ -141,8 +142,7 @@ export function TransferRecords({
           await (how === "return" ? engine.giveBack(item, setNote) : engine.resume(item, setNote)),
         );
       } catch (error) {
-        const reason = error instanceof Error ? error.message : "something went wrong";
-        setNote(`The transfer stopped: ${reason.replace(/\.?$/, ".")} Nothing is sent again.`);
+        setNote(`The transfer stopped. ${userMessageLine(error)} Nothing is sent again.`);
       } finally {
         setBusy(false);
         setReload((count) => count + 1);
@@ -158,8 +158,7 @@ export function TransferRecords({
     try {
       setNote(await engine.recover(setNote));
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "something went wrong";
-      setNote(`The transfer stopped: ${reason.replace(/\.?$/, ".")} Nothing is sent again.`);
+      setNote(`The transfer stopped. ${userMessageLine(error)} Nothing is sent again.`);
     } finally {
       setBusy(false);
       setReload((count) => count + 1);
