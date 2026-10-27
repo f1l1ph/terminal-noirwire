@@ -216,6 +216,15 @@ export function staleMarkBlocks(params: {
   );
 }
 
+/**
+ * The warning shown while a reduce-only order goes ahead on an old mark. The
+ * venue still checks the price against its own current one, so the order can
+ * be refused if the market has moved.
+ */
+export function staleReduceOnlyNotice(ageText: string | null): string {
+  return `The price is ${ageText ?? "too"} old. A close can still go through, but it may be refused if the market has moved. Wait for a fresh price to be safe.`;
+}
+
 function roundDownToLot(quantityFp: bigint, lotFp: bigint): bigint {
   if (lotFp <= 0n) return quantityFp;
   return quantityFp - (quantityFp % lotFp);
