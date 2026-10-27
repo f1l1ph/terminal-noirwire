@@ -1,11 +1,11 @@
-import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import { Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { WALLET_ASSERTION_PROGRAM } from "@/lib/rollup/signedCheck";
 import { describe, expect, it, vi } from "vitest";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { mainnetOwnerSigner } from "@/lib/rollup/mainnetOwner";
 import { programInstructions } from "@/lib/rollup/sdk";
 import { keypairOwnerSigner, type OwnerSigner } from "@/lib/wallet/ownerSigner";
 import {
-  chainOf,
   createMainnetTransferEnv,
   mainnetTransferPins,
   type ExchangeFacts,
@@ -136,6 +136,34 @@ describe("the mainnet transfer env", () => {
     ).rejects.toThrow(/Nothing was sent/);
   });
 
+  it("tolerates the wallet's assertions on a mainnet send and refuses them on a rollup send", async () => {
+    const { guarded, keypair } = setup((pair) => ({
+      publicKey: pair.publicKey,
+      signMessage: async () => new Uint8Array(64),
+      signTransaction: async (transaction) => {
+        const widened = Transaction.from(
+          transaction.serialize({ requireAllSignatures: false, verifySignatures: false }),
+        );
+        widened.add(
+          new TransactionInstruction({
+            programId: new PublicKey(WALLET_ASSERTION_PROGRAM),
+            keys: [{ pubkey: PublicKey.unique(), isSigner: false, isWritable: false }],
+            data: Buffer.from([1]),
+          }),
+        );
+        widened.partialSign(pair);
+        return widened;
+      },
+    }));
+    const env = await createMainnetTransferEnv(parts(guarded));
+    const shape = { kind: "seat-deposit", atoms: ATOMS } as const;
+    const signed = await env.signChecked(seatDeposit(keypair.publicKey), shape, "solana:mainnet");
+    expect(signed.instructions).toHaveLength(2);
+    await expect(env.signChecked(seatDeposit(keypair.publicKey), shape)).rejects.toThrow(
+      /it added 1 instruction.*Nothing was sent/,
+    );
+  });
+
   it("refuses a wallet that changes the message it signs", async () => {
     const { guarded, keypair } = setup((pair) => ({
       publicKey: pair.publicKey,
@@ -199,23 +227,5 @@ describe("the deposit key's move through the wallet", () => {
       [keypair.publicKey, key.publicKey].map((entry) => entry.toBase58()).sort(),
     );
     expect(signed.verifySignatures()).toBe(true);
-  });
-});
-
-describe("chainOf", () => {
-  it("signs a rollup transaction with no chain and a Solana one with mainnet", () => {
-    const owner = Keypair.generate().publicKey;
-    expect(chainOf(seatDeposit(owner), programId)).toBeUndefined();
-    const solanaOnly = new Transaction().add(
-      programInstructions(PublicKey.unique()).deposit(
-        owner,
-        associatedTokenAddress(owner, mint),
-        { mint, custodyNonce: 7n },
-        owner,
-        { collateral: true },
-        ATOMS,
-      ),
-    );
-    expect(chainOf(solanaOnly, programId)).toBe("solana:mainnet");
   });
 });

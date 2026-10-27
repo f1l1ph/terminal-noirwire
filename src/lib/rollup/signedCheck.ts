@@ -1,8 +1,81 @@
-import type { PublicKey, Transaction } from "@solana/web3.js";
+import { Message, type PublicKey, type Transaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
+
+/** The program a wallet appends its own assertions with: they only check account state after execution and fail the transaction if it differs, and move no funds. */
+export const WALLET_ASSERTION_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) =>
   a.length === b.length && a.every((byte, index) => byte === b[index]);
+
+/** An instruction as the message lists it: program, data and the ordered account keys, without per-instruction flags (a message has only one status per account). */
+const listed = (message: Message, instruction: Message["instructions"][number]) =>
+  [
+    message.accountKeys[instruction.programIdIndex].toBase58(),
+    instruction.data,
+    ...instruction.accounts.map((index) => message.accountKeys[index].toBase58()),
+  ].join("|");
+
+const requiredSigners = (message: Message) =>
+  message.accountKeys
+    .slice(0, message.header.numRequiredSignatures)
+    .map((key) => key.toBase58())
+    .sort();
+
+/**
+ * Whether `signedMessage` is `builtMessage` plus instructions of the wallet's
+ * assertion program and nothing else, judged on the message, where an
+ * account has one signer and one writable status for every instruction:
+ * - the same fee payer, blockhash and required signers (count and keys);
+ * - each of our instructions in our order, with the same program, data and
+ *   account keys (the additions may sit between them or around them);
+ * - every account of ours keeps exactly its signer and writable status;
+ * - an account the wallet introduced is never a signer;
+ * - every other instruction is of the assertion program, which may name our
+ *   accounts: it cannot use their signer status to move funds, and that
+ *   status is unchanged.
+ */
+function onlyWalletAssertionsAdded(builtMessage: Uint8Array, signedMessage: Uint8Array): boolean {
+  let before: Message;
+  let after: Message;
+  try {
+    before = Message.from(builtMessage);
+    after = Message.from(signedMessage);
+  } catch {
+    return false;
+  }
+  if (
+    !before.accountKeys[0].equals(after.accountKeys[0]) ||
+    before.recentBlockhash !== after.recentBlockhash ||
+    before.header.numRequiredSignatures !== after.header.numRequiredSignatures ||
+    requiredSigners(before).join() !== requiredSigners(after).join()
+  ) {
+    return false;
+  }
+  const ours = new Map(before.accountKeys.map((key, index) => [key.toBase58(), index]));
+  for (const [index, key] of after.accountKeys.entries()) {
+    const was = ours.get(key.toBase58());
+    if (was === undefined) {
+      if (after.isAccountSigner(index)) return false;
+    } else if (
+      before.isAccountSigner(was) !== after.isAccountSigner(index) ||
+      before.isAccountWritable(was) !== after.isAccountWritable(index)
+    ) {
+      return false;
+    }
+  }
+  const mine = before.instructions.map((instruction) => listed(before, instruction));
+  let next = 0;
+  for (const instruction of after.instructions) {
+    if (next < mine.length && listed(after, instruction) === mine[next]) {
+      next += 1;
+    } else if (
+      after.accountKeys[instruction.programIdIndex].toBase58() !== WALLET_ASSERTION_PROGRAM
+    ) {
+      return false;
+    }
+  }
+  return next === mine.length;
+}
 
 const plural = (count: number) => `${count} instruction${count === 1 ? "" : "s"}`;
 
@@ -61,12 +134,19 @@ function describeChange(built: Transaction, signed: Transaction): string {
  * `builtMessage` is the message the caller serialized before handing `built`
  * to the signer, never re-read from `built` afterwards: a signer holding the
  * same object could have changed it. `signed` must be a different object.
+ *
+ * `allowWalletAssertions` is true only for a transaction sent to Solana
+ * mainnet, where a wallet may append instructions of its assertion program
+ * (`onlyWalletAssertionsAdded` says exactly what is tolerated). It is false
+ * for the rollup, where that program does not exist and the instructions
+ * would fail the transaction.
  */
 export function signedDiffers(
   built: Transaction,
   builtMessage: Uint8Array,
   signed: Transaction,
   owner: PublicKey,
+  allowWalletAssertions: boolean,
 ): string | null {
   if (signed === built) return "the signer returned the very transaction it was given";
   if (!built.feePayer || !signed.feePayer?.equals(built.feePayer)) {
@@ -75,7 +155,10 @@ export function signedDiffers(
   let message: Uint8Array;
   try {
     message = signed.serializeMessage();
-    if (!sameBytes(message, builtMessage)) {
+    if (
+      !sameBytes(message, builtMessage) &&
+      !(allowWalletAssertions && onlyWalletAssertionsAdded(builtMessage, message))
+    ) {
       return `your wallet changed the transaction (${describeChange(built, signed)})`;
     }
   } catch {

@@ -6,7 +6,8 @@ import {
   parseDelegationRecordAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import type { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
-import { Transaction } from "@solana/web3.js";
+import { PACKET_DATA_SIZE, Transaction } from "@solana/web3.js";
+import type { MainnetChain } from "../wallet/ownerSigner";
 import { depositKeyAccount, depositKeyBalance } from "./depositKey";
 import { redactToken } from "../rollup/redact";
 import { programAddresses, programInstructions, type CustodyToken } from "../rollup/sdk";
@@ -71,8 +72,12 @@ export interface TransferEnv {
   exchange: ExchangePort;
   journal: Journal;
   lock(owner: string): Promise<OwnerLock | null>;
-  /** The only way the owner signs: the transaction must be exactly the one `shape` names before the app's own checks run. */
-  signChecked(transaction: Transaction, shape: TransferShape): Promise<Transaction>;
+  /** The only way the owner signs: the transaction must be exactly the one `shape` names before the app's own checks run. `chain` is "solana:mainnet" for a send to Solana, and absent for a rollup send. */
+  signChecked(
+    transaction: Transaction,
+    shape: TransferShape,
+    chain?: MainnetChain,
+  ): Promise<Transaction>;
   clock: Clock;
   newId(): string;
 }
@@ -85,7 +90,7 @@ export interface TransferEnv {
 export function createTransferEnv(
   parts: Omit<TransferEnv, "pins" | "mint" | "validator" | "signChecked"> & {
     pins: TransferPins;
-    signChecked(transaction: Transaction): Promise<Transaction>;
+    signChecked(transaction: Transaction, chain?: MainnetChain): Promise<Transaction>;
   },
 ): TransferEnv {
   const pins = validatedPins(parts.pins);
@@ -97,14 +102,14 @@ export function createTransferEnv(
     pins,
     mint: pins.mint,
     validator: pins.validator,
-    signChecked: async (transaction, shape) => {
+    signChecked: async (transaction, shape, chain) => {
       const why = await signableRefusal(
         { pins, owner: parts.owner, token: parts.exchange.token },
         transaction,
         shape,
       );
       if (why) throw new Error(`Refusing to sign: ${why}`);
-      return parts.signChecked(transaction);
+      return parts.signChecked(transaction, chain);
     },
   };
 }
@@ -440,9 +445,19 @@ export async function sendJournaled(
       `Solana would refuse the transaction with ${failure}. Nothing was sent.`,
     );
   }
-  const signed = await env.signChecked(transaction, plan.shape);
+  const signed = await env.signChecked(transaction, plan.shape, "solana:mainnet");
   if (plan.cosigner) signed.partialSign(plan.cosigner);
-  const raw = signed.serialize();
+  let raw: Uint8Array;
+  try {
+    raw = signed.serialize();
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("Transaction too large"))
+      throw error;
+    return refuse(
+      "transaction-not-allowed",
+      `Your wallet added instructions that make the transaction larger than the ${PACKET_DATA_SIZE} bytes Solana allows. Nothing was sent.`,
+    );
+  }
   const owner = env.owner.toBase58();
   let broadcastError: string | null = null;
   const { signature } = await recordThenBroadcast({

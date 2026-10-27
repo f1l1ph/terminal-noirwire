@@ -1,20 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
   Keypair,
+  Message,
   PublicKey,
   SystemProgram,
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
 import nacl from "tweetnacl";
-import { signedDiffers as check } from "@/lib/rollup/signedCheck";
+import { WALLET_ASSERTION_PROGRAM, signedDiffers as check } from "@/lib/rollup/signedCheck";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 
 const BLOCKHASH = "11111111111111111111111111111111";
 
 /** The caller's order: the message is taken before the signer sees `built`. */
-const signedDiffers = (built: Transaction, signed: Transaction, owner: Keypair["publicKey"]) =>
-  check(built, built.serializeMessage(), signed, owner);
+const signedDiffers = (
+  built: Transaction,
+  signed: Transaction,
+  owner: Keypair["publicKey"],
+  allowWalletAssertions = false,
+) => check(built, built.serializeMessage(), signed, owner, allowWalletAssertions);
 
 function build(owner: Keypair, lamports = 1_000) {
   const tx = new Transaction({
@@ -46,7 +51,7 @@ describe("signedDiffers", () => {
     const message = built.serializeMessage();
     built.instructions[0] = build(owner, 9_999).instructions[0];
     built.partialSign(owner);
-    expect(check(built, message, built, owner.publicKey)).not.toBeNull();
+    expect(check(built, message, built, owner.publicKey, true)).not.toBeNull();
   });
 
   it("refuses a signed message that is not the one taken before signing", async () => {
@@ -55,7 +60,7 @@ describe("signedDiffers", () => {
     const message = built.serializeMessage();
     const altered = build(owner, 9_999);
     altered.partialSign(owner);
-    expect(check(built, message, altered, owner.publicKey)).not.toBeNull();
+    expect(check(built, message, altered, owner.publicKey, true)).not.toBeNull();
   });
 
   it("refuses a message that differs in one byte", async () => {
@@ -289,6 +294,213 @@ describe("signedDiffers on a transaction the fee payer signed first", () => {
     const signedRepaid = await keypairOwnerSigner(owner).signTransaction(repaid);
     expect(signedDiffers(built, signedRepaid, owner.publicKey)).toBe(
       "your wallet changed the transaction (it changed the fee payer)",
+    );
+  });
+});
+
+describe("signedDiffers on a wallet that appends its assertions", () => {
+  const assertion = (keys: TransactionInstruction["keys"] = []) =>
+    new TransactionInstruction({
+      programId: new PublicKey(WALLET_ASSERTION_PROGRAM),
+      keys,
+      data: Buffer.from([7, 7, 7]),
+    });
+  const readOnly = () => ({
+    pubkey: Keypair.generate().publicKey,
+    isSigner: false,
+    isWritable: false,
+  });
+  const pay = (from: Keypair, to: Keypair["publicKey"], lamports: number) =>
+    SystemProgram.transfer({ fromPubkey: from.publicKey, toPubkey: to, lamports });
+
+  /** The deposit key pays the second instruction, as in a deposit: the owner and the key both sign. */
+  function world() {
+    const owner = Keypair.generate();
+    const key = Keypair.generate();
+    const target = Keypair.generate().publicKey;
+    const ours = [pay(owner, target, 1_000), pay(key, target, 2_000)];
+    const make = (instructions: TransactionInstruction[], blockhash = BLOCKHASH) =>
+      new Transaction({ feePayer: owner.publicKey, blockhash, lastValidBlockHeight: 1 }).add(
+        ...instructions,
+      );
+    /** What a wallet hands back: the message it was given, re-made with `instructions`, signed by the owner alone and decoded again. */
+    const walletSigns = (instructions: TransactionInstruction[], blockhash = BLOCKHASH) => {
+      const tx = make(instructions, blockhash);
+      tx.partialSign(owner);
+      return Transaction.from(tx.serialize({ requireAllSignatures: false }));
+    };
+    return { owner, key, target, ours, built: make(ours), make, walletSigns };
+  }
+
+  it("accepts assertions appended after our instructions on a mainnet send", () => {
+    const w = world();
+    const signed = w.walletSigns([...w.ours, assertion([readOnly()]), assertion([readOnly()])]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toBeNull();
+  });
+
+  it("accepts assertions placed before and between our instructions, our order kept", () => {
+    const w = world();
+    const signed = w.walletSigns([
+      assertion([readOnly()]),
+      w.ours[0],
+      assertion([readOnly()]),
+      w.ours[1],
+      assertion(),
+    ]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toBeNull();
+  });
+
+  it("refuses the same assertions on a rollup send, with today's message", () => {
+    const w = world();
+    const signed = w.walletSigns([...w.ours, assertion([readOnly()])]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, false)).toBe(
+      `your wallet changed the transaction (it added 1 instruction, from programs ${WALLET_ASSERTION_PROGRAM})`,
+    );
+  });
+
+  it("refuses an addition from any other program", () => {
+    const w = world();
+    const other = new TransactionInstruction({
+      programId: Keypair.generate().publicKey,
+      keys: [readOnly()],
+      data: Buffer.from([1]),
+    });
+    const signed = w.walletSigns([...w.ours, assertion(), other]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction (it added 2 instructions",
+    );
+  });
+
+  it("refuses an added instruction that marks a new account as a signer", () => {
+    const w = world();
+    const intruder = Keypair.generate();
+    const signed = w.walletSigns([
+      ...w.ours,
+      assertion([{ pubkey: intruder.publicKey, isSigner: true, isWritable: false }]),
+    ]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+  });
+
+  it("accepts assertions that name the owner, the deposit key and the owner's token account, as a wallet's output decoded from the wire", () => {
+    const w = world();
+    const tokenAccount = Keypair.generate().publicKey;
+    const widened = Transaction.populate(Message.from(w.built.serializeMessage()));
+    widened.add(
+      assertion([
+        { pubkey: w.owner.publicKey, isSigner: false, isWritable: false },
+        { pubkey: w.key.publicKey, isSigner: false, isWritable: false },
+        { pubkey: tokenAccount, isSigner: false, isWritable: false },
+      ]),
+      assertion([{ pubkey: w.owner.publicKey, isSigner: false, isWritable: true }]),
+    );
+    widened.partialSign(w.owner);
+    const signed = Transaction.from(widened.serialize({ requireAllSignatures: false }));
+    const owner = signed.instructions.at(-1)!.keys[0];
+    expect(owner.isSigner && owner.isWritable).toBe(true);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toBeNull();
+  });
+
+  it("accepts an introduced account that is writable but not a signer", () => {
+    const w = world();
+    const signed = w.walletSigns([
+      ...w.ours,
+      assertion([{ pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true }]),
+    ]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toBeNull();
+  });
+
+  it("refuses a readonly account of ours made writable", () => {
+    const w = world();
+    const signed = w.walletSigns([
+      ...w.ours,
+      assertion([{ pubkey: SystemProgram.programId, isSigner: false, isWritable: true }]),
+    ]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+  });
+
+  it("refuses a non-signer account of ours made a signer", () => {
+    const w = world();
+    const signed = w.walletSigns([
+      ...w.ours,
+      assertion([{ pubkey: w.target, isSigner: true, isWritable: true }]),
+    ]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+  });
+
+  it("refuses a changed number of required signatures", () => {
+    const w = world();
+    const widened = Transaction.populate(Message.from(w.built.serializeMessage()));
+    widened.add(assertion());
+    const message = widened.compileMessage();
+    message.header.numRequiredSignatures += 1;
+    message.header.numReadonlySignedAccounts += 1;
+    const wire = Buffer.concat([
+      Buffer.from([message.header.numRequiredSignatures]),
+      Buffer.alloc(64 * message.header.numRequiredSignatures),
+      message.serialize(),
+    ]);
+    expect(signedDiffers(w.built, Transaction.from(wire), w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+  });
+
+  it("refuses when one of our instructions is altered", () => {
+    const w = world();
+    const signed = w.walletSigns([pay(w.owner, w.target, 1_001), w.ours[1], assertion()]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+  });
+
+  it("refuses when our instructions are reordered", () => {
+    const w = world();
+    const signed = w.walletSigns([w.ours[1], w.ours[0], assertion()]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+  });
+
+  it("refuses when one of our instructions is missing", () => {
+    const w = world();
+    const signed = w.walletSigns([w.ours[0], assertion()]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+  });
+
+  it("refuses a changed blockhash or fee payer even with only assertions added", () => {
+    const w = world();
+    const rehashed = w.walletSigns(
+      [...w.ours, assertion()],
+      Keypair.generate().publicKey.toBase58(),
+    );
+    expect(signedDiffers(w.built, rehashed, w.owner.publicKey, true)).toBe(
+      "your wallet changed the transaction (it changed the recent blockhash)",
+    );
+    const other = Keypair.generate();
+    const repaid = new Transaction({
+      feePayer: other.publicKey,
+      blockhash: BLOCKHASH,
+      lastValidBlockHeight: 1,
+    }).add(...w.ours, assertion());
+    repaid.partialSign(other);
+    expect(signedDiffers(w.built, repaid, w.owner.publicKey, true)).toBe(
+      "your wallet changed the transaction (it changed the fee payer)",
+    );
+  });
+
+  it("refuses when the required signers change", () => {
+    const w = world();
+    const extra = Keypair.generate();
+    const signed = w.walletSigns([...w.ours, pay(extra, w.target, 1)]);
+    expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
     );
   });
 });

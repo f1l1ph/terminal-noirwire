@@ -19,7 +19,9 @@ export class SignedTransactionRefused extends Error {
  * The owner's signature on `built`, accepted only when what the signer hands
  * back is that very transaction: the message is serialized before the signer
  * is asked, and the result is compared against those bytes (`signedDiffers`).
- * Every transaction an external wallet signs goes through here.
+ * Every transaction an external wallet signs goes through here. Only a
+ * `chain` of Solana mainnet tolerates the wallet's assertion instructions; a
+ * rollup transaction, signed with no chain, tolerates no change at all.
  */
 export async function signChecked(
   signer: OwnerSigner,
@@ -30,7 +32,13 @@ export async function signChecked(
   const signed = await (chain
     ? signer.signTransaction(built, chain)
     : signer.signTransaction(built));
-  const reason = signedDiffers(built, builtMessage, signed, signer.publicKey);
+  const reason = signedDiffers(
+    built,
+    builtMessage,
+    signed,
+    signer.publicKey,
+    chain === "solana:mainnet",
+  );
   if (reason) {
     if (chain === "solana:mainnet" || process.env.NODE_ENV !== "production") {
       logRefusedCapture(reason, chain, builtMessage, signed);
