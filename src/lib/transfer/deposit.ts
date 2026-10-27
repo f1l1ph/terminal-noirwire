@@ -1,3 +1,4 @@
+import "../bufferBigInt";
 import { deriveVault } from "@magicblock-labs/ephemeral-rollups-sdk";
 import {
   ROUND_TRIP_LAMPORTS,
@@ -68,7 +69,10 @@ export interface DepositInput {
  * Whether the deposit may start, checked before any signature is asked for:
  * the account is open, the exchange is not paused, custody has room under its
  * cap (read from the custody account itself, equal allowed), and the wallet
- * holds the tokens and the SOL for the steps.
+ * holds the tokens and the SOL for the steps. A private rollup serves the
+ * custody account only to its owner, a program address no reader can sign in
+ * as, so there the cap is left to the program: a deposit it refuses leaves the
+ * tokens in the owner's rollup balance, from where they can be returned.
  */
 async function depositRefusal(
   env: TransferEnv,

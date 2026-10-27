@@ -1,3 +1,4 @@
+import "../bufferBigInt";
 import {
   EPHEMERAL_SPL_TOKEN_PROGRAM_ID,
   delegateEataPermissionIx,
