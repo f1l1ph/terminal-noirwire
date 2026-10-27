@@ -41,18 +41,25 @@ export class LazyRollupTradingClient implements TradingClient {
 
   constructor(private readonly options: LazyRollupOptions) {}
 
+  private ready: TradingClient | null = null;
+
   private load(): Promise<TradingClient> {
     if (!this.loaded) {
-      this.loaded = import("./rollupClient").then(
-        ({ RollupTradingClient }) =>
-          new RollupTradingClient({
-            simUrl: this.options.simUrl,
-            overrides: this.options.overrides,
-            marketSettingsLookup: this.options.marketSettingsLookup,
-          }),
-      );
+      this.loaded = import("./rollupClient").then(({ RollupTradingClient }) => {
+        const client = new RollupTradingClient({
+          simUrl: this.options.simUrl,
+          overrides: this.options.overrides,
+          marketSettingsLookup: this.options.marketSettingsLookup,
+        });
+        this.ready = client;
+        return client;
+      });
     }
     return this.loaded;
+  }
+
+  repriceState(wallet: WalletIdentity): TraderState | null {
+    return this.ready?.repriceState?.(wallet) ?? null;
   }
 
   async openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome> {

@@ -5,6 +5,19 @@ export function candlesLoadingKey(market: string, interval: string): string {
   return `${market}:${interval}`;
 }
 
+/** The markets whose mark in `next` is new or strictly newer than in `prev`; an equal or older one is not news. */
+export function marketsWithNewerMark(
+  prev: Readonly<Record<string, { time: number } | null | undefined>>,
+  next: Readonly<Record<string, { time: number } | null | undefined>>,
+): string[] {
+  return Object.keys(next).filter((id) => {
+    const after = next[id];
+    if (!after) return false;
+    const before = prev[id];
+    return !before || after.time > before.time;
+  });
+}
+
 /**
  * The market row is fetched once; live marks arrive afterwards over the
  * websocket and land in the store's mark map. This returns the market with

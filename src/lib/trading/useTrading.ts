@@ -7,7 +7,12 @@ import { redactToken } from "../rollup/redact";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
 import { createLatestReads } from "./latestRead";
-import { nextMarginRefreshDelayMs } from "./marginRefresh";
+import {
+  hasExposureIn,
+  MARGIN_REFRESH_STALE_RETRY_MS,
+  markRepriceDelayMs,
+  nextMarginRefreshDelayMs,
+} from "./marginRefresh";
 import { withoutOpenOutcome } from "./openCopy";
 import type {
   AccountStatus,
@@ -30,6 +35,9 @@ const EMPTY_STATE: TraderState = {
   positions: {},
   openOrders: [],
 };
+
+/** Calls back with the ids of the markets that just got a newer live mark; returns the way to stop. Keep its identity stable. */
+export type SubscribeNewerMarks = (onNewer: (marketIds: string[]) => void) => () => void;
 
 export interface PlacedOrderOutcome {
   result: PlaceOrderResult;
@@ -98,6 +106,7 @@ function writeGrantUsed(address: string): void {
 export function useTrading(
   wallet: WalletIdentity | null,
   marketSettingsLookup: MarketSettingsLookup,
+  subscribeMarks?: SubscribeNewerMarks,
 ) {
   const client = useMemo(() => createTradingClient(marketSettingsLookup), [marketSettingsLookup]);
   // What was last read for each wallet, keyed by its address: a late
@@ -113,6 +122,12 @@ export function useTrading(
       ...prev,
       [owner]: { state: next, syncedAtMs: Date.now(), error: null },
     }));
+  }, []);
+  /** A re-valuation of the state already held: it is not a read of the venue, so the sync time stays. */
+  const setStateRepriced = useCallback((owner: string, next: TraderState) => {
+    setReads((prev) =>
+      prev[owner]?.state ? { ...prev, [owner]: { ...prev[owner], state: next } } : prev,
+    );
   }, []);
   const setAccountError = useCallback((owner: string, message: string) => {
     setReads((prev) => ({
@@ -320,6 +335,68 @@ export function useTrading(
       clearTimeout(refresh);
     };
   }, [client, wallet, marginValidUntilMs, setStateSynced]);
+
+  // The scheduled re-read above is a backstop that belongs to a known
+  // figure. While the figure is unknown it is not running, so this keeps
+  // trying: re-value from the last view first, read the venue if that still
+  // cannot price it.
+  const figureUnknown = effectiveState.collateral?.availableUnknown === true;
+  useEffect(() => {
+    if (!wallet || !figureUnknown) return;
+    let active = true;
+    let reading = false;
+    const retry = setInterval(() => {
+      const repriced = client.repriceState?.(wallet);
+      if (repriced && repriced.collateral?.availableUnknown !== true) {
+        setStateRepriced(wallet.address, repriced);
+        return;
+      }
+      if (reading) return;
+      reading = true;
+      client.fetchState(wallet).then(
+        (next) => {
+          reading = false;
+          if (active) setStateSynced(wallet.address, next);
+        },
+        () => {
+          reading = false;
+        },
+      );
+    }, MARGIN_REFRESH_STALE_RETRY_MS);
+    return () => {
+      active = false;
+      clearInterval(retry);
+    };
+  }, [client, wallet, figureUnknown, setStateSynced, setStateRepriced]);
+
+  // A newer live mark for a market the account has exposure in re-values it
+  // from the last view held, with no read: the available figure then moves
+  // with the mark the order form sizes from. Bursts are coalesced and spaced.
+  const exposureRef = useRef<Pick<TraderState, "positions" | "openOrders">>(EMPTY_STATE);
+  useEffect(() => {
+    exposureRef.current = effectiveState;
+  }, [effectiveState]);
+  useEffect(() => {
+    if (!wallet || !subscribeMarks) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastRepricedAtMs: number | null = null;
+    const stop = subscribeMarks((marketIds) => {
+      if (timer !== undefined || !hasExposureIn(exposureRef.current, marketIds)) return;
+      timer = setTimeout(
+        () => {
+          timer = undefined;
+          lastRepricedAtMs = Date.now();
+          const repriced = client.repriceState?.(wallet);
+          if (repriced) setStateRepriced(wallet.address, repriced);
+        },
+        markRepriceDelayMs(Date.now(), lastRepricedAtMs),
+      );
+    });
+    return () => {
+      stop();
+      clearTimeout(timer);
+    };
+  }, [client, wallet, subscribeMarks, setStateRepriced]);
 
   const openAccount = useCallback(
     async (invite?: string): Promise<OpenAccountOutcome> => {

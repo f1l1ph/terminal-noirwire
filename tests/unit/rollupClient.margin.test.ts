@@ -331,26 +331,32 @@ describe("RollupTradingClient: marks that keep arriving after the markets load",
     };
   }
 
-  it("keeps the available figure known well past the staleness window while live marks arrive", async () => {
+  it("re-values the held view against the newest mark, with no read, and turns a stale figure known again", async () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(NOW);
       const store = loadedStore();
       let clock = NOW;
       const rollup = clientShowing([position], lookupOf(store), () => clock);
-      for (let elapsed = 1_000; elapsed <= STALE_MARK_MS * 4; elapsed += 1_000) {
-        clock = NOW + elapsed;
-        vi.setSystemTime(clock);
-        store.applyMessage({
-          type: "price",
-          market: "NSOL-PERP",
-          price: "150.000000",
-          publishedAtMs: clock - 500,
-        });
-        const state = await rollup.fetchState(WALLET);
-        expect(state.collateral?.availableUnknown).toBeUndefined();
-        expect(state.collateral?.availableValidUntilMs).toBe(clock - 500 + STALE_MARK_MS);
-      }
+      expect(rollup.repriceState(WALLET)).toBeNull();
+      await rollup.fetchState(WALLET);
+
+      clock = NOW + STALE_MARK_MS * 3;
+      vi.setSystemTime(clock);
+      const stale = rollup.repriceState(WALLET);
+      expect(stale?.collateral?.availableUnknown).toBe(true);
+
+      store.applyMessage({
+        type: "price",
+        market: "NSOL-PERP",
+        price: "200.000000",
+        publishedAtMs: clock - 500,
+      });
+      const fresh = rollup.repriceState(WALLET);
+      expect(fresh?.collateral?.availableUnknown).toBeUndefined();
+      expect(fresh?.collateral?.availableValidUntilMs).toBe(clock - 500 + STALE_MARK_MS);
+      expect(fresh?.equity).toBe("1500.000000");
+      expect(fresh?.collateral?.reserved).toBe("200.000000");
     } finally {
       vi.useRealTimers();
     }

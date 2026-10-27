@@ -3,6 +3,7 @@ import {
   ageMs,
   isStale,
   latencyDisplay,
+  marketsWithNewerMark,
   marketWithLiveMark,
   MAX_CLOCK_SKEW_MS,
   STALE_MARK_MS,
@@ -65,6 +66,23 @@ describe("latencyDisplay", () => {
 
   it("reports unavailable with no stats at all", () => {
     expect(latencyDisplay(null, 1000)).toEqual({ status: "unavailable", lastValidAt: null });
+  });
+});
+
+describe("marketsWithNewerMark", () => {
+  const prev = { A: { time: 1_000 }, B: { time: 1_000 } };
+
+  it("reports a strictly newer mark and a market seen for the first time", () => {
+    const next = { A: { time: 2_000 }, B: { time: 1_000 }, C: { time: 500 } };
+    expect(marketsWithNewerMark(prev, next)).toEqual(["A", "C"]);
+  });
+
+  it("does not report an equal or older mark", () => {
+    expect(marketsWithNewerMark(prev, { A: { time: 1_000 }, B: { time: 400 } })).toEqual([]);
+  });
+
+  it("ignores a market with no mark", () => {
+    expect(marketsWithNewerMark(prev, { A: null, D: undefined })).toEqual([]);
   });
 });
 

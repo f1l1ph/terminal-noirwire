@@ -12,13 +12,18 @@ import {
 import {
   candlesLoadingKey,
   isStale,
+  marketsWithNewerMark,
   marketWithLiveMark,
   STALE_MARK_MS,
 } from "@/lib/market-data/selectors";
 import { isMainnetBuild } from "@/lib/network";
 import { useOwnerIdentity } from "@/lib/wallet/useOwnerIdentity";
 import { useWallet } from "@/lib/wallet/useWallet";
-import { useTrading, type PlacedOrderOutcome } from "@/lib/trading/useTrading";
+import {
+  useTrading,
+  type PlacedOrderOutcome,
+  type SubscribeNewerMarks,
+} from "@/lib/trading/useTrading";
 import { deploymentOverrides } from "@/lib/trading";
 import type { CancelResult, Position } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
@@ -130,7 +135,24 @@ export function Terminal() {
     [store],
   );
   const marketsLoaded = data.markets.length > 0;
-  const trading = useTrading(marketsLoaded ? ownerIdentity : null, marketSettingsFromStore);
+  const subscribeNewerMarks = useCallback<SubscribeNewerMarks>(
+    (onNewer) => {
+      let seen = store.getState().marksByMarket;
+      return store.subscribe(() => {
+        const current = store.getState().marksByMarket;
+        if (current === seen) return;
+        const newer = marketsWithNewerMark(seen, current);
+        seen = current;
+        if (newer.length > 0) onNewer(newer);
+      });
+    },
+    [store],
+  );
+  const trading = useTrading(
+    marketsLoaded ? ownerIdentity : null,
+    marketSettingsFromStore,
+    subscribeNewerMarks,
+  );
 
   // Dev mode is always an in-memory, same-process engine - "localnet" in
   // spirit regardless of label. Rollup mode reads the real value from

@@ -1,3 +1,5 @@
+import type { TraderState } from "./types";
+
 /** How long before the available figure goes stale the trader's state is re-read, so a fresh one lands first. */
 export const MARGIN_REFRESH_LEAD_MS = 10_000;
 
@@ -9,6 +11,25 @@ export const MARGIN_REFRESH_AFTER_EXPIRY_MS = 250;
 
 /** While the figure stays stale, how often it is re-read until a fresh mark prices it again. */
 export const MARGIN_REFRESH_STALE_RETRY_MS = 5_000;
+
+/** The least time between two re-valuations of the account against newer marks; marks arriving faster are coalesced into one. */
+export const MARK_REPRICE_MIN_SPACING_MS = 2_000;
+
+/** How long to wait before re-valuing the account now, given when it was last re-valued (null if never). */
+export function markRepriceDelayMs(nowMs: number, lastRepricedAtMs: number | null): number {
+  if (lastRepricedAtMs === null) return 0;
+  return Math.max(lastRepricedAtMs + MARK_REPRICE_MIN_SPACING_MS, nowMs) - nowMs;
+}
+
+/** Whether a newer mark for any of `marketIds` can change the account's valuation: it holds a position or resting orders there. */
+export function hasExposureIn(
+  state: Pick<TraderState, "positions" | "openOrders">,
+  marketIds: readonly string[],
+): boolean {
+  return marketIds.some(
+    (id) => id in state.positions || state.openOrders.some((order) => order.market === id),
+  );
+}
 
 /**
  * How long to wait before the next re-read of an account whose available

@@ -266,6 +266,8 @@ export class RollupTradingClient implements TradingClient {
   private listeners = new Map<string, Set<StateListener>>();
   private errorListeners = new Map<string, Set<(error: Error) => void>>();
   private newestResultsWritten = new Map<string, number>();
+  /** address -> the newest view shown for it, with its session, so the account can be re-valued against newer marks without a read. */
+  private lastViews = new Map<string, { session: RollupSession; view: View }>();
   /** address -> perp market id -> the resting orders last read from the view, with the slot's open lots at that moment. */
   private restingByMarket = new Map<string, Map<number, RestingRead>>();
   /** `address:market` -> the secret (hex) of an order that may have reached the venue, until its outcome is proven or released. */
@@ -430,9 +432,19 @@ export class RollupTradingClient implements TradingClient {
     for (const listener of this.listeners.get(address) ?? []) listener(state);
   }
 
+  /**
+   * The account as of the newest view shown, valued against the marks as they
+   * are now. No read goes out. Null before any view has been shown.
+   */
+  repriceState(wallet: WalletIdentity): TraderState | null {
+    const last = this.lastViews.get(wallet.address);
+    return last ? this.mapViewFrom(last.session, last.view) : null;
+  }
+
   /** Ends this wallet's session (its live subscription and background refreshes), if one is open. */
   closeWallet(wallet: WalletIdentity): void {
     this.lastOrderKeys.delete(wallet.address);
+    this.lastViews.delete(wallet.address);
     const existing = this.sessions.get(wallet.address);
     if (!existing) return;
     if (!existing.settled) {
@@ -968,6 +980,11 @@ export class RollupTradingClient implements TradingClient {
   }
 
   private mapViewFrom(session: RollupSession, view: View): TraderState {
+    const address = session.owner.publicKey.toBase58();
+    const held = this.lastViews.get(address);
+    if (!held || view.resultsWritten >= held.view.resultsWritten) {
+      this.lastViews.set(address, { session, view });
+    }
     const bindings = this.bindings(session);
     const seat = view.snapshot.seat;
 

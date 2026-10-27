@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasExposureIn,
+  MARK_REPRICE_MIN_SPACING_MS,
+  markRepriceDelayMs,
   MARGIN_REFRESH_AFTER_EXPIRY_MS,
   MARGIN_REFRESH_LEAD_MS,
   MARGIN_REFRESH_MIN_SPACING_MS,
@@ -61,5 +64,37 @@ describe("nextMarginRefreshDelayMs", () => {
     expect(nextMarginRefreshDelayMs(NOW, NOW + 1_000, NOW + 500)).toBe(
       MARGIN_REFRESH_STALE_RETRY_MS - 500,
     );
+  });
+});
+
+describe("markRepriceDelayMs", () => {
+  it("re-values at once the first time", () => {
+    expect(markRepriceDelayMs(NOW, null)).toBe(0);
+  });
+
+  it("holds a second re-valuation back until the minimum spacing has passed", () => {
+    expect(markRepriceDelayMs(NOW + 500, NOW)).toBe(MARK_REPRICE_MIN_SPACING_MS - 500);
+  });
+
+  it("re-values at once when the spacing has already passed", () => {
+    expect(markRepriceDelayMs(NOW + 10_000, NOW)).toBe(0);
+  });
+});
+
+describe("hasExposureIn", () => {
+  const position = { market: "NSOL-PERP", size: "1", entryPrice: "100" };
+  const order = { market: "NNVDA-PERP" } as never;
+
+  it("is true for a market with a position or a resting order", () => {
+    expect(
+      hasExposureIn({ positions: { "NSOL-PERP": position }, openOrders: [] }, ["NSOL-PERP"]),
+    ).toBe(true);
+    expect(hasExposureIn({ positions: {}, openOrders: [order] }, ["NNVDA-PERP"])).toBe(true);
+  });
+
+  it("is false when the account holds nothing in the markets that moved", () => {
+    expect(
+      hasExposureIn({ positions: { "NSOL-PERP": position }, openOrders: [order] }, ["OTHER"]),
+    ).toBe(false);
   });
 });
