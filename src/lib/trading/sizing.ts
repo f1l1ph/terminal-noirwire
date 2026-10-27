@@ -12,7 +12,46 @@ export interface FundsShortfall {
 export interface OrderFunds {
   /** Quote the order takes out of the available balance, fixed-point: nothing for a spot sell, which spends the base asset. */
   requiredQuote: bigint;
+  /** Initial margin the order adds, fixed-point: zero when it does not grow the worst-case exposure. Perp only. */
+  marginQuote: bigint;
   shortfall: FundsShortfall | null;
+}
+
+/** The trader's exposure on the order's market, in base units. */
+export interface MarketExposure {
+  /** Signed position size: positive long, negative short. */
+  position: string;
+  /** Total remaining size of resting buy orders. */
+  openBids?: string;
+  /** Total remaining size of resting sell orders. */
+  openAsks?: string;
+}
+
+function abs(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function worstCaseLots(base: bigint, bids: bigint, asks: bigint): bigint {
+  const up = abs(base + bids);
+  const down = abs(base - asks);
+  return up > down ? up : down;
+}
+
+/**
+ * How much the order grows the market's worst-case size, where worst case is
+ * the larger of the position plus every resting buy and the position minus
+ * every resting sell, in absolute terms. The order counts as resting in full.
+ */
+function worstCaseIncrease(side: Side, quantity: bigint, exposure: MarketExposure): bigint {
+  const base = toFixedPoint(exposure.position);
+  const bids = toFixedPoint(exposure.openBids ?? "0");
+  const asks = toFixedPoint(exposure.openAsks ?? "0");
+  const before = worstCaseLots(base, bids, asks);
+  const after =
+    side === "buy"
+      ? worstCaseLots(base, bids + quantity, asks)
+      : worstCaseLots(base, bids, asks + quantity);
+  return after > before ? after - before : 0n;
 }
 
 /**
@@ -30,14 +69,22 @@ export function orderFunds(params: {
   maxLeverage: number;
   availableQuote: string;
   availableBase?: string;
+  /** Perp only: the trader's exposure on this market. Without it the order is treated as opening fresh. */
+  exposure?: MarketExposure;
+  /** Perp only: a reduce-only order cannot grow exposure, so the venue asks for no margin and no fee up front. */
+  reduceOnly?: boolean;
 }): OrderFunds {
   if (params.mode === "spot" && params.side === "sell") {
     const available = params.availableBase ?? "0";
     const covered = toFixedPoint(params.quantity) <= toFixedPoint(available);
     return {
       requiredQuote: 0n,
+      marginQuote: 0n,
       shortfall: covered ? null : { asset: "base", needed: params.quantity, available },
     };
+  }
+  if (params.mode === "perp" && params.reduceOnly) {
+    return { requiredQuote: 0n, marginQuote: 0n, shortfall: null };
   }
   const cost = estimateOrderCost({
     side: params.side,
@@ -46,11 +93,22 @@ export function orderFunds(params: {
     leverage: params.maxLeverage,
     maxLeverage: params.maxLeverage,
   });
-  const requiredQuote =
-    params.mode === "perp" ? cost.fee + cost.initialMargin : cost.notional + cost.fee;
+  let marginQuote = cost.initialMargin;
+  if (params.mode === "perp" && params.exposure) {
+    const increase = worstCaseIncrease(params.side, toFixedPoint(params.quantity), params.exposure);
+    marginQuote = estimateOrderCost({
+      side: params.side,
+      quantity: fromFixedPoint(increase, 9),
+      price: params.price,
+      leverage: params.maxLeverage,
+      maxLeverage: params.maxLeverage,
+    }).initialMargin;
+  }
+  const requiredQuote = params.mode === "perp" ? cost.fee + marginQuote : cost.notional + cost.fee;
   const covered = requiredQuote <= toFixedPoint(params.availableQuote);
   return {
     requiredQuote,
+    marginQuote: params.mode === "perp" ? marginQuote : 0n,
     shortfall: covered
       ? null
       : {
@@ -59,6 +117,19 @@ export function orderFunds(params: {
           available: params.availableQuote,
         },
   };
+}
+
+/**
+ * Whether an unpriced collateral figure stops the order. A perp reduce-only
+ * order needs only that the market has a price, never the account's free
+ * balance, so it goes ahead; every other order waits for the figure.
+ */
+export function unknownCollateralBlocks(params: {
+  availableUnknown: boolean;
+  isPerp: boolean;
+  reduceOnly: boolean;
+}): boolean {
+  return params.availableUnknown && !(params.isPerp && params.reduceOnly);
 }
 
 function roundDownToLot(quantityFp: bigint, lotFp: bigint): bigint {

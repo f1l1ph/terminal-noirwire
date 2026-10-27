@@ -20,7 +20,7 @@ import {
 } from "@/lib/trading/uiRules";
 import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
-import { orderFunds } from "@/lib/trading/sizing";
+import { orderFunds, unknownCollateralBlocks } from "@/lib/trading/sizing";
 import {
   amountForPercent,
   displayBase,
@@ -46,6 +46,7 @@ import type {
   Balance,
   FundOutcome,
   NewOrderInput,
+  OpenOrder,
   Position,
   Side,
   SpotAssets,
@@ -117,6 +118,7 @@ export function OrderEntry({
   unknownHold,
   onClearUnknownHold,
   position,
+  openOrders,
   onCreateWallet,
   onFund,
   grantAlreadyUsed,
@@ -155,6 +157,8 @@ export function OrderEntry({
   unknownHold: { clearableAtMs: number } | null;
   onClearUnknownHold: () => void;
   position: Position | null;
+  /** The trader's resting orders; those on this market count toward the margin an order adds. */
+  openOrders?: OpenOrder[];
   onCreateWallet: () => void;
   onFund: () => Promise<FundOutcome>;
   /**
@@ -384,6 +388,19 @@ export function OrderEntry({
 
   const estimateDisplay = market && estimate ? displayOrderCost(estimate, priceDecimals) : null;
 
+  const exposure = useMemo(() => {
+    if (!market || market.kind !== "perp") return undefined;
+    const resting = (openSide: Side) =>
+      (openOrders ?? [])
+        .filter((order) => order.market === market.id && order.side === openSide)
+        .reduce((sum, order) => sum + toFixedPoint(order.remainingSize), 0n);
+    return {
+      position: position?.size ?? "0",
+      openBids: fromFixedPoint(resting("buy"), 9),
+      openAsks: fromFixedPoint(resting("sell"), 9),
+    };
+  }, [market, position, openOrders]);
+
   const funds = useMemo(() => {
     if (!market || !priceText || !quantityText.trim()) return null;
     try {
@@ -395,11 +412,23 @@ export function OrderEntry({
         maxLeverage: market.maxLeverage,
         availableQuote,
         availableBase,
+        exposure,
+        reduceOnly: isPerp && reduceOnly,
       });
     } catch {
       return null;
     }
-  }, [market, priceText, quantityText, side, availableQuote, availableBase]);
+  }, [
+    market,
+    priceText,
+    quantityText,
+    side,
+    availableQuote,
+    availableBase,
+    exposure,
+    isPerp,
+    reduceOnly,
+  ]);
 
   const leftAvailable =
     funds && !funds.shortfall && !isSpotSell
@@ -412,7 +441,16 @@ export function OrderEntry({
           label: "Position size",
           value: `${formatDecimal(quantityText, sizeDecimals)} ${baseName} · ${money(estimateDisplay.notional)}`,
         },
-        ...(isPerp ? [{ label: "Margin used", value: money(estimateDisplay.initialMargin) }] : []),
+        ...(isPerp
+          ? [
+              {
+                label: "Margin used",
+                value: money(
+                  funds ? fromFixedPoint(funds.marginQuote, 2) : estimateDisplay.initialMargin,
+                ),
+              },
+            ]
+          : []),
         { label: "Fee", value: money(estimateDisplay.fee) },
         ...(orderType === "market" && priceText
           ? [
@@ -447,20 +485,29 @@ export function OrderEntry({
   const amountEntered = amountText.trim() !== "";
   const amountValue = parseAmount(amountText);
   const amountInvalid = quantityOverride === null && amountEntered && amountValue === null;
+  // A perp order's own funds check is the venue's account-wide one, so once it
+  // passes the amount cannot also be held to the free balance (a close needs none).
+  const perpFundsCovered = isPerp && funds !== null && funds.shortfall === null;
   const amountOverAvailable =
     quantityOverride === null &&
     amountValue !== null &&
+    !perpFundsCovered &&
     amountValue > (isSpotSell ? fixedPointOrZero(maxAmountText) : fixedPointOrZero(availableQuote));
   const amountTooSmall =
     quantityOverride === null && amountValue !== null && derivedQuantity === "";
 
+  const openSize = Number(position?.size ?? 0);
+  const closesOpenPosition =
+    isPerp && ((side === "sell" && openSize > 0) || (side === "buy" && openSize < 0));
+  const availableBlocks = unknownCollateralBlocks({ availableUnknown, isPerp, reduceOnly });
   const accountUnknown = hasWallet && (!!accountError || !accountLoaded);
   const noFunds =
     hasWallet &&
     !accountUnknown &&
     !availableUnknown &&
     Number(availableQuote) <= 0 &&
-    !(isSpotSell && Number(availableBase) > 0);
+    !(isSpotSell && Number(availableBase) > 0) &&
+    !closesOpenPosition;
 
   // Spot buy, this browser's spot quote balance is empty, but there is
   // collateral to move: the primary action becomes "Move funds to spot"
@@ -484,7 +531,7 @@ export function OrderEntry({
     hasWallet &&
     !gate &&
     !accountUnknown &&
-    !availableUnknown &&
+    !availableBlocks &&
     !noFunds &&
     !!market &&
     !!validation?.valid &&
@@ -500,7 +547,7 @@ export function OrderEntry({
     if (gate) return tradeGateLabel(gate);
     if (unknownHold) return "An earlier order may have reached the venue. Check it first.";
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
-    if (availableUnknown) return "Available collateral is unavailable until the price updates.";
+    if (availableBlocks) return "Available collateral is unavailable until the price updates.";
     if (validation?.errors.quantity) {
       return describeFieldError(validation.errors.quantity, { ...market, base: baseName });
     }
@@ -515,7 +562,7 @@ export function OrderEntry({
   /** The one line that says why the order button is off, only while the form itself is what is missing. */
   const reason: { text: string; tone: ReasonTone } | null = (() => {
     if (!market || !validation) return null;
-    if (!hasWallet || gate || accountUnknown || availableUnknown) return null;
+    if (!hasWallet || gate || accountUnknown || availableBlocks) return null;
     if (unknownHold || placeOrderPending || needsTransfer) return null;
     if (noFunds) {
       if (!testCopy) return { text: `Deposit ${quoteUnit || "funds"} to trade`, tone: "neutral" };
@@ -652,7 +699,11 @@ export function OrderEntry({
     if (!market || submittingRef.current) return;
     // The full check again, on the frozen order and the mark as it is now.
     const recheck = validateOrder(order.draft, market, mark, now);
-    const marginExpired = isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now()));
+    const marginExpired = unknownCollateralBlocks({
+      availableUnknown: isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now())),
+      isPerp,
+      reduceOnly: order.draft.reduceOnly === true,
+    });
     if (
       !canSubmit ||
       marginExpired ||
@@ -803,7 +854,7 @@ export function OrderEntry({
     primaryLabel = accountError ? "Account unavailable" : "Loading account…";
     primaryClass = btnGhost;
     primaryDisabled = true;
-  } else if (availableUnknown) {
+  } else if (availableBlocks) {
     primaryLabel = "Waiting for price";
     primaryClass = btnGhost;
     primaryDisabled = true;
