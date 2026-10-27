@@ -217,6 +217,7 @@ describe("no path offers a resend", () => {
     for (const name of used) {
       expect([
         "amount",
+        "attention",
         "deposit",
         "depositKeyStore",
         "dismiss",
@@ -273,7 +274,13 @@ describe("a build with deposits off reaches no transfer flow from the UI", () =>
 
 describe("progress lines", () => {
   it("has one line for each phase of a step", () => {
-    expect(Object.keys(PHASE_LINES)).toEqual(["preparing", "approve", "sending", "finality"]);
+    expect(Object.keys(PHASE_LINES)).toEqual([
+      "preparing",
+      "sign-key",
+      "approve",
+      "sending",
+      "finality",
+    ]);
   });
 });
 

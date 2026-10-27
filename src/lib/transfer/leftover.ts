@@ -10,17 +10,25 @@ import { readTokenBalance } from "./solanaRpc";
  * show, since the next look reads again.
  */
 export async function depositKeyLeftover(env: TransferEnv): Promise<bigint | null> {
-  const key = env.depositKey.publicKey;
   try {
-    if (!(await env.solana.getAccountInfo(depositKeyBalance(key, env.mint), "confirmed"))) {
-      return null;
-    }
-    const held = await readTokenBalance(
-      await env.depositRollup(),
-      depositKeyAccount(key, env.mint),
-    );
-    return held !== null && held > 0n ? held : null;
+    const held = await readDepositKeyLeftover(env);
+    return held > 0n ? held : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * What the deposit key holds in the rollup: 0 for a key with no balance
+ * account on Solana, and a throw when the balance cannot be read or the key
+ * cannot sign in, so a failed read is never taken for an empty key.
+ */
+export async function readDepositKeyLeftover(env: TransferEnv): Promise<bigint> {
+  const key = env.depositKey.publicKey;
+  if (!(await env.solana.getAccountInfo(depositKeyBalance(key, env.mint), "confirmed"))) {
+    return 0n;
+  }
+  const held = await readTokenBalance(await env.depositRollup(), depositKeyAccount(key, env.mint));
+  if (held === null) throw new Error("the rollup does not show the deposit key's balance");
+  return held;
 }

@@ -17,6 +17,8 @@ export type SignMessage = (message: Uint8Array) => Promise<Uint8Array>;
 export interface DepositKey {
   keypair: Keypair;
   derived: boolean;
+  /** Set when a random key was made because the wallet could not give a derived one, so the user is told to finish in this browser. */
+  fellBack?: boolean;
 }
 
 const browserSeeds: SeedPort = { load: loadOrderSeed, create: createOrderSeed };
@@ -87,6 +89,27 @@ export async function storedDepositKey(
   return derived ? { keypair: Keypair.fromSeed(derived), derived: true } : null;
 }
 
+/** Every key stored on this browser for the owner, random first. It never asks the wallet. */
+export async function storedDepositKeys(
+  owner: string,
+  seeds: SeedPort = browserSeeds,
+): Promise<DepositKey[]> {
+  const keys: DepositKey[] = [];
+  const random = await seeds.load(randomName(owner));
+  if (random) keys.push({ keypair: Keypair.fromSeed(random), derived: false });
+  const derived = await seeds.load(derivedName(owner));
+  if (derived) keys.push({ keypair: Keypair.fromSeed(derived), derived: true });
+  return keys;
+}
+
+/** The derived key if this browser already holds it, else null; it never asks the wallet. */
+export async function storedDerivedDepositKey(
+  owner: string,
+  seeds: SeedPort = browserSeeds,
+): Promise<DepositKey | null> {
+  return (await storedDepositKeys(owner, seeds)).find((key) => key.derived) ?? null;
+}
+
 /** The key stored on this browser, random or derived, whose public key is `wanted`; null when none is. It never asks the wallet. */
 export async function storedKeyMatching(
   owner: string,
@@ -131,21 +154,35 @@ export async function deriveDepositKey(
 }
 
 /**
- * The owner's deposit key on this browser: the stored one, else one made from
- * the wallet's signature when the wallet can sign messages, else a new random
- * one. Either is committed to storage before it is returned, so no transfer
- * ever begins with a key that a reload could lose. It is kept the way the
- * order seed is, wrapped under a key the browser cannot export, and it lasts:
- * the rollup accounts it needs are made once, on the first deposit. A wallet
- * that is asked and declines makes no key; a random one is never the fallback.
+ * The key a NEW deposit is made with: the derived key, from storage or made
+ * from the wallet's signature, and committed to storage before it is returned
+ * so no transfer ever begins with a key that a reload could lose. It is kept
+ * the way the order seed is, wrapped under a key the browser cannot export,
+ * and it lasts: the rollup accounts it needs are made once, on the first
+ * deposit. A wallet that is asked and declines makes no key. A wallet that
+ * cannot sign, fails to sign for any other reason or returns a signature that
+ * does not verify uses the random key stored here, or gets a new one, flagged
+ * `fellBack`, as before keys were derived. A stored random key is never
+ * removed: it still finishes its own records.
  */
 export async function loadOrCreateDepositKey(
   owner: string,
   sign?: SignMessage,
   seeds: SeedPort = browserSeeds,
 ): Promise<DepositKey> {
-  const stored = await storedDepositKey(owner, seeds);
-  if (stored) return stored;
-  if (sign) return deriveDepositKey(owner, sign, seeds);
-  return { keypair: Keypair.fromSeed(await seeds.create(randomName(owner))), derived: false };
+  const derived = await storedDerivedDepositKey(owner, seeds);
+  if (derived) return derived;
+  if (sign) {
+    try {
+      return await deriveDepositKey(owner, sign, seeds);
+    } catch (error) {
+      if (error instanceof DepositKeyDeclined) throw error;
+    }
+  }
+  const random = await seeds.load(randomName(owner));
+  return {
+    keypair: Keypair.fromSeed(random ?? (await seeds.create(randomName(owner)))),
+    derived: false,
+    fellBack: true,
+  };
 }

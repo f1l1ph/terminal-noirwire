@@ -8,16 +8,20 @@ import { isAvailableUnknown, transferableAmount } from "@/lib/trading/balanceDis
 import type { Balance, KeyWithdrawal, WalletIdentity } from "@/lib/trading/types";
 import { atomsText, balanceAtoms, checkAmount, type AmountCheck } from "@/lib/transfer/amount";
 import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
-import { depositKeyLeftover } from "@/lib/transfer/leftover";
+import { depositKeyLeftover, readDepositKeyLeftover } from "@/lib/transfer/leftover";
 import {
   DepositKeyDeclined,
   deriveDepositKey,
-  type DepositKey,
   loadOrCreateDepositKey,
-  storedDepositKey,
+  storedDepositKeys,
+  storedDerivedDepositKey,
   storedKeyMatching,
   storedOrUnsavedDepositKey,
+  type DepositKey,
+  type SignMessage,
 } from "@/lib/transfer/depositKeyStore";
+import { attentionOf, type Attention } from "@/lib/transfer/attention";
+import type { OwnerSigner } from "@/lib/wallet/ownerSigner";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { createJournal, indexedDbStorage } from "@/lib/transfer/journal";
 import { checkDepositStorage } from "@/lib/transfer/storageGuard";
@@ -29,8 +33,11 @@ import {
   type TransferEnv,
 } from "@/lib/transfer/operation";
 import {
+  KEY_BALANCE_UNREADABLE,
+  KEY_FELL_BACK,
   KEY_SIGNATURE_NOTE,
   NO_UNFINISHED_DEPOSIT,
+  TRANSFER_STILL_OPEN,
   failureLine,
   outcomeLine,
   solText,
@@ -49,6 +56,55 @@ import { TransferRecords, type RecordsEngine } from "@/components/TransferRecord
 type Kind = "deposit" | "withdraw";
 
 const SOL_DECIMALS = 9;
+
+interface EnvOptions {
+  /** The env of a new deposit, whose key may have to be made and so may ask the wallet to sign. */
+  newDeposit?: boolean;
+  /** A key chosen by the caller; it wins over every other choice. */
+  given?: DepositKey;
+  onPhase?: (phase: Phase) => void;
+  /** Called when the wallet could not give a derived key and a random one was made. */
+  onFellBack?: () => void;
+}
+
+/** `signer`'s message signing, reported as the "sign-key" phase only while the wallet is actually asked. */
+const signingWithPhase =
+  (signer: Pick<OwnerSigner, "signMessage">, onPhase?: (phase: Phase) => void): SignMessage =>
+  async (message) => {
+    onPhase?.("sign-key");
+    try {
+      return await signer.signMessage(message);
+    } finally {
+      onPhase?.("preparing");
+    }
+  };
+
+/**
+ * The deposit key an env is built with. A new deposit uses the stored key or
+ * makes one. Other work uses the stored key that an open record names, else
+ * the stored one, else an unsaved one, and never asks the wallet.
+ */
+async function keyFor(
+  address: string,
+  signer: Pick<OwnerSigner, "signMessage">,
+  options: EnvOptions,
+): Promise<DepositKey> {
+  if (options.newDeposit) {
+    const key = await loadOrCreateDepositKey(
+      address,
+      typeof signer.signMessage === "function"
+        ? signingWithPhase(signer, options.onPhase)
+        : undefined,
+    );
+    if (key.fellBack) options.onFellBack?.();
+    return key;
+  }
+  const records = await createJournal(indexedDbStorage())
+    .unfinished(address)
+    .catch(() => []);
+  const wanted = records.find((record) => record.depositKey !== undefined)?.depositKey;
+  return (await storedKeyMatching(address, wanted)) ?? (await storedOrUnsavedDepositKey(address));
+}
 
 interface WalletFunds {
   /** Null while unknown: a read that failed is never shown as zero. */
@@ -108,30 +164,19 @@ export default function FundsSection({
     accountOpenRef.current = accountOpen;
   }, [accountOpen]);
 
+  const ownerRef = useRef(owner);
+  useEffect(() => {
+    ownerRef.current = owner;
+  }, [owner]);
+
   const makeEnv = useCallback(
-    async (forNewDeposit = false, given?: DepositKey): Promise<TransferEnv> => {
+    async (options: EnvOptions = {}): Promise<TransferEnv> => {
       if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
       if (!ownerAuthKnown)
         throw new Error("Still loading the account settings. Try again in a moment.");
       const rollup = await rollupReader();
       const address = signer.publicKey.toBase58();
-      const openRecordKey = forNewDeposit
-        ? null
-        : await createJournal(indexedDbStorage())
-            .unfinished(address)
-            .then(
-              (records) =>
-                records.map((record) => record.depositKey).find((wanted) => wanted !== undefined),
-              () => undefined,
-            )
-            .then((wanted) => storedKeyMatching(address, wanted));
-      const key =
-        openRecordKey ??
-        (given
-          ? given
-          : forNewDeposit
-            ? await loadOrCreateDepositKey(address, (message) => signer.signMessage(message))
-            : await storedOrUnsavedDepositKey(address));
+      const key = options.given ?? (await keyFor(address, signer, options));
       return createMainnetTransferEnv({
         signer,
         solana,
@@ -156,6 +201,47 @@ export default function FundsSection({
     latest.current = { freeCollateral, onSettled };
   }, [freeCollateral, onSettled]);
 
+  const runResume = useCallback(
+    async (
+      attention: Attention,
+      onStep: (phase: Phase) => void,
+    ): Promise<{ line: OutcomeLine; done: boolean }> => {
+      const transfer = withProgress(await makeEnv(), onStep);
+      const outcome = await resumeRecord(
+        transfer,
+        attention,
+        latest.current.freeCollateral ?? 0n,
+        { deposit, withdraw, returnToWallet },
+        QUOTE_DECIMALS,
+      );
+      if (outcome.status === "done") latest.current.onSettled();
+      const resumed = attention.operation === "deposit" ? "deposit" : "withdraw";
+      return {
+        done: outcome.status === "done",
+        line: outcomeLine(
+          resumed,
+          outcome,
+          QUOTE_DECIMALS,
+          resumed === "deposit" ? ROUND_TRIP_LAMPORTS : SOLANA_EXIT_LAMPORTS,
+        ),
+      };
+    },
+    [makeEnv],
+  );
+
+  /** The stored key, random or derived, that holds a balance in the rollup; the wallet is never asked. */
+  const findLeftover = useCallback(async (): Promise<{
+    key: DepositKey;
+    atoms: bigint;
+  } | null> => {
+    if (!signer) return null;
+    for (const key of await storedDepositKeys(signer.publicKey.toBase58())) {
+      const atoms = await depositKeyLeftover(await makeEnv({ given: key }));
+      if (atoms !== null) return { key, atoms };
+    }
+    return null;
+  }, [signer, makeEnv]);
+
   const engine = useMemo<RecordsEngine | null>(
     () =>
       signer && rollupReader
@@ -172,27 +258,14 @@ export default function FundsSection({
               return judged;
             },
             dismiss: async () => dismissRollupSend(await makeEnv()),
-            resume: async (attention, report) => {
-              const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
-              const outcome = await resumeRecord(
-                transfer,
-                attention,
-                latest.current.freeCollateral ?? 0n,
-                { deposit, withdraw, returnToWallet },
-                QUOTE_DECIMALS,
-              );
-              if (outcome.status === "done") latest.current.onSettled();
-              const resumed = attention.operation === "deposit" ? "deposit" : "withdraw";
-              return outcomeLine(
-                resumed,
-                outcome,
-                QUOTE_DECIMALS,
-                resumed === "deposit" ? ROUND_TRIP_LAMPORTS : SOLANA_EXIT_LAMPORTS,
-              ).text;
-            },
-            leftover: async () => depositKeyLeftover(await makeEnv()),
+            resume: async (attention, report) =>
+              (await runResume(attention, (step) => report(PHASE_LINES[step]))).line.text,
+            leftover: async () => (await findLeftover())?.atoms ?? null,
             recover: async (report) => {
-              const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
+              const given = (await findLeftover())?.key;
+              const transfer = withProgress(await makeEnv({ given }), (step) =>
+                report(PHASE_LINES[step]),
+              );
               const outcome = await recoverDepositKey(transfer);
               if (outcome.status === "done") latest.current.onSettled();
               return outcomeLine("deposit", outcome, QUOTE_DECIMALS, ROUND_TRIP_LAMPORTS).text;
@@ -205,7 +278,7 @@ export default function FundsSection({
             },
           }
         : null,
-    [signer, rollupReader, makeEnv],
+    [signer, rollupReader, makeEnv, runResume, findLeftover],
   );
   const [blocked, setBlocked] = useState(true);
 
@@ -233,17 +306,28 @@ export default function FundsSection({
     return { usdc, lamports };
   }, [owner, solana]);
 
-  const [keyStored, setKeyStored] = useState(true);
+  const [derivedStored, setDerivedStored] = useState<boolean | null>(null);
+  const [fellBack, setFellBack] = useState(false);
+  const [seenOwner, setSeenOwner] = useState(owner);
+  if (seenOwner !== owner) {
+    setSeenOwner(owner);
+    setResult(null);
+    setPhase(null);
+    setDerivedStored(null);
+    setOpen(false);
+    setFellBack(false);
+    setStorageCaution(false);
+  }
 
   useEffect(() => {
     if (!owner) return;
     let active = true;
-    void storedDepositKey(owner).then(
+    void storedDerivedDepositKey(owner).then(
       (stored) => {
-        if (active) setKeyStored(stored !== null);
+        if (active) setDerivedStored(stored !== null);
       },
       () => {
-        if (active) setKeyStored(true);
+        if (active) setDerivedStored(null);
       },
     );
     return () => {
@@ -270,23 +354,41 @@ export default function FundsSection({
   const feeLamports = kind === "deposit" ? ROUND_TRIP_LAMPORTS : SOLANA_EXIT_LAMPORTS;
   const lacksSol = funds.lamports !== null && funds.lamports < BigInt(feeLamports);
 
+  const started = owner;
+  const sameOwner = () => ownerRef.current === started;
+  const say = (line: OutcomeLine | null) => {
+    if (sameOwner()) setResult(line);
+  };
+
+  const storageAllows = async (): Promise<boolean> => {
+    const stored = await checkDepositStorage({
+      storage: typeof navigator === "undefined" ? undefined : navigator.storage,
+      openRecords: () => createJournal(indexedDbStorage()).unfinished(started),
+    });
+    if (sameOwner()) setStorageCaution(stored.ok && !stored.persisted);
+    if (!stored.ok) say({ tone: "error", text: stored.reason });
+    return stored.ok;
+  };
+
+  const failureOf = (error: unknown): OutcomeLine =>
+    error instanceof DepositKeyDeclined
+      ? { tone: "error", text: error.message }
+      : failureLine(error);
+
   async function submit() {
     if (!check.ok) return;
-    setResult(null);
+    say(null);
     setPhase("preparing");
     try {
-      if (kind === "deposit") {
-        const stored = await checkDepositStorage({
-          storage: typeof navigator === "undefined" ? undefined : navigator.storage,
-          openRecords: () => createJournal(indexedDbStorage()).unfinished(owner as string),
-        });
-        setStorageCaution(stored.ok && !stored.persisted);
-        if (!stored.ok) {
-          setResult({ tone: "error", text: stored.reason });
-          return;
-        }
-      }
-      const transfer = withProgress(await makeEnv(kind === "deposit"), setPhase);
+      if (kind === "deposit" && !(await storageAllows())) return;
+      const transfer = withProgress(
+        await makeEnv({
+          newDeposit: kind === "deposit",
+          onPhase: setPhase,
+          onFellBack: () => setFellBack(true),
+        }),
+        setPhase,
+      );
       const amount = atomsText(check.atoms, QUOTE_DECIMALS);
       const outcome =
         kind === "deposit"
@@ -296,46 +398,71 @@ export default function FundsSection({
               freeCollateral: freeCollateral ?? 0n,
               intent: { kind: "new" },
             });
-      setResult(outcomeLine(kind, outcome, QUOTE_DECIMALS, feeLamports));
+      say(outcomeLine(kind, outcome, QUOTE_DECIMALS, feeLamports));
       if (outcome.status === "done") {
-        setText("");
+        if (sameOwner()) setText("");
         onSettled();
       }
     } catch (error) {
-      setResult(
-        error instanceof DepositKeyDeclined
-          ? { tone: "error", text: error.message }
-          : failureLine(error),
-      );
+      say(failureOf(error));
     } finally {
-      setPhase(null);
+      if (sameOwner()) setPhase(null);
       setRefreshKey((count) => count + 1);
     }
   }
 
+  const canFinishElsewhere = !busy && ownerAuthKnown && rollupReader !== null && accountOpen;
+
   const finishFromAnotherBrowser = async () => {
+    if (!canFinishElsewhere) return;
     setOpen(true);
-    setResult(null);
-    setPhase("approve");
+    say(null);
+    setPhase("preparing");
     try {
-      const key = await deriveDepositKey(owner, (message) => signer.signMessage(message));
-      setPhase("preparing");
-      const transfer = withProgress(await makeEnv(false, key), setPhase);
-      if ((await depositKeyLeftover(transfer)) === null) {
-        setResult({ tone: "warn", text: NO_UNFINISHED_DEPOSIT });
+      if (!(await storageAllows())) return;
+      const records = await createJournal(indexedDbStorage()).unfinished(started);
+      if (records.length > 0) {
+        const held = await storedDepositKeys(started);
+        const heldHere = records.some((record) =>
+          held.some((key) => key.keypair.publicKey.toBase58() === record.depositKey),
+        );
+        const storedDerived = held.find((key) => key.derived);
+        const derived =
+          storedDerived ??
+          (heldHere
+            ? undefined
+            : await deriveDepositKey(started, signingWithPhase(signer, setPhase)));
+        const mine = records.find(
+          (record) => record.depositKey === derived?.keypair.publicKey.toBase58(),
+        );
+        if (!mine) {
+          say({ tone: "warn", text: TRANSFER_STILL_OPEN });
+          return;
+        }
+        const resumed = await runResume(attentionOf(mine, null, records), setPhase);
+        say(resumed.line);
+        return;
+      }
+      const key = await deriveDepositKey(started, signingWithPhase(signer, setPhase));
+      const transfer = withProgress(await makeEnv({ given: key }), setPhase);
+      let held: bigint;
+      try {
+        held = await readDepositKeyLeftover(transfer);
+      } catch {
+        say({ tone: "error", text: KEY_BALANCE_UNREADABLE });
+        return;
+      }
+      if (held === 0n) {
+        say({ tone: "warn", text: NO_UNFINISHED_DEPOSIT });
         return;
       }
       const outcome = await recoverDepositKey(transfer);
-      setResult(outcomeLine("deposit", outcome, QUOTE_DECIMALS, ROUND_TRIP_LAMPORTS));
+      say(outcomeLine("deposit", outcome, QUOTE_DECIMALS, ROUND_TRIP_LAMPORTS));
       if (outcome.status === "done") onSettled();
     } catch (error) {
-      setResult(
-        error instanceof DepositKeyDeclined
-          ? { tone: "error", text: error.message }
-          : failureLine(error),
-      );
+      say(failureOf(error));
     } finally {
-      setPhase(null);
+      if (sameOwner()) setPhase(null);
       setRefreshKey((count) => count + 1);
     }
   };
@@ -434,14 +561,14 @@ export default function FundsSection({
                 </p>
                 <p className="text-faint mt-1 text-[11px]">
                   {kind === "deposit"
-                    ? `${keyStored ? "" : KEY_SIGNATURE_NOTE}Your wallet will ask you to approve one transaction, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
+                    ? `${derivedStored === false ? KEY_SIGNATURE_NOTE : ""}Your wallet will ask you to approve one transaction, and you pay about ${solText(feeLamports)} in network fees. It usually takes a minute or two; keep this page open.`
                     : `Your wallet will ask you to approve ${withdrawByKey ? "one or two" : "two or three"} transactions, and you pay about ${solText(feeLamports)} in network fees. A withdrawal can wait a few minutes for fresh prices; keep this page open.`}
                 </p>
               </div>
             ) : (
               <p className="text-faint mt-1 text-[11px]">
                 {kind === "deposit"
-                  ? `${keyStored ? "" : KEY_SIGNATURE_NOTE}Your wallet asks you to approve one transaction.`
+                  ? `${derivedStored === false ? KEY_SIGNATURE_NOTE : ""}Your wallet asks you to approve one transaction.`
                   : `Your wallet asks you to approve ${withdrawByKey ? "one or two" : "two or three"} transactions. A withdrawal can wait a few minutes for fresh prices.`}
               </p>
             )}
@@ -478,6 +605,11 @@ export default function FundsSection({
                 {PHASE_LINES[phase]}
               </p>
             )}
+            {fellBack && (
+              <p role="status" className="text-warning mt-2 text-[12px]">
+                {KEY_FELL_BACK}
+              </p>
+            )}
             {storageCaution && kind === "deposit" && (
               <p role="status" className="text-warning mt-2 text-[12px]">
                 Your browser has not promised to keep this app&apos;s data. Until the deposit shows
@@ -495,14 +627,21 @@ export default function FundsSection({
           </div>
         )}
         {!open && (
-          <button
-            type="button"
-            className="text-faint mt-2 w-full text-center text-[11px] underline"
-            disabled={busy}
-            onClick={() => void finishFromAnotherBrowser()}
-          >
-            Finish a deposit from another browser
-          </button>
+          <div className="mt-2">
+            <button
+              type="button"
+              className="text-faint w-full text-center text-[11px] underline"
+              disabled={!canFinishElsewhere}
+              onClick={() => void finishFromAnotherBrowser()}
+            >
+              Finish a deposit from another browser
+            </button>
+            <p className="text-faint mt-1 text-center text-[11px]">
+              {derivedStored === false && "Your wallet is asked to sign a message first. "}Use this
+              only after the other browser has stopped. Running both at once can leave a record
+              there that reads wrong.
+            </p>
+          </div>
         )}
       </div>
     </div>

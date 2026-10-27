@@ -4,10 +4,11 @@ import type { TransferShape } from "./guard";
 import type { TransferEnv } from "./operation";
 
 /** Where a transfer stands while a flow runs, in the order a step goes through them. */
-export type Phase = "preparing" | "approve" | "sending" | "finality";
+export type Phase = "preparing" | "sign-key" | "approve" | "sending" | "finality";
 
 export const PHASE_LINES: Record<Phase, string> = {
   preparing: "Preparing the transfer",
+  "sign-key": "Sign the deposit key message in your wallet",
   approve: "Approve in your wallet",
   sending: "Sending",
   finality: "Waiting for the network to confirm",

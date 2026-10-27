@@ -42,7 +42,7 @@ const REFUSALS: Record<Refusal, string> = {
   "legacy-deposit":
     "This deposit was begun by an earlier version of the app. Return it to your wallet under transfers that need attention, then deposit again. Nothing was sent.",
   "deposit-key-missing":
-    "The key that finishes this deposit is no longer stored in this browser, so it cannot be finished from here. Do not deposit again. Contact support and give them the transfer id. Nothing new was sent.",
+    "The key that finishes this deposit is no longer stored in this browser, so it cannot be finished from here. Do not deposit again. If you made this deposit in another browser with this wallet, use Finish a deposit from another browser. Contact support and give them the transfer id. Nothing new was sent.",
   "deposit-landed": "The deposit already went through. Nothing was sent.",
   "rollup-short": "Your rollup balance holds less than that. Nothing was sent.",
   "nothing-to-dismiss": "No transfer is waiting to be dismissed.",
@@ -54,6 +54,18 @@ const REFUSALS: Record<Refusal, string> = {
 /** What finishing a deposit from another browser says when the wallet's deposit key holds nothing. */
 export const NO_UNFINISHED_DEPOSIT =
   "No unfinished deposit found for this wallet. If you just started one in another browser, wait a minute and try again.";
+
+/** Shown when this browser could not get a derived key from the wallet and holds a random one instead. */
+export const KEY_FELL_BACK =
+  "Your wallet could not sign the deposit key message, so this browser holds the key. Finish the deposit in this browser.";
+
+/** Said when finishing a deposit from another browser finds a transfer still open here. */
+export const TRANSFER_STILL_OPEN =
+  "Another transfer is still open in this browser. Finish it first, then try again.";
+
+/** Said when the deposit key's balance could not be read. */
+export const KEY_BALANCE_UNREADABLE =
+  "Could not read the deposit key's balance. Nothing was sent. Try again.";
 
 /** Added before the deposit confirmation while this browser has no deposit key yet. */
 export const KEY_SIGNATURE_NOTE =

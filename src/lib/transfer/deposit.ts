@@ -37,6 +37,8 @@ import {
 import { errorCode, pollUntil, readTokenBalance, type SolanaRpc } from "./solanaRpc";
 import { tokenAtoms } from "./verdicts";
 
+const MADE_ELSEWHERE =
+  "If you made this deposit in another browser with this wallet, use Finish a deposit from another browser.";
 const CUSTODY_CAP_REACHED = 6150;
 const NO_SEAT = 6114;
 const DELEGATION_SHOWN_WITHIN_MS = 60_000;
@@ -189,7 +191,7 @@ async function carryOn(
   if (record.depositKey !== env.depositKey.publicKey.toBase58()) {
     return refuse(
       "deposit-key-missing",
-      `The key that finishes this deposit (transfer ${id}) is no longer stored in this browser, so the deposit cannot be finished from here. The USDC has already left your wallet and sits under that key. Do not deposit again. Contact support and give them this transfer id. Nothing new was sent.`,
+      `The key that finishes this deposit (transfer ${id}) is no longer stored in this browser, so the deposit cannot be finished from here. The USDC has already left your wallet and sits under that key. Do not deposit again. ${MADE_ELSEWHERE} Contact support and give them this transfer id. Nothing new was sent.`,
     );
   }
   const judged = await reconciled(env, id, record.sends, answer);

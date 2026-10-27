@@ -8,12 +8,18 @@ import {
   deriveDepositKey,
   loadOrCreateDepositKey,
   storedDepositKey,
+  storedDepositKeys,
   storedKeyMatching,
   type SeedPort,
   type SignMessage,
 } from "@/lib/transfer/depositKeyStore";
-import { depositKeyLeftover } from "@/lib/transfer/leftover";
-import { KEY_SIGNATURE_NOTE, NO_UNFINISHED_DEPOSIT, outcomeLine } from "@/lib/transfer/outcomeCopy";
+import { depositKeyLeftover, readDepositKeyLeftover } from "@/lib/transfer/leftover";
+import {
+  KEY_SIGNATURE_NOTE,
+  NO_UNFINISHED_DEPOSIT,
+  TRANSFER_STILL_OPEN,
+  outcomeLine,
+} from "@/lib/transfer/outcomeCopy";
 import { makeWorld } from "./transferWorld";
 
 const ATOMS = 2_500_000n;
@@ -81,16 +87,28 @@ describe("a deposit key made from the wallet", () => {
     expect(seeds.created).toEqual([]);
   });
 
-  it("never replaces a key already stored in this browser", async () => {
+  it("moves a new deposit to the derived key and leaves a stored random key alone", async () => {
     const wallet = Keypair.generate();
     const owner = wallet.publicKey.toBase58();
     const seeds = memorySeeds();
     const random = await loadOrCreateDepositKey(owner, undefined, seeds);
     const sign = vi.fn(signingAs(wallet));
-    const kept = await loadOrCreateDepositKey(owner, sign, seeds);
-    expect(sign).not.toHaveBeenCalled();
-    expect(kept.keypair.publicKey.equals(random.keypair.publicKey)).toBe(true);
-    expect(kept.derived).toBe(false);
+    const fresh = await loadOrCreateDepositKey(owner, sign, seeds);
+    expect(sign).toHaveBeenCalledTimes(1);
+    expect(fresh.derived).toBe(true);
+    expect(fresh.keypair.publicKey.equals(random.keypair.publicKey)).toBe(false);
+    const kept = await storedDepositKeys(owner, seeds);
+    expect(kept[0].keypair.publicKey.equals(random.keypair.publicKey)).toBe(true);
+    expect(seeds.created).toEqual([`deposit-key:${owner}`, `deposit-key-derived:${owner}`]);
+  });
+
+  it("uses the stored random key for a new deposit only when the wallet cannot sign", async () => {
+    const owner = Keypair.generate().publicKey.toBase58();
+    const seeds = memorySeeds();
+    const random = await loadOrCreateDepositKey(owner, undefined, seeds);
+    const again = await loadOrCreateDepositKey(owner, undefined, seeds);
+    expect(again.keypair.publicKey.equals(random.keypair.publicKey)).toBe(true);
+    expect(again.fellBack).toBe(true);
     expect(seeds.created).toHaveLength(1);
   });
 
@@ -144,8 +162,9 @@ describe("recovery in a browser that already holds a random key", () => {
     expect(again.keypair.publicKey.equals(derived.keypair.publicKey)).toBe(true);
     expect(sign).toHaveBeenCalledTimes(1);
     const next = await loadOrCreateDepositKey(owner, sign, seeds);
-    expect(next.keypair.publicKey.equals(random.keypair.publicKey)).toBe(true);
-    expect(next.derived).toBe(false);
+    expect(next.keypair.publicKey.equals(derived.keypair.publicKey)).toBe(true);
+    expect(next.keypair.publicKey.equals(random.keypair.publicKey)).toBe(false);
+    expect(next.derived).toBe(true);
     expect(sign).toHaveBeenCalledTimes(1);
   });
 });
@@ -200,6 +219,123 @@ describe("the key an open record is carried on with", () => {
       intent: { kind: "resume", id: record.id, atoms: record.atoms },
     });
     expect(resumed).toMatchObject({ status: "done" });
+  });
+});
+
+describe("an open record whose key is not the stored one", () => {
+  it("is refused with a pointer to finishing from another browser", async () => {
+    const world = makeWorld({ depositKey: Keypair.generate() });
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.rollup.script({ fate: "fail" });
+    await deposit(world.env, { amount: "2.5" });
+    const [record] = [...world.rows.values()];
+    world.env.depositKey = Keypair.generate();
+    const refused = await deposit(world.env, {
+      amount: "2.5",
+      intent: { kind: "resume", id: record.id, atoms: record.atoms },
+    });
+    expect(refused).toMatchObject({ status: "refused", reason: "deposit-key-missing" });
+    expect((refused as { message: string }).message).toMatch(
+      /use Finish a deposit from another browser/,
+    );
+  });
+
+  it("is told apart from a free browser by the line shown", () => {
+    expect(TRANSFER_STILL_OPEN).toBe(
+      "Another transfer is still open in this browser. Finish it first, then try again.",
+    );
+  });
+});
+
+describe("reading what the deposit key holds", () => {
+  it("is zero for a key with no balance account", async () => {
+    const world = makeWorld({ depositKey: Keypair.generate() });
+    expect(await readDepositKeyLeftover(world.env)).toBe(0n);
+  });
+
+  it("is the balance when the key holds one", async () => {
+    const world = makeWorld({ depositKey: Keypair.generate() });
+    world.delegateKey(ATOMS);
+    expect(await readDepositKeyLeftover(world.env)).toBe(ATOMS);
+  });
+
+  it("throws when the rollup cannot be read, though the background read says nothing", async () => {
+    const world = makeWorld({ depositKey: Keypair.generate() });
+    world.delegateKey(ATOMS);
+    world.env.depositRollup = async () => {
+      throw new Error("sign-in refused");
+    };
+    await expect(readDepositKeyLeftover(world.env)).rejects.toThrow(/sign-in refused/);
+    expect(await depositKeyLeftover(world.env)).toBeNull();
+  });
+});
+
+describe("a leftover under the derived key with a random key also stored", () => {
+  it("is found by checking every stored key", async () => {
+    const wallet = Keypair.generate();
+    const owner = wallet.publicKey.toBase58();
+    const seeds = memorySeeds();
+    const random = await loadOrCreateDepositKey(owner, undefined, seeds);
+    const derived = await deriveDepositKey(owner, signingAs(wallet), seeds);
+    const keys = await storedDepositKeys(owner, seeds);
+    expect(keys.map((key) => key.derived)).toEqual([false, true]);
+    const held = new Map([[derived.keypair.publicKey.toBase58(), ATOMS]]);
+    const found: bigint[] = [];
+    for (const key of keys) {
+      const world = makeWorld({ depositKey: key.keypair });
+      world.delegateKey(held.get(key.keypair.publicKey.toBase58()) ?? 0n);
+      const atoms = await depositKeyLeftover(world.env);
+      if (atoms !== null) found.push(atoms);
+    }
+    expect(found).toEqual([ATOMS]);
+    expect(keys[0].keypair.publicKey.equals(random.keypair.publicKey)).toBe(true);
+  });
+});
+
+describe("a wallet that cannot give a derived key", () => {
+  const owner = () => Keypair.generate();
+
+  it("gets a stored random key and the flag when it cannot sign at all", async () => {
+    const seeds = memorySeeds();
+    const address = owner().publicKey.toBase58();
+    const key = await loadOrCreateDepositKey(address, undefined, seeds);
+    expect(key).toMatchObject({ derived: false, fellBack: true });
+    expect(seeds.created).toEqual([`deposit-key:${address}`]);
+    expect((await loadOrCreateDepositKey(address, undefined, seeds)).fellBack).toBe(true);
+    expect(seeds.created).toHaveLength(1);
+  });
+
+  it("gets one when signing fails for a reason that is not a decline", async () => {
+    const seeds = memorySeeds();
+    const address = owner().publicKey.toBase58();
+    const broken = async () => {
+      throw new Error("the wallet is locked");
+    };
+    const key = await loadOrCreateDepositKey(address, broken, seeds);
+    expect(key).toMatchObject({ derived: false, fellBack: true });
+    expect(seeds.created).toEqual([`deposit-key:${address}`]);
+  });
+
+  it("gets one when the signature does not verify", async () => {
+    const seeds = memorySeeds();
+    const wallet = owner();
+    const key = await loadOrCreateDepositKey(
+      wallet.publicKey.toBase58(),
+      signingAs(Keypair.generate()),
+      seeds,
+    );
+    expect(key).toMatchObject({ derived: false, fellBack: true });
+  });
+
+  it("still stops when the owner declines", async () => {
+    const seeds = memorySeeds();
+    const declined = async () => {
+      throw new Error("User rejected the request.");
+    };
+    await expect(
+      loadOrCreateDepositKey(owner().publicKey.toBase58(), declined, seeds),
+    ).rejects.toBeInstanceOf(DepositKeyDeclined);
+    expect(seeds.created).toEqual([]);
   });
 });
 
