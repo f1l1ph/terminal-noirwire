@@ -71,8 +71,8 @@ describe("one trading tab per account", () => {
 
   it("lets exactly the older of two tabs trade when they start together", () => {
     const open = bus(true);
-    const older = createTabGuard("owner", open, "b", 1);
-    const newer = createTabGuard("owner", open, "a", 2);
+    const older = createTabGuard("owner", open, "b", () => 1);
+    const newer = createTabGuard("owner", open, "a", () => 2);
     open.flush();
     expect(older.elsewhere()).toBe(false);
     expect(newer.elsewhere()).toBe(true);
@@ -80,12 +80,30 @@ describe("one trading tab per account", () => {
 
   it("frees exactly one of two held tabs when the holder closes", () => {
     const open = bus();
-    const holder = createTabGuard("owner", open, "h", 1);
-    const second = createTabGuard("owner", open, "s", 2);
-    const third = createTabGuard("owner", open, "t", 3);
+    const holder = createTabGuard("owner", open, "h", () => 1);
+    const second = createTabGuard("owner", open, "s", () => 2);
+    const third = createTabGuard("owner", open, "t", () => 3);
     holder.close();
     expect(second.elsewhere()).toBe(false);
     expect(third.elsewhere()).toBe(true);
+  });
+
+  it("lets the later of two takeovers made at once trade, in every tab", () => {
+    const open = bus(true);
+    let now = 1;
+    const clock = () => now;
+    const holder = createTabGuard("owner", open, "h", clock);
+    const first = createTabGuard("owner", open, "f", clock);
+    const second = createTabGuard("owner", open, "s", clock);
+    open.flush();
+    now = 10;
+    first.takeOver();
+    now = 11;
+    second.takeOver();
+    open.flush();
+    expect(holder.elsewhere()).toBe(true);
+    expect(first.elsewhere()).toBe(true);
+    expect(second.elsewhere()).toBe(false);
   });
 
   it("keeps accounts apart", () => {
