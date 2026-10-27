@@ -4,6 +4,7 @@ import { MAINNET_PINS } from "../rollup/pins";
 import type { KeyWithdrawal } from "../trading/types";
 import { rememberToken } from "../rollup/redact";
 import { QUOTE_DECIMALS } from "../rollup/markets";
+import { isSignInChallenge } from "../rollup/keys";
 import { isMainnetOwnerSigner } from "../rollup/mainnetOwner";
 import { signChecked } from "../rollup/ownerSend";
 import {
@@ -87,13 +88,20 @@ export function rollupBaseUrl(endpoint: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
-/** The rollup signed in as `key`: its own signature answers the endpoint's challenge, and the connection is made once and kept. */
-function signedInAsKey(key: Keypair, rollupRpcUrl: string): () => Promise<SolanaRpc> {
+/**
+ * The rollup signed in as `key`: its own signature answers the endpoint's
+ * challenge, and only that (the same template check the owner's sign-in
+ * makes), and the connection is made once and kept.
+ */
+export function signedInAsKey(key: Keypair, rollupRpcUrl: string): () => Promise<SolanaRpc> {
   let session: Promise<SolanaRpc> | null = null;
   const signIn = async () => {
-    const { token } = await signInWithExpiry(rollupRpcUrl, key.publicKey, async (message) =>
-      nacl.sign.detached(message, key.secretKey),
-    );
+    const { token } = await signInWithExpiry(rollupRpcUrl, key.publicKey, async (message) => {
+      if (!isSignInChallenge(message, key.publicKey)) {
+        throw new Error("the rollup asked this key to sign something that is not a sign-in");
+      }
+      return nacl.sign.detached(message, key.secretKey);
+    });
     rememberToken(token);
     return connectWithToken(rollupRpcUrl, token);
   };

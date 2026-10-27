@@ -38,14 +38,19 @@ const DEPLOYMENT = {
 
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 
-function harness(failures: unknown[]) {
+function harness(failures: unknown[], viewFailures: unknown[] = []) {
   let builds = 0;
   let closed = 0;
+  const removed: string[] = [];
   const unused = async () => {
     throw new Error("unused");
   };
   const client = {
-    view: async () => VIEW,
+    view: async () => {
+      const failure = viewFailures.shift();
+      if (failure) throw failure;
+      return VIEW;
+    },
     subscribeView: () => async () => {},
     placeOrder: unused,
     cancelOrder: unused,
@@ -56,7 +61,11 @@ function harness(failures: unknown[]) {
   const rollup = new RollupTradingClient({
     simUrl: "http://sim.test",
     marketSettingsLookup: () => undefined,
-    storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    storage: {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: (key: string) => void removed.push(key),
+    },
     buildSession: async () => {
       builds += 1;
       await Promise.resolve();
@@ -79,7 +88,7 @@ function harness(failures: unknown[]) {
       return session;
     },
   });
-  return { rollup, builds: () => builds, closed: () => closed };
+  return { rollup, builds: () => builds, closed: () => closed, removed };
 }
 
 describe("one sign-in at a time per owner", () => {
@@ -98,8 +107,29 @@ describe("one sign-in at a time per owner", () => {
     const refusal = () => new SessionAuthError(new Error("User rejected the request"));
     const { rollup, builds } = harness([refusal()]);
     const first = await Promise.all([rollup.accountStatus(WALLET), rollup.accountStatus(WALLET)]);
-    expect(first).toEqual(["unknown", "unknown"]);
+    expect(first).toEqual(["declined", "declined"]);
     expect(builds()).toBe(1);
+    expect(await rollup.accountStatus(WALLET)).toBe("open");
+    expect(builds()).toBe(2);
+  });
+
+  it("reports a failed sign-in that was not a decline as unknown, not declined", async () => {
+    const failing = harness([
+      new SessionAuthError(new Error("boom")),
+      new SessionAuthError(new Error("boom")),
+    ]);
+    expect(await failing.rollup.accountStatus(WALLET)).toBe("unknown");
+  });
+
+  it("clears the sign-in token and starts a new session when the rollup refuses it mid-session", async () => {
+    // The first view read belongs to the session's own background watch.
+    const { rollup, builds, removed } = harness(
+      [],
+      [null, new Error("401 Missing token query param")],
+    );
+    expect(await rollup.accountStatus(WALLET)).toBe("unknown");
+    expect(removed.some((key) => key.includes("owner-address"))).toBe(true);
+    expect(builds()).toBe(2);
     expect(await rollup.accountStatus(WALLET)).toBe("open");
     expect(builds()).toBe(2);
   });
@@ -114,7 +144,7 @@ describe("one sign-in at a time per owner", () => {
 
   it("moves an unread account to open when the check is run again", async () => {
     const { rollup } = harness([new SessionAuthError(new Error("User rejected the request"))]);
-    expect(await rollup.accountStatus(WALLET)).toBe("unknown");
+    expect(await rollup.accountStatus(WALLET)).toBe("declined");
     expect(await rollup.accountStatus(WALLET)).toBe("open");
   });
 

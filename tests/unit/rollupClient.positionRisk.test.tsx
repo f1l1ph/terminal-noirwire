@@ -131,7 +131,7 @@ function dockFor(state: TraderState): string {
       onClosePosition={() => {}}
       onReducePosition={() => {}}
       onCancelOrder={null}
-      cancellingOrderId={null}
+      cancellingOrderIds={new Set()}
     />,
   );
 }

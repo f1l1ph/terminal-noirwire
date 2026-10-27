@@ -32,6 +32,10 @@ const errorResponseSchema = z.object({ error: z.string() });
 export type OpenRefusal =
   /** No invite for this address, or the code is wrong or missing. */
   | { kind: "notInvited" }
+  /** The address is invited with a code, and none was sent. */
+  | { kind: "inviteCodeNeeded" }
+  /** A code was sent that does not match the address, or is not shaped like a code. */
+  | { kind: "inviteCodeWrong" }
   | { kind: "inviteUsed" }
   | { kind: "accountOpen" }
   /** The desk is busy, the service is starting, or a short request throttle applies. */
@@ -189,7 +193,10 @@ async function errorReasonOf(response: Response): Promise<string> {
  */
 export function openRefusalOf(status: number, reason: string, step: Step): OpenRefusal {
   if (status === 403) {
-    return /cannot be read/i.test(reason) ? { kind: "tryLater" } : { kind: "notInvited" };
+    if (/cannot be read/i.test(reason)) return { kind: "tryLater" };
+    if (/invited with a code/i.test(reason)) return { kind: "inviteCodeNeeded" };
+    if (/invite code does not match/i.test(reason)) return { kind: "inviteCodeWrong" };
+    return { kind: "notInvited" };
   }
   if (status === 409) {
     if (/invite has been used/i.test(reason)) return { kind: "inviteUsed" };
@@ -241,7 +248,7 @@ export async function prepareOpen(
   }: { simUrl: string; owner: string; orderKeys: string[]; invite?: string },
   fetchFn: typeof fetch = fetch,
 ): Promise<PrepareOpenOutcome> {
-  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "notInvited" };
+  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "inviteCodeWrong" };
   const response = await post(
     simUrl,
     "/v1/open/prepare",
@@ -280,7 +287,7 @@ export async function prepareOpenMessage(
   }: { simUrl: string; owner: string; orderKeys: string[]; invite?: string },
   fetchFn: typeof fetch = fetch,
 ): Promise<PrepareOpenMessageOutcome> {
-  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "notInvited" };
+  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "inviteCodeWrong" };
   const response = await post(
     simUrl,
     "/v1/open/prepare",

@@ -77,6 +77,18 @@ export function describeOpenOutcome(
         "Nothing was sent. This address is not on the invite list yet. Ask NoirWire to add it, then try again.",
         { nothingSent: true },
       );
+    case "inviteCodeNeeded":
+      return notice(
+        "error",
+        "Nothing was sent. This address was invited with a code. Enter the invite code you were given, then try again.",
+        { nothingSent: true },
+      );
+    case "inviteCodeWrong":
+      return notice(
+        "error",
+        "Nothing was sent. That invite code does not match this address. Check it and try again.",
+        { nothingSent: true },
+      );
     case "inviteUsed":
       return notice("error", "Nothing was sent. This address's invite has already been used.", {
         nothingSent: true,
@@ -119,6 +131,26 @@ export function describeOpenOutcome(
   }
 }
 
+/**
+ * Whether the last attempt showed the gate admits people by invite, so the
+ * invite code field is worth showing: only a refusal that comes from the
+ * invite list says so.
+ */
+export function gateAsksForInvite(outcome: OpenAccountOutcome | null): boolean {
+  if (outcome?.kind !== "refused") return false;
+  const { kind } = outcome.refusal;
+  return (
+    kind === "notInvited" ||
+    kind === "inviteCodeNeeded" ||
+    kind === "inviteCodeWrong" ||
+    kind === "inviteUsed"
+  );
+}
+
+/** While an open request "may have gone through", the account is looked at again this often, up to this many times, so it shows as open without a press. */
+export const OPEN_RECHECK_EVERY_MS = 5_000;
+export const OPEN_RECHECK_ATTEMPTS = 12;
+
 export type KeysNotice =
   | { kind: "settling"; secondsLeft: number }
   | { kind: "installing" }
@@ -144,7 +176,7 @@ export function recheckOffer(
   keys: OrderKeyState | null,
 ): "check" | "retry" | null {
   if (keys?.stage === "failed") return "retry";
-  return status === "unknown" ? "check" : null;
+  return status === "unknown" || status === "declined" ? "check" : null;
 }
 
 /**
@@ -201,7 +233,7 @@ export function setupSteps(input: {
 }): { steps: SetupStep[]; ready: boolean } {
   const { connected, status, keys, funded } = input;
   const keysActive = keys !== null;
-  const verified = connected && (status !== "unknown" || keysActive);
+  const verified = connected && ((status !== "unknown" && status !== "declined") || keysActive);
   const opened = verified && (status === "open" || (status === "unknown" && keysActive));
   const keysReady = opened && keys?.stage === "ready";
   const done: Record<SetupStepId, boolean> = {
@@ -241,7 +273,7 @@ function heldSolText(lamports: bigint): string {
  */
 export function depositHelp(depositsOpen: boolean, walletLamports: bigint | null = null): string {
   if (!depositsOpen) return "Deposits open soon. You can explore the market until then.";
-  const addUsdc = "Add USDC from your wallet in the Funds section below the chart.";
+  const addUsdc = "Add USDC from your wallet in the Funds section of your account panel.";
   const depositFee = feeSolText(ROUND_TRIP_LAMPORTS);
   if (walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS)) {
     return `${addUsdc} Your wallet holds ${heldSolText(walletLamports)}, and a deposit needs about ${depositFee} for network fees. Add some SOL first. Nothing is charged until you deposit.`;

@@ -34,11 +34,14 @@ const TerminalDockview = dynamic(
  */
 export function DesktopWorkspace({
   quoteSymbol,
+  takerFeeBps,
   layoutResetSignal,
   ...panelData
 }: TerminalPanelData & {
   /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
   quoteSymbol: string;
+  /** The market account's taker fee in basis points; undefined until the session has read it. */
+  takerFeeBps?: number;
   /** Bumped by the shell's "Reset layout" link; rebuilds the default arrangement and clears the saved one. */
   layoutResetSignal: number;
 }) {
@@ -50,6 +53,7 @@ export function DesktopWorkspace({
           mark={panelData.mark}
           now={panelData.now}
           quoteSymbol={quoteSymbol}
+          takerFeeBps={takerFeeBps}
         />
       </div>
       <TerminalPanelProvider value={panelData}>

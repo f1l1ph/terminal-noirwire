@@ -78,6 +78,77 @@ describe("validateOrder: price", () => {
   });
 });
 
+describe("validateOrder: the market account's own limits", () => {
+  const LIMITS = { bandBps: 400, minSize: "0.300000", minNotional: "50.000000" };
+  const check = (
+    side: "buy" | "sell",
+    price: string,
+    size = "1.0",
+    limits: typeof LIMITS | undefined = LIMITS,
+  ) => validateOrder({ side, price, size }, PERP_MARKET, MARK, NOW, false, limits);
+
+  it("allows a bid exactly 4% above the mark and refuses one tick more", () => {
+    expect(check("buy", "156.00").valid).toBe(true);
+    expect(check("buy", "156.01").errors.price).toBe("bidAboveBand");
+  });
+
+  it("allows an ask exactly 4% below the mark and refuses one tick more", () => {
+    expect(check("sell", "144.00").valid).toBe(true);
+    expect(check("sell", "143.99").errors.price).toBe("askBelowBand");
+  });
+
+  it("lets a passive price through on either side, up to the outer limit", () => {
+    expect(check("buy", "140.00").valid).toBe(true);
+    expect(check("sell", "160.00").valid).toBe(true);
+  });
+
+  it("keeps the outer limit ahead of the band", () => {
+    expect(check("buy", "200.00").errors.price).toBe("priceTooFarFromMark");
+  });
+
+  it("waits for the program when the band is not known yet", () => {
+    const unchecked = validateOrder(
+      { side: "buy", price: "160.00", size: "1.0" },
+      PERP_MARKET,
+      MARK,
+      NOW,
+    );
+    expect(unchecked.valid).toBe(true);
+  });
+
+  it("names the limit in plain words", () => {
+    expect(describeFieldError("bidAboveBand", PERP_MARKET, LIMITS)).toBe(
+      "A buy can be at most 4% above the mark price.",
+    );
+    expect(describeFieldError("askBelowBand", PERP_MARKET, LIMITS)).toBe(
+      "A sell can be at most 4% below the mark price.",
+    );
+  });
+
+  it("refuses a size under the chain's minimum and prints the minimum", () => {
+    const result = check("buy", "150.00", "0.2");
+    expect(result.errors.quantity).toBe("quantityBelowMinimum");
+    expect(describeFieldError("quantityBelowMinimum", PERP_MARKET, LIMITS)).toBe(
+      "Minimum order is 0.3 NSOL.",
+    );
+  });
+
+  it("refuses an order worth less than the chain's minimum value and prints it", () => {
+    expect(check("buy", "150.00", "0.4").valid).toBe(true);
+    const small = check("buy", "10.00", "0.3", { ...LIMITS, bandBps: 10_000 });
+    expect(small.errors.quantity).toBe("notionalBelowMinimum");
+    expect(describeFieldError("notionalBelowMinimum", PERP_MARKET, LIMITS)).toBe(
+      "Minimum order value is 50 nUSD. Raise the size or the price.",
+    );
+  });
+
+  it("falls back to the lot size as the minimum without chain limits", () => {
+    expect(describeFieldError("quantityBelowMinimum", PERP_MARKET)).toBe(
+      "Minimum order is 0.1 NSOL.",
+    );
+  });
+});
+
 describe("validateOrder: price band around the mark", () => {
   const check = (price: string, mark: typeof MARK | null | undefined = MARK) =>
     validateOrder({ price, size: "1.0" }, PERP_MARKET, mark, NOW);

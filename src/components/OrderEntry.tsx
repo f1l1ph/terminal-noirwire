@@ -25,7 +25,8 @@ import {
   walletlessAction,
   type TradeGate,
 } from "@/lib/trading/uiRules";
-import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
+import { fromFixedPoint, toFixedPoint, withoutSign } from "@/lib/trading/decimal";
+import { marketOrderBound } from "@/lib/trading/marketBound";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import {
   orderFunds,
@@ -59,6 +60,7 @@ import {
 import type {
   Balance,
   FundOutcome,
+  MarketLimits,
   NewOrderInput,
   OpenOrder,
   Position,
@@ -154,6 +156,7 @@ export function OrderEntry({
   setup,
   gate,
   makersListed,
+  limits,
   onLimitLineChange,
 }: {
   /** Told the draft limit price and side while the form is a limit order with a valid price, null otherwise; the chart draws it. */
@@ -223,6 +226,8 @@ export function OrderEntry({
   gate: TradeGate | null;
   /** This market lets only listed makers rest orders: a Limit is sent as immediate-or-cancel. */
   makersListed: boolean;
+  /** This market's ratios, price band and minimums as its account states them; undefined until the session has read them, when the estimates assume defaults and the band and minimum checks wait for the program. */
+  limits?: MarketLimits;
 }) {
   const mainnet = isMainnetBuild();
   const testCopy = mainnet ? null : TEST_ONLY_COPY;
@@ -288,8 +293,18 @@ export function OrderEntry({
     const base = Number(mark.price);
     if (!Number.isFinite(base)) return "";
     if (orderType === "market") {
-      const slippage = side === "buy" ? 1.01 : 0.99;
-      return (base * slippage).toFixed(priceDecimals);
+      try {
+        return marketOrderBound({
+          markPrice: mark.price,
+          side,
+          tick: market.tickSize,
+          priceDecimals,
+          bandBps: limits?.bandBps,
+          reduceOnly: isPerp && reduceOnly,
+        });
+      } catch {
+        return "";
+      }
     }
     // Limit: default to a plausible resting price on the passive side of
     // the mark (a buy below it, a sell above it), tick-aligned, so the
@@ -300,12 +315,19 @@ export function OrderEntry({
     const tick = Number(market.tickSize);
     const aligned = tick > 0 ? Math.round(passive / tick) * tick : passive;
     return aligned.toFixed(priceDecimals);
-  }, [orderType, mark, side, market, priceDecimals]);
+  }, [orderType, mark, side, market, priceDecimals, limits, isPerp, reduceOnly]);
   const priceText = priceOverride ?? defaultBoundPrice;
   const tickSize = market ? Number(market.tickSize) : NaN;
   const markNumber = mark ? Number(mark.price) : NaN;
-  const slider = tickSlider(markNumber, tickSize);
-  const limitLine = limitLineFor({ orderType, priceText, side });
+  const crossingBand = limits ? { side, bandBps: limits.bandBps } : undefined;
+  const slider = tickSlider(markNumber, tickSize, crossingBand);
+  const limitLine = limitLineFor({
+    orderType,
+    priceText,
+    side,
+    mark: markNumber,
+    bandBps: limits?.bandBps,
+  });
   const linePrice = limitLine?.price ?? null;
   const lineSide = limitLine?.side ?? null;
   useEffect(() => {
@@ -380,6 +402,8 @@ export function OrderEntry({
       maxLeverage: market.maxLeverage,
       boundPrice: priceText || referencePrice,
       refPrice: referencePrice,
+      takerFeeBps: limits?.takerFeeBps,
+      imBps: limits?.imBps,
     });
   }, [
     market,
@@ -389,6 +413,7 @@ export function OrderEntry({
     availableQuote,
     effectiveLeverage,
     priceText,
+    limits,
   ]);
 
   const sentAsIoc = limitSentAsIoc(orderType, makersListed, isPerp && reduceOnly);
@@ -413,11 +438,13 @@ export function OrderEntry({
         price: referencePrice,
         leverage: isPerp ? market.maxLeverage : 1,
         maxLeverage: market.maxLeverage,
+        takerFeeBps: limits?.takerFeeBps,
+        maintenanceBps: limits?.mmBps,
       });
     } catch {
       return null;
     }
-  }, [market, referencePrice, quantityText, side, isPerp]);
+  }, [market, referencePrice, quantityText, side, isPerp, limits]);
 
   const estimateDisplay = market && estimate ? displayOrderCost(estimate, priceDecimals) : null;
 
@@ -449,6 +476,8 @@ export function OrderEntry({
         availableBase,
         exposure,
         reduceOnly: isPerp && reduceOnly,
+        imBps: limits?.imBps,
+        takerFeeBps: limits?.takerFeeBps,
       });
     } catch {
       return null;
@@ -464,6 +493,7 @@ export function OrderEntry({
     exposure,
     isPerp,
     reduceOnly,
+    limits,
   ]);
 
   const staleBlock = staleMarkBlocks({
@@ -480,7 +510,11 @@ export function OrderEntry({
     reduceOnlyGrows: funds?.reduceOnlyGrows,
   });
   const validation =
-    market && draft ? validateOrder(draft, market, mark, now, staleMarkAllowed) : null;
+    market && draft ? validateOrder(draft, market, mark, now, staleMarkAllowed, limits) : null;
+  // The names a field message uses: the balance names this ticket shows, not the market list's.
+  const fieldMarket = market
+    ? { ...market, base: baseName, quote: quoteUnit || market.quote }
+    : undefined;
 
   const leftAvailable =
     funds && !funds.shortfall && !isSpotSell
@@ -527,6 +561,8 @@ export function OrderEntry({
           entryPrice: referencePrice,
           collateral: availableQuote,
           priceDecimals,
+          takerFeeBps: limits?.takerFeeBps,
+          maintenanceBps: limits?.mmBps,
         })
       : null;
 
@@ -546,6 +582,10 @@ export function OrderEntry({
     amountValue > (isSpotSell ? fixedPointOrZero(maxAmountText) : fixedPointOrZero(availableQuote));
   const amountTooSmall =
     quantityOverride === null && amountValue !== null && derivedQuantity === "";
+  const minimumSizeText =
+    limits && fixedPointOrZero(limits.minSize) > fixedPointOrZero(market?.lotSize ?? "0")
+      ? limits.minSize.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")
+      : (market?.lotSize ?? "");
 
   const openSize = Number(position?.size ?? 0);
   const closesOpenPosition =
@@ -606,9 +646,11 @@ export function OrderEntry({
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
     if (availableBlocks) return "Available collateral is unavailable until the price updates.";
     if (validation?.errors.quantity) {
-      return describeFieldError(validation.errors.quantity, { ...market, base: baseName });
+      return describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits);
     }
-    if (validation?.errors.price) return describeFieldError(validation.errors.price, market);
+    if (validation?.errors.price) {
+      return describeFieldError(validation.errors.price, fieldMarket ?? market, limits);
+    }
     if (staleBlock) return "Market data is too old. Wait for a fresh mark.";
     if (closingOnlyBlock) return CLOSING_ONLY_NOTICE;
     if (amountOverAvailable) return "Your amount is more than your available balance.";
@@ -639,7 +681,7 @@ export function OrderEntry({
     if (quantityOverride !== null) {
       if (validation.errors.quantity) {
         return {
-          text: describeFieldError(validation.errors.quantity, { ...market, base: baseName }),
+          text: describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits),
           tone: "error",
         };
       }
@@ -656,12 +698,20 @@ export function OrderEntry({
       };
     } else if (amountTooSmall) {
       return {
-        text: `Too small to trade. The minimum is ${market.lotSize} ${baseName}`,
+        text: `Too small to trade. The minimum is ${minimumSizeText} ${baseName}`,
+        tone: "error",
+      };
+    } else if (validation.errors.quantity) {
+      return {
+        text: describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits),
         tone: "error",
       };
     }
     if (validation.errors.price) {
-      return { text: describeFieldError(validation.errors.price, market), tone: "error" };
+      return {
+        text: describeFieldError(validation.errors.price, fieldMarket ?? market, limits),
+        tone: "error",
+      };
     }
     if (shortfall) {
       return {
@@ -763,7 +813,7 @@ export function OrderEntry({
   async function runSubmit(order: FrozenOrder) {
     if (!market || submittingRef.current) return;
     // The full check again, on the frozen order and the mark as it is now.
-    const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed);
+    const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed, limits);
     const marginExpired = unknownCollateralBlocks({
       availableUnknown: isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now())),
       isPerp,
@@ -878,7 +928,7 @@ export function OrderEntry({
     }
     const open = Number(position?.size ?? 0);
     const closes = (side === "buy" && open < 0) || (side === "sell" && open > 0);
-    setQuantityOverride(closes ? String(Math.abs(open)) : "");
+    setQuantityOverride(closes && position ? withoutSign(position.size) : "");
   }
 
   if (!market) {

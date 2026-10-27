@@ -1,11 +1,12 @@
 import type { Connection } from "@solana/web3.js";
 import type { UnknownHold } from "../rollup/accountMemory";
-import type { DeploymentOverrides } from "../rollup/deployment";
+import type { DeploymentOverrides, PublicDeployment } from "../rollup/deployment";
 import type {
   AccountStatus,
   CancelResult,
   FundOutcome,
   KeyWithdrawal,
+  MarketLimits,
   MarketSettingsLookup,
   NewOrderInput,
   OpenAccountOutcome,
@@ -89,12 +90,25 @@ export class LazyRollupTradingClient implements TradingClient {
     return client.withdrawByKey(wallet, atoms, onSigned);
   }
 
-  async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
-    return (await (await this.load()).accountStatus?.(wallet)) ?? "unknown";
+  async accountStatus(
+    wallet: WalletIdentity,
+    options?: { fresh?: boolean },
+  ): Promise<AccountStatus> {
+    return (await (await this.load()).accountStatus?.(wallet, options)) ?? "unknown";
   }
 
   async makersListedMarkets(wallet: WalletIdentity): Promise<ReadonlySet<string>> {
     return (await (await this.load()).makersListedMarkets?.(wallet)) ?? new Set();
+  }
+
+  async marketLimits(wallet: WalletIdentity): Promise<ReadonlyMap<string, MarketLimits>> {
+    return (await (await this.load()).marketLimits?.(wallet)) ?? new Map();
+  }
+
+  async sessionDeployment(wallet: WalletIdentity): Promise<PublicDeployment> {
+    const client = await this.load();
+    if (!client.sessionDeployment) throw new Error("This client has no session deployment");
+    return client.sessionDeployment(wallet);
   }
 
   subscribeOrderKeys(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void {

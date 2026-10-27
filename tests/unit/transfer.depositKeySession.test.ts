@@ -59,10 +59,15 @@ describe("the rollup address the deposit key signs in at", () => {
     ];
     expect(url).toBe("https://session.example/rollup");
     expect(reader.equals(key.publicKey)).toBe(true);
-    const challenge = new TextEncoder().encode("challenge");
+    const challenge = new TextEncoder().encode(
+      `Login to Query Filtering Service\nTimestamp: 1700000000\nUser: ${key.publicKey.toBase58()}`,
+    );
     expect(
       nacl.sign.detached.verify(challenge, await signMessage(challenge), key.publicKey.toBytes()),
     ).toBe(true);
+    await expect(signMessage(new TextEncoder().encode("challenge"))).rejects.toThrow(
+      /not a sign-in/,
+    );
     expect(connect).toHaveBeenCalledWith("https://session.example/rollup", "tok");
   });
 });

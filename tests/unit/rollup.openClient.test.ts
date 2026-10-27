@@ -228,7 +228,7 @@ describe("prepareOpen", () => {
       },
       fetchFn as unknown as typeof fetch,
     );
-    expect(outcome.kind).toBe("notInvited");
+    expect(outcome.kind).toBe("inviteCodeWrong");
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
@@ -322,13 +322,22 @@ describe("refusal mapping", () => {
     expect(outcome.kind).toBe("notInvited");
   });
 
-  it("maps a code that does not match to notInvited", async () => {
+  it("maps a code that does not match to inviteCodeWrong", async () => {
     const outcome = await refusedWith(
       403,
       "the invite code does not match this address. Check it and try again",
       "prepare",
     );
-    expect(outcome.kind).toBe("notInvited");
+    expect(outcome.kind).toBe("inviteCodeWrong");
+  });
+
+  it("maps an address invited with a code, when none was sent, to inviteCodeNeeded", async () => {
+    const outcome = await refusedWith(
+      403,
+      "this address is invited with a code. Send the invite code you were given",
+      "prepare",
+    );
+    expect(outcome.kind).toBe("inviteCodeNeeded");
   });
 
   it("maps a used invite to inviteUsed", async () => {

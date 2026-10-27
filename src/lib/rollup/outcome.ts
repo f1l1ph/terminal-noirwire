@@ -304,9 +304,12 @@ function counterparties(side: Side | undefined): string {
  * cancelled. The book is private, so the cause is named only as likely: the
  * house market maker briefly has no quotes while it refreshes or is paused.
  */
-function noMatchReason(filledAny: boolean, side: Side | undefined): string {
-  const others = counterparties(side);
+function noMatchReason(filledAny: boolean, market: RefusalContext): string {
+  const others = counterparties(market.side);
   if (filledAny) return `Part filled; the rest found no ${others} and was cancelled.`;
+  if (market.reduceOnly) {
+    return "The price moved away from your limit before the order reached the exchange, so nothing filled and nothing was charged. Close again at the current price.";
+  }
   return `No ${others} at your price right now, so nothing filled and nothing was charged. The market maker may be refreshing its quotes. Try again in a few seconds.`;
 }
 
@@ -329,7 +332,7 @@ function describeStatus(
     case RESULT_STATUS_CODE.remainderCancelled:
       return {
         status: filledAny ? "partiallyFilled" : "cancelled",
-        reason: noMatchReason(filledAny, market.side),
+        reason: noMatchReason(filledAny, market),
       };
     case RESULT_STATUS_CODE.remainderCancelledStepLimit:
       return {

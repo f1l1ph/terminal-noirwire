@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hexToBytes, ownerDataKeys } from "../wallet/index";
 import { isMainnetBuild } from "../network";
 import { userMessageLine } from "../userMessage";
+import type { PublicDeployment } from "../rollup/deployment";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
 import { createLatestReads } from "./latestRead";
@@ -18,6 +19,7 @@ import type {
   AccountStatus,
   CancelResult,
   FundOutcome,
+  MarketLimits,
   MarketSettingsLookup,
   NewOrderInput,
   OpenAccountOutcome,
@@ -52,15 +54,20 @@ interface OwnerFlow {
   outcome: OpenAccountOutcome | null;
   keys: OrderKeyState | null;
   makersListed: ReadonlySet<string>;
+  limits: ReadonlyMap<string, MarketLimits>;
+  deployment: PublicDeployment | null;
 }
 
 const NO_MARKETS: ReadonlySet<string> = new Set();
+const NO_LIMITS: ReadonlyMap<string, MarketLimits> = new Map();
 const NO_FLOW: OwnerFlow = {
   status: "unknown",
   opening: false,
   outcome: null,
   keys: null,
   makersListed: NO_MARKETS,
+  limits: NO_LIMITS,
+  deployment: null,
 };
 
 interface AccountRead {
@@ -284,6 +291,18 @@ export function useTrading(
       },
       () => {},
     );
+    client.marketLimits?.(wallet).then(
+      (limits) => {
+        if (active) patchFlow(wallet.address, { limits });
+      },
+      () => {},
+    );
+    client.sessionDeployment?.(wallet).then(
+      (deployment) => {
+        if (active) patchFlow(wallet.address, { deployment });
+      },
+      () => {},
+    );
     return () => {
       active = false;
       stopKeys?.();
@@ -291,23 +310,40 @@ export function useTrading(
   }, [client, wallet, patchFlow, statusReads]);
 
   /** Runs the account check again, and with it the sign-in and key setup a failed attempt left undone. */
-  const recheckAccount = useCallback(async (): Promise<void> => {
-    if (!wallet || !client.accountStatus) return;
-    const owner = wallet.address;
-    const ticket = statusReads.begin(owner);
-    const status = await client.accountStatus(wallet).catch((): AccountStatus => "unknown");
-    if (!statusReads.isCurrent(owner, ticket, currentOwnerRef.current)) return;
-    patchFlow(owner, { status });
-    // A failed check says the session could not be built; reading the markets
-    // would build another and could prompt the wallet again unasked.
-    if (status === "unknown") return;
-    client.makersListedMarkets?.(wallet).then(
-      (makersListed) => {
-        if (currentOwnerRef.current === owner) patchFlow(owner, { makersListed });
-      },
-      () => {},
-    );
-  }, [client, wallet, patchFlow, statusReads]);
+  const recheckAccount = useCallback(
+    async (options?: { fresh?: boolean }): Promise<void> => {
+      if (!wallet || !client.accountStatus) return;
+      const owner = wallet.address;
+      const ticket = statusReads.begin(owner);
+      const status = await client
+        .accountStatus(wallet, options)
+        .catch((): AccountStatus => "unknown");
+      if (!statusReads.isCurrent(owner, ticket, currentOwnerRef.current)) return;
+      patchFlow(owner, { status });
+      // A failed check says the session could not be built; reading the markets
+      // would build another and could prompt the wallet again unasked.
+      if (status === "unknown" || status === "declined") return;
+      client.makersListedMarkets?.(wallet).then(
+        (makersListed) => {
+          if (currentOwnerRef.current === owner) patchFlow(owner, { makersListed });
+        },
+        () => {},
+      );
+      client.marketLimits?.(wallet).then(
+        (limits) => {
+          if (currentOwnerRef.current === owner) patchFlow(owner, { limits });
+        },
+        () => {},
+      );
+      client.sessionDeployment?.(wallet).then(
+        (deployment) => {
+          if (currentOwnerRef.current === owner) patchFlow(owner, { deployment });
+        },
+        () => {},
+      );
+    },
+    [client, wallet, patchFlow, statusReads],
+  );
 
   // The page itself unloading (close, refresh, navigate away) does not
   // always run the effect cleanup above in time; this ends the same
@@ -598,6 +634,10 @@ export function useTrading(
     orderKeys: flow.keys,
     /** Symbols of the markets where only listed makers may rest orders; a Limit there is sent as immediate-or-cancel. */
     makersListed: flow.makersListed,
+    /** Each market's trading limits as its account states them, by symbol; empty until the session has read them. */
+    marketLimits: flow.limits,
+    /** The deployment this wallet's session was built against; null until it is. */
+    sessionDeployment: flow.deployment,
     fund,
     placeOrder,
     releaseUnknownOutcome,
