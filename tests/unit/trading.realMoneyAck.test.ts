@@ -3,6 +3,7 @@ import {
   acknowledgementKey,
   hasAcknowledged,
   needsAcknowledgement,
+  REAL_MONEY_STATEMENTS,
   recordAcknowledgement,
 } from "@/lib/trading/realMoneyAck";
 import type { KeyValueStore } from "@/lib/wallet";
@@ -36,6 +37,18 @@ describe("real-money acknowledgement", () => {
     expect(hasAcknowledged(storage, "owner-a")).toBe(true);
     expect(hasAcknowledged(storage, "owner-b")).toBe(false);
     expect(acknowledgementKey("owner-a")).not.toBe(acknowledgementKey("owner-b"));
+  });
+
+  it("asks again after the statements changed, because the old acceptance sits under the old key", () => {
+    const storage = memoryStore();
+    storage.setItem("noirwire-terminal-real-money-ack:owner-a", "1");
+    expect(hasAcknowledged(storage, "owner-a")).toBe(false);
+    expect(acknowledgementKey("owner-a")).toContain(":v2:");
+  });
+
+  it("states the liquidation and funding risk", () => {
+    expect(REAL_MONEY_STATEMENTS.some((line) => line.includes("liquidated"))).toBe(true);
+    expect(REAL_MONEY_STATEMENTS.some((line) => line.includes("funding"))).toBe(true);
   });
 
   it("asks the next owner after another one accepted, even when storage keeps nothing", () => {

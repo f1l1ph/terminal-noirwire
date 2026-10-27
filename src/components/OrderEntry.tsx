@@ -29,6 +29,7 @@ import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import {
   orderFunds,
+  keptSettingsBlock,
   staleMarkBlocks,
   staleReduceOnlyNotice,
   unknownCollateralBlocks,
@@ -77,6 +78,9 @@ import {
   input,
   rangeBrand,
 } from "@/components/ui/styles";
+
+export const CLOSING_ONLY_NOTICE =
+  "Price service unreachable. Only orders that close a position can be placed until it is back.";
 
 const PERCENT_SHORTCUTS = [25, 50, 100];
 const GOOD_FOR_OPTIONS = [
@@ -142,6 +146,7 @@ export function OrderEntry({
   onTransferToSpot,
   supportsGoodFor,
   placeOrderPending,
+  closingOnly = false,
   prefillRequest,
   spotAssets,
   compact,
@@ -202,6 +207,8 @@ export function OrderEntry({
    * order-key slot.
    */
   placeOrderPending: boolean;
+  /** The market settings on screen are the ones this browser kept, not live ones: only an order that cannot grow a position may be placed, so no margin is ever estimated from settings that may have changed. */
+  closingOnly?: boolean;
   /** A dock row's Close/Reduce request for this market; applied once per `requestId`, ignored for any other market (switching markets remounts this component via its own `key`, so a stale request for a market just left behind can never apply here). */
   prefillRequest?: PrefillRequest | null;
   /** The balance names of this spot market's two tokens, as the venue's own deployment description gives them. Absent for a perp and in dev mode, where the market's own base and quote names are the balance names. */
@@ -466,6 +473,12 @@ export function OrderEntry({
     reduceOnlyGrows: funds?.reduceOnlyGrows,
   });
   const staleMarkAllowed = markStale && !staleBlock;
+  const closingOnlyBlock = keptSettingsBlock({
+    closingOnly,
+    isPerp,
+    reduceOnly,
+    reduceOnlyGrows: funds?.reduceOnlyGrows,
+  });
   const validation =
     market && draft ? validateOrder(draft, market, mark, now, staleMarkAllowed) : null;
 
@@ -581,6 +594,7 @@ export function OrderEntry({
     !amountOverAvailable &&
     !unaffordable &&
     !staleBlock &&
+    !closingOnlyBlock &&
     !submitting &&
     !placeOrderPending &&
     !unknownHold;
@@ -596,6 +610,7 @@ export function OrderEntry({
     }
     if (validation?.errors.price) return describeFieldError(validation.errors.price, market);
     if (staleBlock) return "Market data is too old. Wait for a fresh mark.";
+    if (closingOnlyBlock) return CLOSING_ONLY_NOTICE;
     if (amountOverAvailable) return "Your amount is more than your available balance.";
     if (unaffordable) return "Your available balance no longer covers this order.";
     if (placeOrderPending) return "An order is still being checked with the venue.";
@@ -617,6 +632,7 @@ export function OrderEntry({
         tone: "warning",
       };
     }
+    if (closingOnlyBlock) return { text: CLOSING_ONLY_NOTICE, tone: "warning" };
     if (orderType === "market" && !priceText) {
       return { text: "Waiting for the current price", tone: "neutral" };
     }

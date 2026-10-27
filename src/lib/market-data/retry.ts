@@ -7,8 +7,8 @@ const BACKOFF_FACTOR = 2;
 export interface RetryOptions {
   /** Checked before every try and after every wait: a caller that went away stops the loop. */
   isCancelled: () => boolean;
-  /** Called after each failed try. */
-  onFailure?: () => void;
+  /** Called after each failed try, with what that try threw. */
+  onFailure?: (error: unknown) => void;
   /** Tries before giving up; without it the loop runs until it succeeds or is cancelled. */
   maxAttempts?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -29,9 +29,9 @@ export async function loadWithRetry<T>(
     if (isCancelled()) return undefined;
     try {
       return await load();
-    } catch {
+    } catch (error) {
       if (isCancelled()) return undefined;
-      onFailure?.();
+      onFailure?.(error);
     }
     if (attempt < maxAttempts) {
       await sleep(backoffDelayMs(attempt, INITIAL_DELAY_MS, MAX_DELAY_MS, BACKOFF_FACTOR));

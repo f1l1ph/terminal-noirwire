@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { fetchCandles, fetchMarkets, fetchStats, fetchTape } from "./client";
+import { browserLocalStorage } from "../wallet/index";
+import { loadMarketList } from "./marketList";
 import { loadWithRetry } from "./retry";
 import { MarketSocket, type WebSocketLike } from "./socket";
 import { MarketDataStore, type MarketDataState } from "./store";
@@ -38,11 +40,12 @@ export function useMarketDataConnection(
   useEffect(() => {
     let cancelled = false;
     const isCancelled = () => cancelled;
-    void loadWithRetry(() => fetchMarkets(simUrl), {
+    void loadMarketList({
+      store,
+      simUrl,
+      storage: browserLocalStorage(),
+      fetchMarkets,
       isCancelled,
-      onFailure: () => store.setMarketsUnreachable(true),
-    }).then((markets) => {
-      if (markets && !cancelled) store.setMarkets(markets);
     });
     return () => {
       cancelled = true;

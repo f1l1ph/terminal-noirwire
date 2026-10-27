@@ -217,6 +217,21 @@ export function staleMarkBlocks(params: {
 }
 
 /**
+ * Whether kept (not live) market settings stop the order. Its margin would be
+ * estimated from settings that may have changed since they were kept, so only
+ * an order that cannot grow a position goes ahead, by the same rule as a
+ * stale mark.
+ */
+export function keptSettingsBlock(params: {
+  closingOnly: boolean;
+  isPerp: boolean;
+  reduceOnly: boolean;
+  reduceOnlyGrows?: boolean;
+}): boolean {
+  return staleMarkBlocks({ ...params, markStale: params.closingOnly });
+}
+
+/**
  * The warning shown while a reduce-only order goes ahead on an old mark. The
  * venue still checks the price against its own current one, so the order can
  * be refused if the market has moved.

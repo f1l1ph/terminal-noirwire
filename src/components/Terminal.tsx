@@ -769,6 +769,7 @@ export function Terminal() {
       }
       supportsGoodFor={trading.client.mode === "rollup"}
       placeOrderPending={!!relevantSession?.pendingPlace}
+      closingOnly={allData.marketsFromKept}
       prefillRequest={prefillRequest}
       spotAssets={trading.state.spotAssets?.[market.id]}
       compact={!isDesktop}
@@ -906,6 +907,7 @@ export function Terminal() {
         <TerminalNotices
           owner={ownerIdentity?.address ?? null}
           pricesUnreachable={allData.marketsUnreachable}
+          usingKeptSettings={allData.marketsFromKept}
           tradingElsewhere={tabGuard.elsewhere}
           onUseThisTab={tabGuard.takeOver}
         />

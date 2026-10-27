@@ -28,11 +28,14 @@ export interface MarketDataState {
   connectionState: ConnectionState;
   /** True while the market list has failed to load and is being asked for again; cleared when it arrives. */
   marketsUnreachable: boolean;
+  /** True while the market list on screen is the one this browser kept, not a live answer. */
+  marketsFromKept: boolean;
 }
 
 function emptyState(): MarketDataState {
   return {
     marketsUnreachable: false,
+    marketsFromKept: false,
     markets: [],
     marksByMarket: {},
     tapeByMarket: {},
@@ -71,7 +74,18 @@ export class MarketDataStore {
         marksByMarket[market.id] = { price: market.markPrice, time: market.markPriceUpdatedAtMs };
       }
     }
-    this.setState({ markets, marksByMarket, marketsUnreachable: false });
+    this.setState({ markets, marksByMarket, marketsUnreachable: false, marketsFromKept: false });
+  }
+
+  /** The market settings this browser kept from an earlier visit, used while the live list cannot be reached; the live list replaces them through setMarkets. */
+  setMarketsFromKept(markets: MarketInfo[]): void {
+    this.setState({ markets, marketsUnreachable: true, marketsFromKept: true });
+  }
+
+  /** Takes the kept market settings off screen, for when the service answers with a refusal or something malformed; a live list is left alone. */
+  dropKeptMarkets(): void {
+    if (!this.state.marketsFromKept) return;
+    this.setState({ markets: [], marketsUnreachable: true, marketsFromKept: false });
   }
 
   setMarketsUnreachable(marketsUnreachable: boolean): void {

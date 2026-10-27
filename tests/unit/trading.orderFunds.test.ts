@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { orderFunds, staleMarkBlocks, unknownCollateralBlocks } from "@/lib/trading/sizing";
+import {
+  keptSettingsBlock,
+  orderFunds,
+  staleMarkBlocks,
+  unknownCollateralBlocks,
+} from "@/lib/trading/sizing";
 import { toFixedPoint } from "@/lib/trading/decimal";
 
 const SPOT = { mode: "spot", price: "100", maxLeverage: 1 } as const;
@@ -230,6 +235,16 @@ describe("orderFunds against an open position", () => {
     expect(staleMarkBlocks({ ...stale, reduceOnly: false })).toBe(true);
     expect(staleMarkBlocks({ ...stale, isPerp: false })).toBe(true);
     expect(staleMarkBlocks({ ...stale, markStale: false, reduceOnly: false })).toBe(false);
+  });
+
+  it("lets only a perp reduce-only order that cannot grow through on kept market settings", () => {
+    const kept = { closingOnly: true, isPerp: true, reduceOnly: true, reduceOnlyGrows: false };
+    expect(keptSettingsBlock(kept)).toBe(false);
+    expect(keptSettingsBlock({ ...kept, reduceOnlyGrows: true })).toBe(true);
+    expect(keptSettingsBlock({ ...kept, reduceOnlyGrows: undefined })).toBe(true);
+    expect(keptSettingsBlock({ ...kept, reduceOnly: false })).toBe(true);
+    expect(keptSettingsBlock({ ...kept, isPerp: false })).toBe(true);
+    expect(keptSettingsBlock({ ...kept, closingOnly: false, reduceOnly: false })).toBe(false);
   });
 
   it("blocks every other order while the collateral figure is unpriced", () => {
