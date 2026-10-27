@@ -16,8 +16,10 @@ interface StoredToken {
 }
 
 /**
- * The tokens signed for in this page, per store: storage that cannot keep a
- * write must not make a rebuilt session ask the wallet to sign in again.
+ * The tokens signed for in this page that their store refused to keep, per
+ * store: such storage must not make a rebuilt session ask the wallet to sign
+ * in again. A token the store did keep is never held here, so another tab's
+ * wipe of it holds.
  */
 const inMemory = new WeakMap<KeyValueStore, Map<string, StoredToken>>();
 
@@ -74,11 +76,11 @@ export function saveSignInToken(
   expiresAtMs: number,
 ): void {
   rememberToken(token);
-  memoryTokens(storage).set(owner, { token, expiresAtMs });
+  memoryTokens(storage).delete(owner);
   try {
     storage.setItem(ownerDataKeys.signInToken(owner), JSON.stringify({ token, expiresAtMs }));
   } catch {
-    // Best effort: the token still serves this page.
+    memoryTokens(storage).set(owner, { token, expiresAtMs });
   }
 }
 

@@ -76,6 +76,21 @@ describe("the rollup sign-in token", () => {
     expect(renewed.cached).toBe(false);
   });
 
+  it("stays wiped when another tab removes a token this page stored", async () => {
+    const shared = new Map<string, string>();
+    const storage = memoryStore(shared);
+    const clock = { value: 0 };
+    const first = page(storage, clock);
+    await signedInReader(first.deps);
+
+    shared.delete(ownerDataKeys.signInToken(first.keypair.publicKey.toBase58()));
+    const rebuilt = page(storage, clock, first.keypair);
+    const again = await signedInReader(rebuilt.deps);
+
+    expect(rebuilt.signMessage).toHaveBeenCalledTimes(1);
+    expect(again.cached).toBe(false);
+  });
+
   it("is kept for weeks, not a day: no prompt a day later", async () => {
     const storage = memoryStore();
     const clock = { value: 0 };
