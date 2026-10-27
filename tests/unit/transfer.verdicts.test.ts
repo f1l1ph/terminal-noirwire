@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MISSING_RECHECK_MS,
   exitOperation,
   seatVerdict,
   solanaVerdict,
@@ -18,6 +19,7 @@ const aSend = (extra: Partial<SolanaSend> = {}): SolanaSend => ({
 const nodeAt = (value: { err: unknown; confirmationStatus: string } | null, height = 500) => ({
   getSignatureStatus: async () => ({ value }),
   getBlockHeight: async () => height,
+  getSlot: async () => height,
 });
 
 const processed = (height = 500) => nodeAt({ err: null, confirmationStatus: "processed" }, height);
@@ -60,14 +62,22 @@ describe("solanaVerdict", () => {
     expect(expired.everProcessed).toBe(true);
   });
 
-  /** A node whose confirmed height is past the limit and whose finalized height is `finalized`. */
+  const FINALIZED_SLOT = 1_500;
+  /** A clock that only records how long it was asked to wait. */
+  const clock = () => {
+    const slept: number[] = [];
+    return { slept, sleep: async (ms: number) => void slept.push(ms) };
+  };
+  /** A node whose confirmed height is past the limit, whose finalized height is `finalized` and finalized slot `FINALIZED_SLOT`, and whose status replies are current to `contextSlot`. */
   const lagging = (
     value: { err: unknown; confirmationStatus: string } | null,
     finalized: number,
+    contextSlot = 2_000,
   ) => ({
-    getSignatureStatus: async () => ({ value }),
+    getSignatureStatus: async () => ({ context: { slot: contextSlot }, value }),
     getBlockHeight: async (commitment: "confirmed" | "finalized") =>
       commitment === "finalized" ? finalized : 1_001,
+    getSlot: async () => FINALIZED_SLOT,
   });
 
   it("waits on a send seen as processed and now missing until the finalized chain is past its blockhash", async () => {
@@ -84,7 +94,7 @@ describe("solanaVerdict", () => {
 
   it("decides a processed-then-dropped send from a status read once the finalized chain is past its blockhash", async () => {
     const seen = () => aSend({ everProcessed: true });
-    expect(await solanaVerdict(lagging(null, 1_001), seen())).toBe("safe");
+    expect(await solanaVerdict(lagging(null, 1_001), seen(), undefined, clock())).toBe("safe");
     expect(
       await solanaVerdict(lagging({ err: null, confirmationStatus: "confirmed" }, 1_001), seen()),
     ).toBe("landed");
@@ -105,6 +115,58 @@ describe("solanaVerdict", () => {
     ).toBe("wait");
   });
 
+  it("does not take a missing status as proof when the reply lags behind the finalized slot, however far the finalized height is past expiry", async () => {
+    const seen = () => aSend({ everProcessed: true });
+    const waited = clock();
+    expect(
+      await solanaVerdict(lagging(null, 5_000, FINALIZED_SLOT - 1), seen(), undefined, waited),
+    ).toBe("wait");
+    expect(waited.slept).toEqual([]);
+    expect(
+      await solanaVerdict(lagging(null, 5_000, FINALIZED_SLOT), seen(), undefined, clock()),
+    ).toBe("safe");
+    const withoutContext = {
+      ...lagging(null, 5_000),
+      getSignatureStatus: async () => ({ value: null }),
+    };
+    expect(await solanaVerdict(withoutContext, seen(), undefined, clock())).toBe("wait");
+  });
+
+  it("needs the missing status twice, apart, and lets a send that shows up in between land", async () => {
+    const seen = () => aSend({ everProcessed: true });
+    const waited = clock();
+    expect(await solanaVerdict(lagging(null, 1_001), seen(), undefined, waited)).toBe("safe");
+    expect(waited.slept).toEqual([MISSING_RECHECK_MS]);
+    expect(MISSING_RECHECK_MS).toBeGreaterThanOrEqual(3_000);
+
+    let reads = 0;
+    const appearing = {
+      ...lagging(null, 1_001),
+      getSignatureStatus: async () => {
+        reads += 1;
+        return {
+          context: { slot: 2_000 },
+          value: reads <= 2 ? null : { err: null, confirmationStatus: "finalized" },
+        };
+      },
+    };
+    expect(await solanaVerdict(appearing, seen(), undefined, clock())).toBe("landed");
+  });
+
+  it("stays unresolved with no clock to wait on, and when the second look is stale", async () => {
+    const seen = () => aSend({ everProcessed: true });
+    expect(await solanaVerdict(lagging(null, 1_001), seen())).toBe("wait");
+    let reads = 0;
+    const slipping = {
+      ...lagging(null, 1_001),
+      getSignatureStatus: async () => {
+        reads += 1;
+        return { context: { slot: reads <= 2 ? 2_000 : 10 }, value: null };
+      },
+    };
+    expect(await solanaVerdict(slipping, seen(), undefined, clock())).toBe("wait");
+  });
+
   it("never judges a send unable to land when it lands between the height read and the status read", async () => {
     const signature = "sig";
     let landed = false;
@@ -113,6 +175,7 @@ describe("solanaVerdict", () => {
         landed = true;
         return 1_001;
       },
+      getSlot: async () => 1_500,
       getSignatureStatus: async () => ({
         value: landed ? { err: null, confirmationStatus: "confirmed" } : null,
       }),
@@ -127,6 +190,7 @@ describe("solanaVerdict", () => {
         reads.push("height");
         return 999;
       },
+      getSlot: async () => 1_500,
       getSignatureStatus: async () => {
         reads.push("status");
         return { value: null };
@@ -152,6 +216,7 @@ describe("solanaVerdict", () => {
         throw new Error("offline");
       },
       getBlockHeight: async () => 2_000,
+      getSlot: async () => 2_000,
     };
     await expect(solanaVerdict(broken, aSend())).rejects.toThrow("offline");
   });

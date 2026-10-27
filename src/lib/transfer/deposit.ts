@@ -54,6 +54,8 @@ export type DepositOutcome =
       status: "stranded";
       id: string;
       message: string;
+      /** Whether the record stays on the list because the move into the rollup is not final yet; then "Try the deposit again" is the button, else "Put it in my account". */
+      recordKept: boolean;
     };
 
 export interface DepositInput {
@@ -270,19 +272,24 @@ async function sendAndSettle(
 }
 
 /**
- * Closes out a deposit the program refused, with the record finished. The
- * refusal is final (the seat send failed at finalized), the tokens wait in the
- * deposit key's rollup balance, and "Put it in my account" credits whatever the
- * key holds, so no record is kept that would block other transfers, such as a
- * withdrawal of collateral already in the account.
+ * Closes out a deposit the program refused. The refusal is final (the seat
+ * send failed at finalized) and the tokens wait in the deposit key's rollup
+ * balance, which "Put it in my account" credits, so the record is marked
+ * stranded and finished as soon as every send of it is final, and no later than
+ * the next look. While the move into the rollup is only confirmed its record
+ * stays, with its signature and expiry, so a new deposit cannot start before
+ * that move has settled; "Try the deposit again" credits the key's balance from
+ * that state.
  */
 async function strand(env: TransferEnv, id: string, error: string): Promise<DepositOutcome> {
-  await env.journal.finish(env.owner.toBase58(), id);
-  return strandedBy(id, error);
+  const owner = env.owner.toBase58();
+  await env.journal.clearSeatSend(owner, id);
+  await env.journal.markStranded(owner, id);
+  return strandedBy(id, error, !(await finishWhenFinalized(env, id)));
 }
 
 /** The move into the rollup landed and the deposit was refused: nothing was sent again, and the tokens wait in the deposit key's rollup balance. */
-function strandedBy(id: string, error: string): DepositOutcome {
+function strandedBy(id: string, error: string, recordKept: boolean): DepositOutcome {
   const code = errorCode(error);
   const why =
     code === CUSTODY_CAP_REACHED
@@ -293,6 +300,7 @@ function strandedBy(id: string, error: string): DepositOutcome {
   return {
     status: "stranded",
     id,
+    recordKept,
     message: `${why} Your USDC left your wallet and is safe: it is held by this browser's deposit key. You do not need to send more.`,
   };
 }

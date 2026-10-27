@@ -88,9 +88,10 @@ describe("journal", () => {
     await journal.markSeen("me", "op1", "sigA", "processed");
     const [record] = await journal.unfinished("me");
     const node = (finalized: number) => ({
-      getSignatureStatus: async () => ({ value: null }),
+      getSignatureStatus: async () => ({ context: { slot: 2_000 }, value: null }),
       getBlockHeight: async (commitment: "confirmed" | "finalized") =>
         commitment === "finalized" ? finalized : 1_001,
+      getSlot: async () => 1_500,
     });
     const judged = (finalized: number) =>
       judgeSend({
@@ -99,6 +100,7 @@ describe("journal", () => {
         id: "op1",
         connection: node(finalized),
         send: record.sends[0],
+        clock: { sleep: async () => {} },
       });
     expect(await judged(1_000)).toBe("wait");
     expect(await judged(1_001)).toBe("safe");
@@ -114,6 +116,7 @@ describe("journal", () => {
         value: processed ? { err: null, confirmationStatus: "processed" } : null,
       }),
       getBlockHeight: async () => height,
+      getSlot: async () => height,
     });
     const args = { journal, owner: "me", id: "op1", send: record.sends[0] };
     expect(await judgeSend({ ...args, connection: node(500, true) })).toBe("wait");
@@ -141,6 +144,7 @@ describe("journal", () => {
             value: { err: null, confirmationStatus: "processed" },
           }),
           getBlockHeight: async () => 500,
+          getSlot: async () => 500,
         },
       }),
     ).rejects.toThrow("quota exceeded");

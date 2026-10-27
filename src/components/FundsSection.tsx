@@ -11,6 +11,7 @@ import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { depositKeyLeftover } from "@/lib/transfer/leftover";
 import { loadOrCreateDepositKey } from "@/lib/transfer/depositKeyStore";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
+import { withdrawalWatched } from "@/lib/transfer/keyedWithdrawal";
 import { createJournal, indexedDbStorage } from "@/lib/transfer/journal";
 import { checkDepositStorage } from "@/lib/transfer/storageGuard";
 import { createMainnetTransferEnv, mainnetTransferPins } from "@/lib/transfer/mainnetEnv";
@@ -108,7 +109,15 @@ export default function FundsSection({
       rollupEndpoint: rollup.rpcEndpoint,
       depositKey: await loadOrCreateDepositKey(signer.publicKey.toBase58()),
       accountOpen: async () => accountOpenRef.current,
-      ...(withdrawByKey ? { withdrawByKey } : {}),
+      ...(withdrawByKey
+        ? {
+            withdrawByKey: withdrawalWatched(
+              rollupReader,
+              mainnetTransferPins().programId,
+              withdrawByKey,
+            ),
+          }
+        : {}),
     });
   }, [signer, rollupReader, solana, withdrawByKey, ownerAuthKnown]);
 
@@ -132,9 +141,7 @@ export default function FundsSection({
                 {};
               for (const record of records) {
                 if (record.seat?.state === "pending") {
-                  judged[record.id] = (
-                    await rollupSendState(transfer, record.seat, BigInt(record.atoms))
-                  ).kind;
+                  judged[record.id] = (await rollupSendState(transfer, record.seat)).kind;
                 }
               }
               return judged;
