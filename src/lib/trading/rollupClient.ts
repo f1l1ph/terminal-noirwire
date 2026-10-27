@@ -19,6 +19,7 @@ import { redactToken, scrubError } from "../rollup/redact";
 import { clearSignInToken, TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
 import {
   fetchDeployment,
+  forgetDeployment,
   quoteSymbolOf,
   usesOwnerMessages,
   type DeploymentOverrides,
@@ -172,6 +173,11 @@ const SETTINGS_CHANGED_RESULT: PlaceOrderResult = {
 };
 /** Shown when the package gave up before it sent anything: no hold, the form is free to try again. */
 const NOT_SENT_REASON = "Nothing was sent. The order could not be prepared just now. Try again.";
+const OPEN_MODE_CHANGED_REASON =
+  "Opening accounts changed while this page was open. Reload the page and try again.";
+const OPEN_MODE_RETRY_REASON =
+  "Opening accounts changed while this page was open. Nothing was opened. Try again.";
+const BAD_REQUEST = 400;
 
 export interface RollupTradingClientOptions {
   simUrl: string;
@@ -823,6 +829,7 @@ export class RollupTradingClient implements TradingClient {
   private async openThroughGate(
     wallet: WalletIdentity,
     invite?: string,
+    refreshed = false,
   ): Promise<OpenAccountOutcome> {
     const session = await this.withSession(wallet, (built) => Promise.resolve(built));
     const before = await this.withSession(wallet, (current) => this.viewStatus(current));
@@ -833,7 +840,9 @@ export class RollupTradingClient implements TradingClient {
     if (before === "unknown") {
       throw new Error("Your account could not be read, so it was not opened. Nothing was sent.");
     }
-    if (usesOwnerMessages(session.deployment)) return this.openByMessage(wallet, session, invite);
+    if (usesOwnerMessages(session.deployment)) {
+      return this.openByMessage(wallet, session, invite, refreshed);
+    }
     const owner = session.owner.publicKey;
     const orderKeys = session.orderKeyPublicKeys.map((key) => new PublicKey(key));
     const prepared = await prepareOpen(
@@ -845,6 +854,8 @@ export class RollupTradingClient implements TradingClient {
       },
       this.fetchFn,
     );
+    if (prepared.kind === "otherMode")
+      return this.openAgainOnCurrentMode(wallet, invite, refreshed);
     if (prepared.kind !== "prepared") return this.afterRefusal(wallet, prepared);
     const refusal = isExpectedOpen(prepared.transaction, {
       programId: trustedProgramId(this.options.overrides),
@@ -860,10 +871,55 @@ export class RollupTradingClient implements TradingClient {
       { simUrl: this.options.simUrl, owner: owner.toBase58(), signedTx: signed },
       this.fetchFn,
     );
+    if (submitted.kind === "rejected" && submitted.status === BAD_REQUEST) {
+      return this.afterRejectedSubmit(wallet, submitted);
+    }
     if (submitted.kind !== "submitted") return this.afterRefusal(wallet, submitted);
     markAccountOpened(this.storage, wallet.address);
     await this.settledStatus(wallet);
     return { kind: "opened", reference: submitted.reference };
+  }
+
+  /**
+   * The deployment was switched between the two ways of opening accounts
+   * since this page read it, and the service answered the other way. Nothing
+   * was signed yet: the description is read again, the session is rebuilt on
+   * it and the open runs once more. A second disagreement asks for a reload.
+   */
+  private async openAgainOnCurrentMode(
+    wallet: WalletIdentity,
+    invite: string | undefined,
+    refreshed: boolean,
+  ): Promise<OpenAccountOutcome> {
+    if (refreshed) return { kind: "notSent", reason: OPEN_MODE_CHANGED_REASON };
+    forgetDeployment(this.options.simUrl);
+    await this.refreshSession(wallet);
+    return this.openThroughGate(wallet, invite, true);
+  }
+
+  /**
+   * A 400 on a transaction-mode submit. When the deployment now opens
+   * accounts by message, the request opened nothing: the mode and the account
+   * status are read again and the trader starts the open over, the old signed
+   * bytes never resent. Any other 400 stays the refusal it was.
+   */
+  private async afterRejectedSubmit(
+    wallet: WalletIdentity,
+    refusal: OpenRefusal,
+  ): Promise<OpenAccountOutcome> {
+    forgetDeployment(this.options.simUrl);
+    let fresh: RollupSession;
+    try {
+      fresh = await this.refreshSession(wallet);
+    } catch {
+      return this.afterRefusal(wallet, refusal);
+    }
+    if (!usesOwnerMessages(fresh.deployment)) return this.afterRefusal(wallet, refusal);
+    if ((await this.settledStatus(wallet)) === "open") {
+      markAccountOpened(this.storage, wallet.address);
+      return { kind: "alreadyOpen" };
+    }
+    return { kind: "notSent", reason: OPEN_MODE_RETRY_REASON };
   }
 
   /**
@@ -876,7 +932,8 @@ export class RollupTradingClient implements TradingClient {
   private async openByMessage(
     wallet: WalletIdentity,
     session: RollupSession,
-    invite?: string,
+    invite: string | undefined,
+    refreshed: boolean,
   ): Promise<OpenAccountOutcome> {
     const owner = session.owner.publicKey;
     const orderKeys = session.orderKeyPublicKeys.map((key) => new PublicKey(key));
@@ -889,6 +946,8 @@ export class RollupTradingClient implements TradingClient {
       },
       this.fetchFn,
     );
+    if (prepared.kind === "otherMode")
+      return this.openAgainOnCurrentMode(wallet, invite, refreshed);
     if (prepared.kind !== "prepared") return this.afterRefusal(wallet, prepared);
     const refusal = isExpectedOpenWindow(prepared.expiresAtMs, this.now());
     if (refusal) return { kind: "notSent", reason: refusal };

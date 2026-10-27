@@ -185,14 +185,11 @@ describe("opening an account by a signed message", () => {
     }
   });
 
-  it("treats a legacy answer carrying only a transaction as a bad answer, signing nothing", async () => {
+  it("treats an answer carrying only a transaction as the other mode, signing nothing", async () => {
     const h = harness({
       prepare: () => json(200, { transaction: "AAAA", expiresAtMs: NOW + 45_000 }),
     });
-    expect(await h.client.openAccount(h.wallet)).toEqual({
-      kind: "refused",
-      refusal: { kind: "badAnswer" },
-    });
+    expect((await h.client.openAccount(h.wallet)).kind).toBe("notSent");
     expect(h.signMessage).not.toHaveBeenCalled();
     expect(h.signTransaction).not.toHaveBeenCalled();
   });

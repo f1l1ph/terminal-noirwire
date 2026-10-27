@@ -87,7 +87,7 @@ export async function signOwnerAction(
   if (signature.length !== SIGNATURE_BYTES) {
     throw new OwnerActionRefused("your wallet did not return a signature");
   }
-  const form = ownerSignatureForm(message, signature, owner.publicKey);
+  const form = ownerSignatureForm(message, signature, owner.publicKey, expected.programId);
   if (!form) throw new OwnerActionRefused("your wallet's signature does not match the message");
   return { signature, form };
 }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Keypair, PublicKey, Transaction, type Connection } from "@solana/web3.js";
 import nacl from "tweetnacl";
+import { ownerActionSpecEnvelope } from "@noirwire/orderbook";
 import {
   installOrderKeysSigned,
   messageDeclined,
@@ -106,6 +107,32 @@ describe("signOwnerAction", () => {
     expect(form).toBe("raw");
     expect(signMessage).toHaveBeenCalledTimes(1);
     expect(nacl.sign.detached.verify(message(), signature, OWNER.publicKey.toBytes())).toBe(true);
+  });
+
+  it("accepts a signature over the specification header naming the program, and says so", async () => {
+    const signed = (programId: PublicKey) =>
+      wallet(async (bytes) =>
+        nacl.sign.detached(
+          ownerActionSpecEnvelope(bytes, { programId, owner: OWNER.publicKey }),
+          OWNER.secretKey,
+        ),
+      );
+    const { signer } = signed(PACKAGE_PROGRAM_ID);
+    const { form } = await signOwnerAction(signer, message(), expected);
+    expect(form).toBe("spec");
+  });
+
+  it("refuses a specification header that names another program", async () => {
+    const { signer } = wallet(async (bytes) =>
+      nacl.sign.detached(
+        ownerActionSpecEnvelope(bytes, {
+          programId: Keypair.generate().publicKey,
+          owner: OWNER.publicKey,
+        }),
+        OWNER.secretKey,
+      ),
+    );
+    await expect(signOwnerAction(signer, message(), expected)).rejects.toThrow(/does not match/);
   });
 
   it("refuses bytes that are not the expected message, before the wallet is asked", async () => {

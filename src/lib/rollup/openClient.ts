@@ -52,11 +52,23 @@ export type OpenRefusal =
   | { kind: "badAnswer" }
   | { kind: "rejected"; status: number };
 
+/** The service answered for the other way of opening accounts than the one this page expected: the deployment changed after the page loaded. */
+export type OtherMode = { kind: "otherMode" };
+
 export type PrepareOpenOutcome =
-  { kind: "prepared"; transaction: Transaction; expiresAtMs: number } | OpenRefusal;
+  { kind: "prepared"; transaction: Transaction; expiresAtMs: number } | OpenRefusal | OtherMode;
 
 export type PrepareOpenMessageOutcome =
-  { kind: "prepared"; expiresAt: bigint; expiresAtMs: number } | OpenRefusal;
+  { kind: "prepared"; expiresAt: bigint; expiresAtMs: number } | OpenRefusal | OtherMode;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/** An answer with no transaction but an expiry is a message-mode answer; one with a transaction and no expiry is a transaction-mode answer. */
+const answersInMessageMode = (body: unknown): boolean =>
+  isRecord(body) && !("transaction" in body) && "expiresAt" in body;
+const answersInTransactionMode = (body: unknown): boolean =>
+  isRecord(body) && typeof body.transaction === "string" && !("expiresAt" in body);
 
 export type SubmitOpenOutcome = { kind: "submitted"; reference: string } | OpenRefusal;
 
@@ -259,8 +271,10 @@ export async function prepareOpen(
   if (!response.ok) {
     return openRefusalOf(response.status, await errorReasonOf(response), "prepare");
   }
-  const parsed = prepareResponseSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) return { kind: "badAnswer" };
+  const body = await response.json().catch(() => null);
+  const parsed = prepareResponseSchema.safeParse(body);
+  if (!parsed.success)
+    return answersInMessageMode(body) ? { kind: "otherMode" } : { kind: "badAnswer" };
   try {
     return {
       kind: "prepared",
@@ -298,8 +312,11 @@ export async function prepareOpenMessage(
   if (!response.ok) {
     return openRefusalOf(response.status, await errorReasonOf(response), "prepare");
   }
-  const parsed = messagePrepareResponseSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) return { kind: "badAnswer" };
+  const body = await response.json().catch(() => null);
+  const parsed = messagePrepareResponseSchema.safeParse(body);
+  if (!parsed.success) {
+    return answersInTransactionMode(body) ? { kind: "otherMode" } : { kind: "badAnswer" };
+  }
   return {
     kind: "prepared",
     expiresAt: BigInt(parsed.data.expiresAt),

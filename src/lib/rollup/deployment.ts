@@ -92,6 +92,11 @@ const cache = new Map<string, Promise<Loaded>>();
 
 const KEPT_NAME = "deployment";
 
+/** Drops the description cached for the page's life, so the next `fetchDeployment` asks the service again. */
+export function forgetDeployment(simUrl: string): void {
+  cache.delete(simUrl);
+}
+
 interface Loaded {
   deployment: PublicDeployment;
   /** True when the service could not be reached and the description is the one this browser kept. */
