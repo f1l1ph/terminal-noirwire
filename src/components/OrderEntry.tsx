@@ -20,7 +20,12 @@ import {
 } from "@/lib/trading/uiRules";
 import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
-import { orderFunds, staleMarkBlocks, unknownCollateralBlocks } from "@/lib/trading/sizing";
+import {
+  orderFunds,
+  staleMarkBlocks,
+  staleReduceOnlyNotice,
+  unknownCollateralBlocks,
+} from "@/lib/trading/sizing";
 import {
   amountForPercent,
   displayBase,
@@ -630,7 +635,7 @@ export function OrderEntry({
     }
     if (staleMarkAllowed) {
       return {
-        text: `The price is ${markAge !== null ? formatRelativeAge(markAge) : "too"} old, but an order that only reduces your position can still go through.`,
+        text: staleReduceOnlyNotice(markAge !== null ? formatRelativeAge(markAge) : null),
         tone: "warning",
       };
     }
