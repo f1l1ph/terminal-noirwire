@@ -2,6 +2,7 @@
 
 import { createContext, useContext, type ReactNode } from "react";
 import type { Candle, MarketInfo, PublicFill, StatsResponse } from "@/lib/market-data/types";
+import type { LimitLine } from "@/lib/trading/limitLine";
 import type { useTrading } from "@/lib/trading/useTrading";
 
 /**
@@ -20,6 +21,8 @@ export interface TerminalPanelData {
   ownSequences: ReadonlySet<number>;
   candlesLoading: boolean;
   markStale: boolean;
+  /** The order form's draft limit price, drawn on the chart; null when the form is not a limit order with a valid price. */
+  limitLine: LimitLine | null;
   markets: MarketInfo[];
   selectedMarketId: string;
   onSelectMarket: (id: string) => void;

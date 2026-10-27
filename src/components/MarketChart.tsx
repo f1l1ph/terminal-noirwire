@@ -27,6 +27,7 @@ import {
 } from "@/lib/market-data/reference-history";
 import { useReferenceHistory } from "@/lib/market-data/useReferenceHistory";
 import type { Candle, MarketInfo, PublicFill } from "@/lib/market-data/types";
+import type { LimitLine } from "@/lib/trading/limitLine";
 
 const UP = "#75bc97";
 const DOWN = "#f18d80";
@@ -75,7 +76,10 @@ export function MarketChart({
   ownSequences,
   loading,
   markStale = false,
+  limitLine = null,
 }: {
+  /** The order form's draft limit price: drawn as a dashed line in the side's colour, with its price on the axis. */
+  limitLine?: LimitLine | null;
   market: MarketInfo | undefined;
   /** The venue's own candles: drawn only when the reference history is unavailable and they hold at least two. */
   candles: Candle[];
@@ -274,6 +278,29 @@ export function MarketChart({
       for (const [owner, line] of lines) owner.removePriceLine(line);
     };
   }, [markValue, markStale, hasSeries, hasMark, market?.id]);
+
+  const limitPrice = limitLine?.price ?? null;
+  const limitSide = limitLine?.side ?? null;
+  useEffect(() => {
+    const area = areaRef.current;
+    const candleSeries = candleRef.current;
+    if (!area || !candleSeries || !hasSeries || limitPrice === null) return;
+    const options = {
+      price: limitPrice,
+      color: limitSide === "sell" ? DOWN : UP,
+      lineWidth: 1 as const,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: "",
+    };
+    const lines: [ISeriesApi<"Area"> | ISeriesApi<"Candlestick">, IPriceLine][] = [
+      [area, area.createPriceLine(options)],
+      [candleSeries, candleSeries.createPriceLine(options)],
+    ];
+    return () => {
+      for (const [owner, line] of lines) owner.removePriceLine(line);
+    };
+  }, [limitPrice, limitSide, hasSeries, market?.id]);
 
   const ownMarkers = useMemo(() => {
     const first = series[0]?.time;

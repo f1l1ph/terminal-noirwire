@@ -27,6 +27,7 @@ import {
 import { deploymentOverrides } from "@/lib/trading";
 import type { CancelResult, Position } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
+import type { LimitLine } from "@/lib/trading/limitLine";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { fetchDeployment, quoteSymbolOf, type PublicDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
@@ -114,6 +115,7 @@ export function Terminal() {
   const isDesktop = useMediaQuery("(min-width: 900px)");
   const [layoutResetSignal, setLayoutResetSignal] = useState(0);
   const [phoneView, setPhoneView] = useState<PhoneView>("trade");
+  const [limitLine, setLimitLine] = useState<LimitLine | null>(null);
   const mainnet = isMainnetBuild();
   const [privacyTools] = usePrivacyTools();
   const toolsOn = !mainnet || privacyTools;
@@ -682,6 +684,7 @@ export function Terminal() {
   const orderEntry = market && (
     <OrderEntry
       key={market.id}
+      onLimitLineChange={setLimitLine}
       market={market}
       mark={mark}
       now={now}
@@ -830,6 +833,7 @@ export function Terminal() {
       ownSequences={ownSequences}
       candlesLoading={candlesLoading}
       markStale={markStale}
+      limitLine={limitLine}
       markets={data.markets}
       selectedMarketId={selectedMarketId}
       onSelectMarket={setChosenMarketId}
@@ -863,6 +867,7 @@ export function Terminal() {
       network={network}
       checkPrivacy={trading.checkPrivacy}
       markStale={markStale}
+      limitLine={limitLine}
       clientDurationMs={clientDurationMs}
       mainnet={mainnet}
       toolsOn={toolsOn}

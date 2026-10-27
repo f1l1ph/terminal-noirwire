@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { Candle, MarketInfo, PublicFill, StatsResponse } from "@/lib/market-data/types";
 import { marketDisplayName } from "@/lib/market-data/displayName";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
+import type { LimitLine } from "@/lib/trading/limitLine";
 import type { useTrading } from "@/lib/trading/useTrading";
 import { MarketChart } from "@/components/MarketChart";
 import { PriceHeadline } from "@/components/MarketContextBar";
@@ -41,11 +42,13 @@ export function PhoneLayout({
   network,
   checkPrivacy,
   markStale,
+  limitLine,
   clientDurationMs,
   mainnet,
   toolsOn,
   orderNotice,
 }: {
+  limitLine: LimitLine | null;
   market: MarketInfo | undefined;
   mark: { price: string; time: number } | null;
   now: number;
@@ -91,6 +94,7 @@ export function PhoneLayout({
         ownSequences={ownSequences}
         loading={candlesLoading}
         markStale={markStale}
+        limitLine={limitLine}
       />
     </div>
   );
