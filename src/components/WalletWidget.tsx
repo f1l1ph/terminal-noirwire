@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import type { Wallet } from "@wallet-standard/base";
 import { formatShortAddress } from "@/lib/format";
 import { isMainnetBuild } from "@/lib/network";
-import { redactToken } from "@/lib/rollup/redact";
+import { userMessage } from "@/lib/userMessage";
 import { useStandardWallet } from "@/lib/wallet/standardWallet";
 import {
   browserLocalStorage,
@@ -157,13 +157,12 @@ const WALLET_INSTALLS = [
 ] as const;
 
 const CONNECT_FAILED = "Could not connect. Check the wallet and try again.";
-const MAX_REASON_LENGTH = 160;
 
-/** The generic failure plus the wallet's own reason (a rejection, a locked wallet), so a refusal can be told from a fault. */
+/** A refusal in the wallet reads as one; any other fault keeps the generic line plus a short detail for support. */
 function connectFailure(error: unknown): string {
-  const reason =
-    error instanceof Error ? redactToken(error.message).trim().slice(0, MAX_REASON_LENGTH) : "";
-  return reason ? `${CONNECT_FAILED} The wallet said: ${reason}` : CONNECT_FAILED;
+  const { text, detail, known } = userMessage(error, { nothingSent: true });
+  if (known) return text;
+  return detail ? `${CONNECT_FAILED} Support detail: ${detail}` : CONNECT_FAILED;
 }
 
 const OPEN_WALLET_MENU_EVENT = "noirwire:open-wallet-menu";
