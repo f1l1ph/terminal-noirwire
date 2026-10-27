@@ -29,17 +29,19 @@ import type { CancelResult, Position } from "@/lib/trading/types";
 import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
 import type { LimitLine } from "@/lib/trading/limitLine";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
+import { UNCONFIRMED_PLACE_RESULT } from "@/lib/rollup/outcome";
 import { fetchDeployment, quoteSymbolOf, type PublicDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
 import { offersSpotTrading, tradeGate } from "@/lib/trading/uiRules";
 import { AccountSetup } from "@/components/AccountSetup";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
+import { useTradingTabGuard } from "@/components/hooks/useTradingTabGuard";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
 import { TerminalShell } from "@/components/TerminalShell";
-import { TerminalNotices } from "@/components/TerminalNotices";
+import { TerminalNotices, TRADING_IN_OTHER_TAB_NOTICE } from "@/components/TerminalNotices";
 import { DesktopWorkspace } from "@/components/DesktopWorkspace";
 import { PhoneLayout, type PhoneView } from "@/components/PhoneLayout";
 import {
@@ -124,6 +126,7 @@ export function Terminal() {
   const wallet = useWallet();
   const ownerIdentity = useOwnerIdentity(wallet);
   const owner = ownerIdentity?.address ?? "";
+  const tabGuard = useTradingTabGuard(owner || null);
   const marketSettings = useCallback(
     (id: string) => data.markets.find((item) => item.id === id),
     [data.markets],
@@ -299,7 +302,7 @@ export function Terminal() {
           pendingPlace: { expiresAtMs: pending.expiresAtMs },
         },
       }));
-      void pending.settled.then((settled) => {
+      const settleSession = (settled: PlacedOrderOutcome["result"]) =>
         setOrderSessions((prev) => {
           const existing = prev[key];
           if (!existing || !existing.pendingPlace) return prev;
@@ -308,7 +311,7 @@ export function Terminal() {
             [key]: sessionFromResult(settled, descriptor, existing.baseSteps),
           };
         });
-      });
+      void pending.settled.then(settleSession).catch(() => settleSession(UNCONFIRMED_PLACE_RESULT));
       return;
     }
     setOrderSessions((prev) => ({
@@ -384,6 +387,10 @@ export function Terminal() {
   }
 
   async function handleCancelAll(): Promise<void> {
+    if (tabGuard.elsewhere) {
+      setCancelMessage(TRADING_IN_OTHER_TAB_NOTICE);
+      return;
+    }
     setCancelling(true);
     setCancelMessage(null);
     const open = trading.state.openOrders.find((order) => order.market === selectedMarketId);
@@ -405,6 +412,10 @@ export function Terminal() {
 
   async function handleCancelOrder(market: string, orderId: string): Promise<void> {
     if (!trading.cancelOrder) return;
+    if (tabGuard.elsewhere) {
+      setCancelMessage(TRADING_IN_OTHER_TAB_NOTICE);
+      return;
+    }
     setCancelling(true);
     setCancelMessage(null);
     const open = trading.state.openOrders.find((order) => order.orderId === orderId);
@@ -728,7 +739,11 @@ export function Terminal() {
           />
         ) : null
       }
-      gate={tradeGate(isMainnetBuild(), trading.accountStatus, trading.orderKeys)}
+      gate={
+        tabGuard.elsewhere
+          ? "otherTab"
+          : tradeGate(isMainnetBuild(), trading.accountStatus, trading.orderKeys)
+      }
       makersListed={trading.makersListed.has(market.id)}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
@@ -739,6 +754,9 @@ export function Terminal() {
       onTransferToSpot={
         transferBetweenBalances
           ? async (toSpot, amount) => {
+              if (tabGuard.elsewhere) {
+                return { kind: "error", message: TRADING_IN_OTHER_TAB_NOTICE };
+              }
               const result = await transferBetweenBalances(toSpot, amount);
               // A spot buy is what the trader is about to do right after
               // this transfer completes; the dock should already be ready
@@ -888,6 +906,8 @@ export function Terminal() {
         <TerminalNotices
           owner={ownerIdentity?.address ?? null}
           pricesUnreachable={allData.marketsUnreachable}
+          tradingElsewhere={tabGuard.elsewhere}
+          onUseThisTab={tabGuard.takeOver}
         />
       }
     >

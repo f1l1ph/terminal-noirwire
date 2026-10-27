@@ -10,6 +10,7 @@ import {
   describeProgramError,
   describeTransactionError,
   PROGRAM_ERROR,
+  WIRE_ERROR_OFFSET,
   type RefusalContext,
 } from "./refusals";
 import type { MarketUnits } from "./units";
@@ -38,6 +39,38 @@ const CANCEL_REFUSED_REASON =
   "The exchange did not accept the cancel. Your orders are unchanged. Try again in a moment.";
 const UNRECOGNISED_RESULT_REASON =
   "The exchange gave an answer this terminal does not recognise. Check your open orders and positions before trying again.";
+
+/** Shown when a pending call's answer never arrived, so what became of it is not known. */
+export const UNCONFIRMED_OUTCOME_REASON =
+  "We could not confirm what happened to this request. Check your positions and open orders before trying again. Nothing will be sent again automatically.";
+
+/** Shown when the order keys were refused twice: another tab or device is using this account. */
+export const KEYS_IN_USE_ELSEWHERE_REASON =
+  "This account is being used in another tab or on another device, so this did not go through. Reload this page to carry on here. Nothing was charged.";
+
+/** Shown when a reduce-only order was refused because the position is already gone or smaller. */
+export const POSITION_ALREADY_REDUCED_REASON =
+  "Your position was already closed or reduced, possibly by liquidation, so this order did not run. Check your positions and balance.";
+
+export const UNCONFIRMED_PLACE_RESULT: PlaceOrderResult = {
+  orderId: "",
+  tag: "",
+  status: "rejected",
+  filledSize: "0",
+  remainingSize: "0",
+  reason: UNCONFIRMED_OUTCOME_REASON,
+};
+
+/** A failed transaction's refusal, or one written to the result ring, carrying the program's number; null for anything else. */
+export function refusalNumberOf(error: unknown): number | null {
+  if (!(error instanceof TransactionFailed) || error.code === null) return null;
+  return error.code >= WIRE_ERROR_OFFSET ? error.code - WIRE_ERROR_OFFSET : null;
+}
+
+/** The program's number when a result is a refusal, else null. */
+export function resultRefusalNumber(result: OrderResult): number | null {
+  return result.status === RESULT_STATUS_CODE.refused ? result.code : null;
+}
 
 /** `keys.take()`'s own synchronous refusal, thrown before anything is sent, when every slot is already lent to another in-flight call. */
 function isAllKeysBusy(error: unknown): boolean {
@@ -79,9 +112,9 @@ export function placedToResult(
       sentAtMs: placed.sentAt,
       pending: {
         expiresAtMs: expiresAtMs ?? Date.now(),
-        settled: placed.settled.then((settled) =>
-          settledToResult(settled, units, sizeDecimals, market, unknownAtMs),
-        ),
+        settled: placed.settled
+          .then((settled) => settledToResult(settled, units, sizeDecimals, market, unknownAtMs))
+          .catch(() => UNCONFIRMED_PLACE_RESULT),
       },
     };
   }
@@ -224,19 +257,21 @@ export function placeUnknownToResult(
     reason: "Checking with the venue. Do not resend yet.",
     pending: {
       expiresAtMs,
-      settled: error.settled.then((result): PlaceOrderResult => {
-        if (!result) {
-          return {
-            orderId: "",
-            tag: "",
-            status: "rejected",
-            filledSize: "0",
-            remainingSize: "0",
-            reason: EXPIRED_NOT_PLACED_REASON,
-          };
-        }
-        return ranToResult(result, result, units, sizeDecimals, market, unknownAtMs);
-      }),
+      settled: error.settled
+        .then((result): PlaceOrderResult => {
+          if (!result) {
+            return {
+              orderId: "",
+              tag: "",
+              status: "rejected",
+              filledSize: "0",
+              remainingSize: "0",
+              reason: EXPIRED_NOT_PLACED_REASON,
+            };
+          }
+          return ranToResult(result, result, units, sizeDecimals, market, unknownAtMs);
+        })
+        .catch(() => UNCONFIRMED_PLACE_RESULT),
     },
   };
 }
@@ -357,14 +392,16 @@ export function cancelErrorToResult(error: unknown, expiresAtMs: number): Cancel
       cancelled: 0,
       pending: {
         expiresAtMs,
-        settled: error.settled.then((result) =>
-          result
-            ? cancelToResult(result)
-            : {
-                cancelled: 0,
-                reason: "Expired, not run. The venue never ran this cancel; try again.",
-              },
-        ),
+        settled: error.settled
+          .then((result): CancelResult =>
+            result
+              ? cancelToResult(result)
+              : {
+                  cancelled: 0,
+                  reason: "Expired, not run. The venue never ran this cancel; try again.",
+                },
+          )
+          .catch((): CancelResult => ({ cancelled: 0, reason: UNCONFIRMED_OUTCOME_REASON })),
       },
     };
   }
@@ -388,14 +425,16 @@ export function transferErrorToResult(error: unknown, expiresAtMs: number): Tran
       kind: "pending",
       pending: {
         expiresAtMs,
-        settled: error.settled.then((result) =>
-          result
-            ? { kind: "ok" }
-            : {
-                kind: "error",
-                message: "Expired, not run. The venue never ran this transfer; try again.",
-              },
-        ),
+        settled: error.settled
+          .then((result): TransferResult =>
+            result
+              ? { kind: "ok" }
+              : {
+                  kind: "error",
+                  message: "Expired, not run. The venue never ran this transfer; try again.",
+                },
+          )
+          .catch((): TransferResult => ({ kind: "error", message: UNCONFIRMED_OUTCOME_REASON })),
       },
     };
   }
