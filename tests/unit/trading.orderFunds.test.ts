@@ -216,6 +216,63 @@ describe("orderFunds against an open position", () => {
     ).toBe(false);
   });
 
+  it("prices margin at the mark and the fee at the order price for a market sell bound below the mark", () => {
+    const base = { ...PERP, side: "sell", quantity: "10", price: "99", markPrice: "100" } as const;
+    const funds = orderFunds({ ...base, availableQuote: "100.4" });
+    expect(funds.marginQuote).toBe(toFixedPoint("100"));
+    expect(funds.requiredQuote).toBe(toFixedPoint("100.495"));
+    expect(funds.shortfall).not.toBeNull();
+    expect(orderFunds({ ...base, availableQuote: "100.495" }).shortfall).toBeNull();
+  });
+
+  it("charges a reduce-only close that resting asks would turn into growth", () => {
+    const base = {
+      ...PERP,
+      side: "sell",
+      quantity: "0.14",
+      exposure: { position: "0.14", openAsks: "0.30" },
+      reduceOnly: true,
+    } as const;
+    const short = orderFunds({ ...base, availableQuote: "1.4" });
+    expect(short.reduceOnlyGrows).toBe(true);
+    expect(short.marginQuote).toBe(toFixedPoint("1.4"));
+    expect(short.requiredQuote).toBe(toFixedPoint("1.407"));
+    expect(short.shortfall).not.toBeNull();
+    expect(orderFunds({ ...base, availableQuote: "1.407" }).shortfall).toBeNull();
+  });
+
+  it("caps a reduce-only order to the position before judging growth", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "50",
+      availableQuote: "0",
+      exposure: LONG,
+      reduceOnly: true,
+    });
+    expect(funds.shortfall).toBeNull();
+    expect(funds.reduceOnlyGrows).toBe(false);
+  });
+
+  it("rounds margin and fee up so the form is never looser at the boundary", () => {
+    const base = { ...PERP, side: "buy", quantity: "1", price: "33.333333333" } as const;
+    expect(orderFunds({ ...base, availableQuote: "3.350000000" }).shortfall).not.toBeNull();
+    const exact = orderFunds({ ...base, availableQuote: "3.350000001" });
+    expect(exact.requiredQuote).toBe(toFixedPoint("3.350000001"));
+    expect(exact.shortfall).toBeNull();
+  });
+
+  it("blocks a growing reduce-only order on an unpriced collateral figure", () => {
+    expect(
+      unknownCollateralBlocks({
+        availableUnknown: true,
+        isPerp: true,
+        reduceOnly: true,
+        reduceOnlyGrows: true,
+      }),
+    ).toBe(true);
+  });
+
   it("keeps spot unchanged whatever exposure or reduce-only flag is passed", () => {
     const funds = orderFunds({
       ...SPOT,

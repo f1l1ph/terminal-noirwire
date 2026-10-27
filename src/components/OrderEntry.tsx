@@ -401,6 +401,7 @@ export function OrderEntry({
     };
   }, [market, position, openOrders]);
 
+  const markPrice = mark?.price;
   const funds = useMemo(() => {
     if (!market || !priceText || !quantityText.trim()) return null;
     try {
@@ -409,6 +410,7 @@ export function OrderEntry({
         side,
         quantity: quantityText,
         price: priceText,
+        markPrice,
         maxLeverage: market.maxLeverage,
         availableQuote,
         availableBase,
@@ -421,6 +423,7 @@ export function OrderEntry({
   }, [
     market,
     priceText,
+    markPrice,
     quantityText,
     side,
     availableQuote,
@@ -499,7 +502,12 @@ export function OrderEntry({
   const openSize = Number(position?.size ?? 0);
   const closesOpenPosition =
     isPerp && ((side === "sell" && openSize > 0) || (side === "buy" && openSize < 0));
-  const availableBlocks = unknownCollateralBlocks({ availableUnknown, isPerp, reduceOnly });
+  const availableBlocks = unknownCollateralBlocks({
+    availableUnknown,
+    isPerp,
+    reduceOnly,
+    reduceOnlyGrows: funds?.reduceOnlyGrows,
+  });
   const accountUnknown = hasWallet && (!!accountError || !accountLoaded);
   const noFunds =
     hasWallet &&
@@ -703,6 +711,7 @@ export function OrderEntry({
       availableUnknown: isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now())),
       isPerp,
       reduceOnly: order.draft.reduceOnly === true,
+      reduceOnlyGrows: funds?.reduceOnlyGrows,
     });
     if (
       !canSubmit ||

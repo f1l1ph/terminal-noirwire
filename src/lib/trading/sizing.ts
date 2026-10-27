@@ -1,5 +1,5 @@
-import { divFixedPoint, fromFixedPoint, toFixedPoint } from "./decimal";
-import { ASSUMED_TAKER_FEE_BPS, estimateOrderCost } from "./risk";
+import { divFixedPoint, FIXED_POINT_SCALE, fromFixedPoint, toFixedPoint } from "./decimal";
+import { ASSUMED_TAKER_FEE_BPS, estimateOrderCost, impliedInitialMarginBps } from "./risk";
 import type { Side } from "./types";
 
 export interface FundsShortfall {
@@ -14,6 +14,8 @@ export interface OrderFunds {
   requiredQuote: bigint;
   /** Initial margin the order adds, fixed-point: zero when it does not grow the worst-case exposure. Perp only. */
   marginQuote: bigint;
+  /** A reduce-only order that still raises the worst-case size, so the free balance matters to it. */
+  reduceOnlyGrows: boolean;
   shortfall: FundsShortfall | null;
 }
 
@@ -66,12 +68,14 @@ export function orderFunds(params: {
   side: Side;
   quantity: string;
   price: string;
+  /** Perp only: the market's mark, which the venue prices margin at. Defaults to `price`. */
+  markPrice?: string;
   maxLeverage: number;
   availableQuote: string;
   availableBase?: string;
   /** Perp only: the trader's exposure on this market. Without it the order is treated as opening fresh. */
   exposure?: MarketExposure;
-  /** Perp only: a reduce-only order cannot grow exposure, so the venue asks for no margin and no fee up front. */
+  /** Perp only: capped to the position and charged only if it still raises the worst-case size. */
   reduceOnly?: boolean;
 }): OrderFunds {
   if (params.mode === "spot" && params.side === "sell") {
@@ -80,12 +84,11 @@ export function orderFunds(params: {
     return {
       requiredQuote: 0n,
       marginQuote: 0n,
+      reduceOnlyGrows: false,
       shortfall: covered ? null : { asset: "base", needed: params.quantity, available },
     };
   }
-  if (params.mode === "perp" && params.reduceOnly) {
-    return { requiredQuote: 0n, marginQuote: 0n, shortfall: null };
-  }
+  if (params.mode === "perp") return perpFunds(params);
   const cost = estimateOrderCost({
     side: params.side,
     quantity: params.quantity,
@@ -93,43 +96,99 @@ export function orderFunds(params: {
     leverage: params.maxLeverage,
     maxLeverage: params.maxLeverage,
   });
-  let marginQuote = cost.initialMargin;
-  if (params.mode === "perp" && params.exposure) {
-    const increase = worstCaseIncrease(params.side, toFixedPoint(params.quantity), params.exposure);
-    marginQuote = estimateOrderCost({
-      side: params.side,
-      quantity: fromFixedPoint(increase, 9),
-      price: params.price,
-      leverage: params.maxLeverage,
-      maxLeverage: params.maxLeverage,
-    }).initialMargin;
+  const requiredQuote = cost.notional + cost.fee;
+  return fundsOutcome(requiredQuote, 0n, false, params.availableQuote);
+}
+
+function ceilDiv(numerator: bigint, denominator: bigint): bigint {
+  return (numerator + denominator - 1n) / denominator;
+}
+
+const BPS = 10_000n;
+
+/**
+ * A perp order the way the venue judges it. A resting order counts in full as
+ * a bid or ask. A reduce-only order is capped to the position and judged as
+ * filled in full, and asks for funds only if that raises the worst-case size
+ * (resting orders on its side can). Margin is priced at the mark, the fee at
+ * the order price, and both round up so the form is never looser.
+ */
+function perpFunds(params: {
+  side: Side;
+  quantity: string;
+  price: string;
+  markPrice?: string;
+  maxLeverage: number;
+  availableQuote: string;
+  exposure?: MarketExposure;
+  reduceOnly?: boolean;
+}): OrderFunds {
+  const exposure = params.exposure ?? { position: "0" };
+  const base = toFixedPoint(exposure.position);
+  const bids = toFixedPoint(exposure.openBids ?? "0");
+  const asks = toFixedPoint(exposure.openAsks ?? "0");
+  let quantity = toFixedPoint(params.quantity);
+  let grown: bigint;
+  if (params.reduceOnly) {
+    const room = abs(base);
+    if (quantity > room) quantity = room;
+    const filled = params.side === "buy" ? base + quantity : base - quantity;
+    const before = worstCaseLots(base, bids, asks);
+    const after = worstCaseLots(filled, bids, asks);
+    grown = after > before ? after - before : 0n;
+    if (grown === 0n) return fundsOutcome(0n, 0n, false, params.availableQuote);
+  } else {
+    grown = worstCaseIncrease(params.side, quantity, exposure);
   }
-  const requiredQuote = params.mode === "perp" ? cost.fee + marginQuote : cost.notional + cost.fee;
-  const covered = requiredQuote <= toFixedPoint(params.availableQuote);
+  const price = toFixedPoint(params.price);
+  const mark = toFixedPoint(params.markPrice ?? params.price);
+  const marginBps = BigInt(impliedInitialMarginBps(params.maxLeverage) ?? 10_000);
+  const marginQuote = ceilDiv(grown * mark * marginBps, FIXED_POINT_SCALE * BPS);
+  const notional = ceilDiv(quantity * price, FIXED_POINT_SCALE);
+  const fee = ceilDiv(notional * BigInt(ASSUMED_TAKER_FEE_BPS), BPS);
+  return fundsOutcome(
+    fee + marginQuote,
+    marginQuote,
+    params.reduceOnly === true,
+    params.availableQuote,
+  );
+}
+
+function fundsOutcome(
+  requiredQuote: bigint,
+  marginQuote: bigint,
+  grows: boolean,
+  availableQuote: string,
+): OrderFunds {
+  const covered = requiredQuote <= toFixedPoint(availableQuote);
   return {
     requiredQuote,
-    marginQuote: params.mode === "perp" ? marginQuote : 0n,
+    marginQuote,
+    reduceOnlyGrows: grows,
     shortfall: covered
       ? null
       : {
           asset: "quote",
           needed: fromFixedPoint(requiredQuote, 6),
-          available: params.availableQuote,
+          available: availableQuote,
         },
   };
 }
 
 /**
  * Whether an unpriced collateral figure stops the order. A perp reduce-only
- * order needs only that the market has a price, never the account's free
+ * order that does not raise the worst-case size never looks at the free
  * balance, so it goes ahead; every other order waits for the figure.
  */
 export function unknownCollateralBlocks(params: {
   availableUnknown: boolean;
   isPerp: boolean;
   reduceOnly: boolean;
+  reduceOnlyGrows?: boolean;
 }): boolean {
-  return params.availableUnknown && !(params.isPerp && params.reduceOnly);
+  return (
+    params.availableUnknown && !(params.isPerp && params.reduceOnly && !params.reduceOnlyGrows)
+  );
 }
 
 function roundDownToLot(quantityFp: bigint, lotFp: bigint): bigint {
