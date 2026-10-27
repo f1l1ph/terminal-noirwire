@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { MarketDataStore } from "@/lib/market-data/store";
+import { marketWithLiveMark, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { Keypair } from "@solana/web3.js";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
@@ -104,7 +106,11 @@ function view(
   } as unknown as View;
 }
 
-function clientShowing(views: View[], markets: Record<string, MarketInfo>) {
+function clientShowing(
+  views: View[],
+  markets: Record<string, MarketInfo> | ((id: string) => MarketInfo | undefined),
+  now: () => number = () => NOW,
+) {
   let next = 0;
   const unused = async () => {
     throw new Error("unused");
@@ -133,8 +139,8 @@ function clientShowing(views: View[], markets: Record<string, MarketInfo>) {
   return new RollupTradingClient({
     simUrl: "http://sim.test",
     storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
-    now: () => NOW,
-    marketSettingsLookup: (id) => markets[id],
+    now,
+    marketSettingsLookup: typeof markets === "function" ? markets : (id) => markets[id],
     buildSession: async () => session(),
   });
 }
@@ -306,6 +312,67 @@ describe("RollupTradingClient: margin-aware collateral", () => {
     const state = await rollup.fetchState(WALLET);
     expect(state.equity).toBe("500.000000");
     expect(state.collateral).toMatchObject({ reserved: "0.000000", available: "500.000000" });
+  });
+});
+
+describe("RollupTradingClient: marks that keep arriving after the markets load", () => {
+  const position = view(500n * USDC, [{ base: 10_000n, quote: -1000n * USDC }, {}]);
+
+  function loadedStore(): MarketDataStore {
+    const store = new MarketDataStore();
+    store.setMarkets([perp("NSOL-PERP", "150.000000")]);
+    return store;
+  }
+
+  function lookupOf(store: MarketDataStore) {
+    return (id: string) => {
+      const state = store.getState();
+      return marketWithLiveMark(state.markets, state.marksByMarket, id);
+    };
+  }
+
+  it("re-values the held view against the newest mark, with no read, and turns a stale figure known again", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(NOW);
+      const store = loadedStore();
+      let clock = NOW;
+      const rollup = clientShowing([position], lookupOf(store), () => clock);
+      expect(rollup.repriceState(WALLET)).toBeNull();
+      await rollup.fetchState(WALLET);
+
+      clock = NOW + STALE_MARK_MS * 3;
+      vi.setSystemTime(clock);
+      const stale = rollup.repriceState(WALLET);
+      expect(stale?.collateral?.availableUnknown).toBe(true);
+
+      store.applyMessage({
+        type: "price",
+        market: "NSOL-PERP",
+        price: "200.000000",
+        publishedAtMs: clock - 500,
+      });
+      const fresh = rollup.repriceState(WALLET);
+      expect(fresh?.collateral?.availableUnknown).toBeUndefined();
+      expect(fresh?.collateral?.availableValidUntilMs).toBe(clock - 500 + STALE_MARK_MS);
+      expect(fresh?.equity).toBe("1500.000000");
+      expect(fresh?.collateral?.reserved).toBe("200.000000");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("goes unknown once the live marks stop and the loaded row is the only one left", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(NOW);
+      const store = loadedStore();
+      const rollup = clientShowing([position], lookupOf(store), () => NOW + STALE_MARK_MS + 1_000);
+      const state = await rollup.fetchState(WALLET);
+      expect(state.collateral?.availableUnknown).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

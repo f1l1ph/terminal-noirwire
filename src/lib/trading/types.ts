@@ -245,6 +245,8 @@ export interface TradingClient {
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */
   subscribeOrderKeys?(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void;
   fund(wallet: WalletIdentity): Promise<FundOutcome>;
+  /** The account as of the last view shown, valued against the marks as they are now, with no read. Null when nothing has been shown yet. Optional: dev mode prices on the venue. */
+  repriceState?(wallet: WalletIdentity): TraderState | null;
   /**
    * Whether this browser already learned that the deployment hands out no
    * test funds, so the grant is not offered again after a reload. Optional:

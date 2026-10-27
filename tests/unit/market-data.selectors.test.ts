@@ -3,10 +3,12 @@ import {
   ageMs,
   isStale,
   latencyDisplay,
+  marketsWithNewerMark,
+  marketWithLiveMark,
   MAX_CLOCK_SKEW_MS,
   STALE_MARK_MS,
 } from "@/lib/market-data/selectors";
-import type { StatsResponse } from "@/lib/market-data/types";
+import type { MarketInfo, StatsResponse } from "@/lib/market-data/types";
 
 function stats(overrides: Partial<StatsResponse> = {}): StatsResponse {
   return {
@@ -64,5 +66,70 @@ describe("latencyDisplay", () => {
 
   it("reports unavailable with no stats at all", () => {
     expect(latencyDisplay(null, 1000)).toEqual({ status: "unavailable", lastValidAt: null });
+  });
+});
+
+describe("marketsWithNewerMark", () => {
+  const prev = { A: { time: 1_000 }, B: { time: 1_000 } };
+
+  it("reports a strictly newer mark and a market seen for the first time", () => {
+    const next = { A: { time: 2_000 }, B: { time: 1_000 }, C: { time: 500 } };
+    expect(marketsWithNewerMark(prev, next)).toEqual(["A", "C"]);
+  });
+
+  it("does not report an equal or older mark", () => {
+    expect(marketsWithNewerMark(prev, { A: { time: 1_000 }, B: { time: 400 } })).toEqual([]);
+  });
+
+  it("ignores a market with no mark", () => {
+    expect(marketsWithNewerMark(prev, { A: null, D: undefined })).toEqual([]);
+  });
+});
+
+describe("marketWithLiveMark", () => {
+  const row: MarketInfo = {
+    id: "NSOL-PERP",
+    kind: "perp",
+    base: "SOL",
+    quote: "nUSD",
+    tickSize: "0.010000",
+    lotSize: "0.001000",
+    maxLeverage: 10,
+    markPrice: "150.000000",
+    markPriceUpdatedAtMs: 1_000,
+    change24hPercent: 0,
+    volume24h: "0",
+    openInterest: "0",
+  };
+
+  it("takes the price and time of a newer live mark", () => {
+    const live = { "NSOL-PERP": { price: "151.500000", time: 5_000 } };
+    const market = marketWithLiveMark([row], live, "NSOL-PERP");
+    expect(market).toMatchObject({
+      markPrice: "151.500000",
+      markPriceUpdatedAtMs: 5_000,
+      maxLeverage: 10,
+    });
+  });
+
+  it("ignores a live mark older than the row's", () => {
+    const live = { "NSOL-PERP": { price: "99.000000", time: 500 } };
+    expect(marketWithLiveMark([row], live, "NSOL-PERP")).toBe(row);
+  });
+
+  it("falls back to the row when there is no live mark", () => {
+    expect(marketWithLiveMark([row], {}, "NSOL-PERP")).toBe(row);
+    expect(marketWithLiveMark([row], { "NSOL-PERP": null }, "NSOL-PERP")).toBe(row);
+  });
+
+  it("uses a live mark when the row has none", () => {
+    const bare = { ...row, markPrice: null, markPriceUpdatedAtMs: null };
+    const live = { "NSOL-PERP": { price: "152.000000", time: 2_000 } };
+    const market = marketWithLiveMark([bare], live, "NSOL-PERP");
+    expect(market).toMatchObject({ markPrice: "152.000000", markPriceUpdatedAtMs: 2_000 });
+  });
+
+  it("returns undefined for an unknown market", () => {
+    expect(marketWithLiveMark([row], { OTHER: { price: "1", time: 1 } }, "OTHER")).toBeUndefined();
   });
 });
