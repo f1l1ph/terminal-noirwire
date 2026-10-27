@@ -18,7 +18,6 @@ const REFUSALS: Record<Refusal, string> = {
     "Another transfer is not finished yet. Finish it first by starting it again with the same amount. Nothing new was sent.",
   "account-not-open": "This wallet has no open account on the exchange yet. Nothing moved.",
   "exchange-paused": "The exchange is paused and takes no transfers right now. Nothing moved.",
-  "custody-unreadable": "The deposit limit could not be read, so nothing was sent.",
   "custody-cap":
     "Deposits are paused at the current limit. You can still trade and withdraw. Nothing moved.",
   "insufficient-usdc": "Your wallet does not hold that much USDC. Nothing moved.",

@@ -115,7 +115,6 @@ export type Refusal =
   | "unfinished-operation"
   | "account-not-open"
   | "exchange-paused"
-  | "custody-unreadable"
   | "custody-cap"
   | "insufficient-usdc"
   | "insufficient-sol"
