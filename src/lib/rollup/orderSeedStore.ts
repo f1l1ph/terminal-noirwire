@@ -73,7 +73,8 @@ async function unwrap(key: CryptoKey, owner: string, wrapped: WrappedSeed): Prom
 
 export type OrderSeedStore = {
   load(owner: string): Promise<Uint8Array | null>;
-  create(owner: string): Promise<Uint8Array>;
+  /** Stores `given` when it is passed, else a new random seed. */
+  create(owner: string, given?: Uint8Array): Promise<Uint8Array>;
   forget(owner: string): Promise<void>;
   /** Whether the browser granted persistent storage at the last `create`; null before any. The UI warns on false. */
   persisted(): boolean | null;
@@ -104,11 +105,12 @@ export function createOrderSeedStore(
      * seed that would be lost on reload. If another tab stored one first, that
      * one is returned.
      */
-    async create(owner) {
+    async create(owner, given) {
       persisted = await requestPersistence().catch(() => false);
       const key = await wrappingKey(backend, true);
       if (!key) throw new Error("the order seed key could not be stored");
-      const seed = crypto.getRandomValues(new Uint8Array(SEED_BYTES));
+      const seed = given ?? crypto.getRandomValues(new Uint8Array(SEED_BYTES));
+      if (seed.length !== SEED_BYTES) throw new Error("the order seed has the wrong length");
       const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
       const ciphertext = new Uint8Array(
         await crypto.subtle.encrypt(
@@ -219,7 +221,7 @@ const store = () => (shared ??= createOrderSeedStore(indexedDbSeedBackend(), bro
 /** The owner's seed on this browser, or null when none was stored yet. */
 export const loadOrderSeed = (owner: string) => store().load(owner);
 /** A new random seed for `owner`, returned only once it is durably stored; throws when storage is unavailable. */
-export const createOrderSeed = (owner: string) => store().create(owner);
+export const createOrderSeed = (owner: string, given?: Uint8Array) => store().create(owner, given);
 /** Whether the browser granted persistent storage when the last seed was created; null before any. */
 export const orderSeedPersisted = () => store().persisted();
 /** Deletes the owner's seed from this browser. */

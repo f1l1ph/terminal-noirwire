@@ -68,6 +68,8 @@ export interface MainnetTransferParts {
   rollupEndpoint: string;
   /** The owner's deposit key, already stored on this browser (`loadOrCreateDepositKey`). */
   depositKey: Keypair;
+  /** Whether that key was made from the wallet's signature (`DepositKey.derived`). */
+  depositKeyDerived?: boolean;
   /** The rollup connection signed in as the deposit key; by default the key signs in itself, once, with no wallet. Tests pass their own. */
   depositRollup?: () => Promise<SolanaRpc>;
   /** Whether the owner has an open account on the exchange, as the trading session reads it. */
@@ -143,6 +145,7 @@ export async function createMainnetTransferEnv(parts: MainnetTransferParts): Pro
     solana: parts.solana,
     rollup: parts.rollup,
     depositKey: parts.depositKey,
+    depositKeyDerived: parts.depositKeyDerived,
     depositRollup:
       parts.depositRollup ?? signedInAsKey(parts.depositKey, rollupBaseUrl(parts.rollupEndpoint)),
     exchange: port,

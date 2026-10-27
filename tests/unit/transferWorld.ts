@@ -160,12 +160,12 @@ export function browserLocks(): LockManagerLike {
 }
 
 export function makeWorld(
-  options: { withdrawByKey?: (atoms: bigint) => Promise<KeyWithdrawal> } = {},
+  options: { withdrawByKey?: (atoms: bigint) => Promise<KeyWithdrawal>; depositKey?: Keypair } = {},
 ) {
   const events: string[] = [];
   const keyed = options.withdrawByKey;
   const keypair = Keypair.generate();
-  const depositKey = Keypair.generate();
+  const depositKey = options.depositKey ?? Keypair.generate();
   const clock = {
     t: 1_700_000_000_000,
     now() {

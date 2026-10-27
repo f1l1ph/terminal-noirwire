@@ -9,7 +9,13 @@ import type { Balance, KeyWithdrawal, WalletIdentity } from "@/lib/trading/types
 import { atomsText, balanceAtoms, checkAmount, type AmountCheck } from "@/lib/transfer/amount";
 import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { depositKeyLeftover } from "@/lib/transfer/leftover";
-import { loadOrCreateDepositKey } from "@/lib/transfer/depositKeyStore";
+import {
+  DepositKeyDeclined,
+  deriveDepositKey,
+  loadOrCreateDepositKey,
+  storedDepositKey,
+  storedOrUnsavedDepositKey,
+} from "@/lib/transfer/depositKeyStore";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { createJournal, indexedDbStorage } from "@/lib/transfer/journal";
 import { checkDepositStorage } from "@/lib/transfer/storageGuard";
@@ -34,6 +40,8 @@ import { TransferRecords, type RecordsEngine } from "@/components/TransferRecord
 type Kind = "deposit" | "withdraw";
 
 const SOL_DECIMALS = 9;
+
+const NO_UNFINISHED_DEPOSIT = "No unfinished deposit found for this wallet.";
 
 interface WalletFunds {
   /** Null while unknown: a read that failed is never shown as zero. */
@@ -93,21 +101,29 @@ export default function FundsSection({
     accountOpenRef.current = accountOpen;
   }, [accountOpen]);
 
-  const makeEnv = useCallback(async (): Promise<TransferEnv> => {
-    if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
-    if (!ownerAuthKnown)
-      throw new Error("Still loading the account settings. Try again in a moment.");
-    const rollup = await rollupReader();
-    return createMainnetTransferEnv({
-      signer,
-      solana,
-      rollup,
-      rollupEndpoint: rollup.rpcEndpoint,
-      depositKey: await loadOrCreateDepositKey(signer.publicKey.toBase58()),
-      accountOpen: async () => accountOpenRef.current,
-      ...(withdrawByKey ? { withdrawByKey } : {}),
-    });
-  }, [signer, rollupReader, solana, withdrawByKey, ownerAuthKnown]);
+  const makeEnv = useCallback(
+    async (forNewDeposit = false): Promise<TransferEnv> => {
+      if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
+      if (!ownerAuthKnown)
+        throw new Error("Still loading the account settings. Try again in a moment.");
+      const rollup = await rollupReader();
+      const address = signer.publicKey.toBase58();
+      const key = forNewDeposit
+        ? await loadOrCreateDepositKey(address, (message) => signer.signMessage(message))
+        : await storedOrUnsavedDepositKey(address);
+      return createMainnetTransferEnv({
+        signer,
+        solana,
+        rollup,
+        rollupEndpoint: rollup.rpcEndpoint,
+        depositKey: key.keypair,
+        depositKeyDerived: key.derived,
+        accountOpen: async () => accountOpenRef.current,
+        ...(withdrawByKey ? { withdrawByKey } : {}),
+      });
+    },
+    [signer, rollupReader, solana, withdrawByKey, ownerAuthKnown],
+  );
 
   const freeCollateral =
     collateral && !isAvailableUnknown(collateral)
@@ -196,6 +212,24 @@ export default function FundsSection({
     return { usdc, lamports };
   }, [owner, solana]);
 
+  const [keyStored, setKeyStored] = useState(true);
+
+  useEffect(() => {
+    if (!owner) return;
+    let active = true;
+    void storedDepositKey(owner).then(
+      (stored) => {
+        if (active) setKeyStored(stored !== null);
+      },
+      () => {
+        if (active) setKeyStored(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [owner, refreshKey]);
+
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -231,7 +265,7 @@ export default function FundsSection({
           return;
         }
       }
-      const transfer = withProgress(await makeEnv(), setPhase);
+      const transfer = withProgress(await makeEnv(kind === "deposit"), setPhase);
       const amount = atomsText(check.atoms, QUOTE_DECIMALS);
       const outcome =
         kind === "deposit"
@@ -247,12 +281,43 @@ export default function FundsSection({
         onSettled();
       }
     } catch (error) {
-      setResult(failureLine(error));
+      setResult(
+        error instanceof DepositKeyDeclined
+          ? { tone: "error", text: error.message }
+          : failureLine(error),
+      );
     } finally {
       setPhase(null);
       setRefreshKey((count) => count + 1);
     }
   }
+
+  const finishFromAnotherBrowser = async () => {
+    setOpen(true);
+    setResult(null);
+    setPhase("approve");
+    try {
+      await deriveDepositKey(owner, (message) => signer.signMessage(message));
+      setPhase("preparing");
+      const transfer = withProgress(await makeEnv(), setPhase);
+      if ((await depositKeyLeftover(transfer)) === null) {
+        setResult({ tone: "warn", text: NO_UNFINISHED_DEPOSIT });
+        return;
+      }
+      const outcome = await recoverDepositKey(transfer);
+      setResult(outcomeLine("deposit", outcome, QUOTE_DECIMALS, ROUND_TRIP_LAMPORTS));
+      if (outcome.status === "done") onSettled();
+    } catch (error) {
+      setResult(
+        error instanceof DepositKeyDeclined
+          ? { tone: "error", text: error.message }
+          : failureLine(error),
+      );
+    } finally {
+      setPhase(null);
+      setRefreshKey((count) => count + 1);
+    }
+  };
 
   return (
     <div>
@@ -407,6 +472,16 @@ export default function FundsSection({
               </p>
             )}
           </div>
+        )}
+        {!keyStored && !open && (
+          <button
+            type="button"
+            className="text-faint mt-2 w-full text-center text-[11px] underline"
+            disabled={busy}
+            onClick={() => void finishFromAnotherBrowser()}
+          >
+            Finish a deposit from another browser
+          </button>
         )}
       </div>
     </div>

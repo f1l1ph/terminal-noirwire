@@ -278,11 +278,11 @@ async function strand(env: TransferEnv, id: string, error: string): Promise<Depo
   const record = (await env.journal.unfinished(owner)).find((candidate) => candidate.id === id);
   if (record && record.sends.length === 0) await env.journal.finish(owner, id);
   else await env.journal.clearSeatSend(owner, id);
-  return strandedBy(id, error);
+  return strandedBy(id, error, env.depositKeyDerived === true);
 }
 
-/** The move into the rollup landed and the deposit was refused: nothing was sent again, and the tokens wait in the deposit key's rollup balance. */
-function strandedBy(id: string, error: string): DepositOutcome {
+/** The move into the rollup landed and the deposit was refused: nothing was sent again, and the tokens wait in the deposit key's rollup balance. A derived key is the wallet's, so any browser with it can finish; a random one lives in this browser alone. */
+function strandedBy(id: string, error: string, derived: boolean): DepositOutcome {
   const code = errorCode(error);
   const why =
     code === CUSTODY_CAP_REACHED
@@ -293,7 +293,9 @@ function strandedBy(id: string, error: string): DepositOutcome {
   return {
     status: "stranded",
     id,
-    message: `${why} Your USDC left your wallet and is safe: it is held by this browser's deposit key. You do not need to send more.`,
+    message: derived
+      ? `${why} Your USDC left your wallet and is safe: it is held by your deposit key, and any browser with this wallet can finish the deposit. You do not need to send more.`
+      : `${why} Your USDC left your wallet and is safe: it is held by this browser's deposit key. You do not need to send more.`,
   };
 }
 

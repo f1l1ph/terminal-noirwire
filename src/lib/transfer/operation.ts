@@ -62,6 +62,8 @@ export interface TransferEnv {
   rollup: SolanaRpc;
   /** The owner's deposit key, kept in this browser: it holds the deposited tokens in the rollup and credits them to the account, so the wallet signs nothing in the rollup. Made and stored before any wallet prompt. */
   depositKey: Keypair;
+  /** Whether the key comes from the wallet's signature, so any browser with the wallet can finish a deposit; absent means a random key that only this browser holds. */
+  depositKeyDerived?: boolean;
   /** The rollup endpoint signed in as the deposit key, which alone can read the key's token account. Signs in on first use, with no wallet. */
   depositRollup(): Promise<SolanaRpc>;
   exchange: ExchangePort;
