@@ -8,6 +8,7 @@ import type { PublicDeployment } from "../rollup/deployment";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
 import { createLatestReads } from "./latestRead";
+import type { LimitsState } from "./uiRules";
 import {
   hasExposureIn,
   MARGIN_REFRESH_STALE_RETRY_MS,
@@ -55,8 +56,16 @@ interface OwnerFlow {
   keys: OrderKeyState | null;
   makersListed: ReadonlySet<string>;
   limits: ReadonlyMap<string, MarketLimits>;
+  /** Whether the read of the market limits is running, done or failed. */
+  limitsState: LimitsState;
   deployment: PublicDeployment | null;
+  /** Automatic sign-in has stopped because the exchange refused a freshly signed token; the owner has to sign in again. */
+  sessionStopped: boolean;
 }
+
+/** A failed read of the market limits is tried again this often, this many times, while nothing else has changed. */
+const LIMITS_RETRY_MS = 10_000;
+const LIMITS_RETRY_ATTEMPTS = 6;
 
 const NO_MARKETS: ReadonlySet<string> = new Set();
 const NO_LIMITS: ReadonlyMap<string, MarketLimits> = new Map();
@@ -67,7 +76,9 @@ const NO_FLOW: OwnerFlow = {
   keys: null,
   makersListed: NO_MARKETS,
   limits: NO_LIMITS,
+  limitsState: "loading",
   deployment: null,
+  sessionStopped: false,
 };
 
 interface AccountRead {
@@ -270,6 +281,23 @@ export function useTrading(
     return () => setFlows((prev) => withoutOpenOutcome(prev, walletKey));
   }, [walletKey]);
 
+  /** Reads the market limits; a read that fails is recorded as failed, never left looking like one still running. */
+  const readLimits = useCallback(
+    (identity: WalletIdentity, current: () => boolean, onFailed?: () => void) => {
+      client.marketLimits?.(identity).then(
+        (limits) => {
+          if (current()) patchFlow(identity.address, { limits, limitsState: "ready" });
+        },
+        () => {
+          if (!current()) return;
+          patchFlow(identity.address, { limitsState: "failed" });
+          onFailed?.();
+        },
+      );
+    },
+    [client, patchFlow],
+  );
+
   useEffect(() => {
     if (!wallet) return;
     let active = true;
@@ -291,23 +319,49 @@ export function useTrading(
       },
       () => {},
     );
-    client.marketLimits?.(wallet).then(
-      (limits) => {
-        if (active) patchFlow(wallet.address, { limits });
-      },
-      () => {},
-    );
+    readLimits(wallet, () => active);
     client.sessionDeployment?.(wallet).then(
       (deployment) => {
         if (active) patchFlow(wallet.address, { deployment });
       },
       () => {},
     );
+    const stopWatchingSession = client.subscribeSessionStopped?.(wallet, (sessionStopped) => {
+      if (active) patchFlow(wallet.address, { sessionStopped });
+    });
     return () => {
       active = false;
       stopKeys?.();
+      stopWatchingSession?.();
     };
-  }, [client, wallet, patchFlow, statusReads]);
+  }, [client, wallet, patchFlow, statusReads, readLimits]);
+
+  // A read of the market limits that failed is tried again, and each new
+  // attempt builds on the session as it stands then, so one replaced since
+  // (a new sign-in) gets its own try. Orders wait for it meanwhile.
+  const limitsState = (wallet ? flows[wallet.address] : undefined)?.limitsState ?? "loading";
+  const limitsFailures = useRef(0);
+  const [limitsRetry, setLimitsRetry] = useState(0);
+  useEffect(() => {
+    if (limitsState !== "failed") {
+      limitsFailures.current = 0;
+      return;
+    }
+    if (!wallet || limitsFailures.current >= LIMITS_RETRY_ATTEMPTS) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      limitsFailures.current += 1;
+      readLimits(
+        wallet,
+        () => active,
+        () => setLimitsRetry((count) => count + 1),
+      );
+    }, LIMITS_RETRY_MS);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [limitsState, limitsRetry, wallet, readLimits]);
 
   /** Runs the account check again, and with it the sign-in and key setup a failed attempt left undone. */
   const recheckAccount = useCallback(
@@ -329,12 +383,7 @@ export function useTrading(
         },
         () => {},
       );
-      client.marketLimits?.(wallet).then(
-        (limits) => {
-          if (currentOwnerRef.current === owner) patchFlow(owner, { limits });
-        },
-        () => {},
-      );
+      readLimits(wallet, () => currentOwnerRef.current === owner);
       client.sessionDeployment?.(wallet).then(
         (deployment) => {
           if (currentOwnerRef.current === owner) patchFlow(owner, { deployment });
@@ -342,7 +391,7 @@ export function useTrading(
         () => {},
       );
     },
-    [client, wallet, patchFlow, statusReads],
+    [client, wallet, patchFlow, statusReads, readLimits],
   );
 
   // The page itself unloading (close, refresh, navigate away) does not
@@ -366,8 +415,9 @@ export function useTrading(
   // only when the seat changes. Re-reading just after that moment prices it
   // again from the marks as they are now.
   const marginValidUntilMs = effectiveState.collateral?.availableValidUntilMs;
+  const { sessionStopped } = flow;
   useEffect(() => {
-    if (!wallet || marginValidUntilMs === undefined) return;
+    if (!wallet || marginValidUntilMs === undefined || sessionStopped) return;
     let active = true;
     let refresh: ReturnType<typeof setTimeout> | undefined;
     const arm = (lastReadAtMs: number | null) => {
@@ -394,15 +444,19 @@ export function useTrading(
       active = false;
       clearTimeout(refresh);
     };
-  }, [client, wallet, marginValidUntilMs, setStateSynced]);
+  }, [client, wallet, marginValidUntilMs, sessionStopped, setStateSynced]);
 
   // The scheduled re-read above is a backstop that belongs to a known
   // figure. While the figure is unknown it is not running, so this keeps
   // trying: re-value from the last view first, read the venue if that still
   // cannot price it.
-  const figureUnknown = effectiveState.collateral?.availableUnknown === true;
+  // Exposure in a market this terminal cannot read keeps the figure unknown
+  // however often it is read, so that case does not poll.
+  const figureUnknown =
+    effectiveState.collateral?.availableUnknown === true &&
+    effectiveState.exposureUnreadable !== true;
   useEffect(() => {
-    if (!wallet || !figureUnknown) return;
+    if (!wallet || !figureUnknown || sessionStopped) return;
     let active = true;
     let reading = false;
     const retry = setInterval(() => {
@@ -427,7 +481,14 @@ export function useTrading(
       active = false;
       clearInterval(retry);
     };
-  }, [client, wallet, figureUnknown, setStateSynced, setStateRepriced]);
+  }, [client, wallet, figureUnknown, sessionStopped, setStateSynced, setStateRepriced]);
+
+  /** The owner's own action once automatic sign-in has stopped: signs in once more. */
+  const signInAgain = useCallback(async (): Promise<void> => {
+    if (!wallet || !client.signInAgain) return;
+    await client.signInAgain(wallet);
+    void recheckAccount();
+  }, [client, wallet, recheckAccount]);
 
   // A newer live mark for a market the account has exposure in re-values it
   // from the last view held, with no read: the available figure then moves
@@ -635,6 +696,11 @@ export function useTrading(
     makersListed: flow.makersListed,
     /** Each market's trading limits as its account states them, by symbol; empty until the session has read them. */
     marketLimits: flow.limits,
+    /** Whether the market limits are still being read, were read, or could not be; mainnet orders wait for "ready". */
+    marketLimitsState: flow.limitsState,
+    /** True once the exchange refused a freshly signed token: nothing signs in on its own until `signInAgain`. */
+    sessionStopped: flow.sessionStopped,
+    signInAgain,
     /** The deployment this wallet's session was built against; null until it is. */
     sessionDeployment: flow.deployment,
     fund,

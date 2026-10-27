@@ -101,6 +101,25 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await (await this.load()).marketLimits?.(wallet)) ?? new Map();
   }
 
+  subscribeSessionStopped(
+    wallet: WalletIdentity,
+    listener: (stopped: boolean) => void,
+  ): () => void {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void this.load().then((client) => {
+      if (!cancelled) unsubscribe = client.subscribeSessionStopped?.(wallet, listener) ?? null;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }
+
+  async signInAgain(wallet: WalletIdentity): Promise<void> {
+    await (await this.load()).signInAgain?.(wallet);
+  }
+
   async sessionDeployment(wallet: WalletIdentity): Promise<PublicDeployment> {
     const client = await this.load();
     if (!client.sessionDeployment) throw new Error("This client has no session deployment");

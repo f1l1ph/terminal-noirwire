@@ -7,6 +7,8 @@ export const PRICES_DOWN_KEPT_SETTINGS_NOTICE =
   "Price service unreachable. Using the last market settings this browser saw, so you can see positions, cancel orders, withdraw, and close once a price arrives. New positions wait until it is back. Retrying.";
 export const DEPOSIT_IN_PROGRESS_NOTICE =
   "Deposit in progress: keep this browser open until it finishes";
+export const SESSION_REFUSED_NOTICE =
+  "The exchange stopped accepting your sign-in, so balances and orders have stopped updating. Your funds are safe. Sign in again to continue.";
 export const TRADING_IN_OTHER_TAB_NOTICE =
   "Trading is open in another tab on this account. You can still look around here, but orders and cancels are off so the two tabs do not clash.";
 
@@ -21,17 +23,33 @@ export function TerminalNotices({
   usingKeptSettings,
   tradingElsewhere,
   onUseThisTab,
+  sessionStopped = false,
+  onSignInAgain = () => {},
 }: {
   owner: string | null;
   pricesUnreachable: boolean;
   usingKeptSettings: boolean;
   tradingElsewhere: boolean;
   onUseThisTab: () => void;
+  /** The exchange refused a freshly signed token; nothing signs in on its own until the owner does. */
+  sessionStopped?: boolean;
+  onSignInAgain?: () => void;
 }) {
   const depositOpen = useDepositInProgress(owner);
-  if (!pricesUnreachable && !depositOpen && !tradingElsewhere) return null;
+  if (!pricesUnreachable && !depositOpen && !tradingElsewhere && !sessionStopped) return null;
   return (
     <div className="flex shrink-0 flex-col gap-1 px-3 sm:px-4">
+      {sessionStopped && (
+        <p
+          role="alert"
+          className="border-line text-warning rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
+        >
+          <span>{SESSION_REFUSED_NOTICE}</span>
+          <button type="button" onClick={onSignInAgain} className="text-ink underline">
+            Sign in again
+          </button>
+        </p>
+      )}
       {tradingElsewhere && (
         <p
           role="status"

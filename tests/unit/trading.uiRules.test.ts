@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { validateOrder } from "@/lib/trading/validation";
 import {
+  limitsGate,
+  limitsGateText,
   offersSpotTrading,
   offersTestFunds,
   placeLabel,
@@ -91,5 +94,51 @@ describe("sideWord", () => {
   it("reads Buy and Sell on spot", () => {
     expect(sideWord(false, "buy")).toBe("Buy");
     expect(sideWord(false, "sell")).toBe("Sell");
+  });
+});
+
+describe("limitsGate: mainnet orders wait for the market account's limits", () => {
+  const limits = { bandBps: 400, minSize: "0.1", minNotional: "5" };
+
+  it("holds the order while the read is pending and says so", () => {
+    expect(limitsGate(true, undefined, "loading")).toBe("loading");
+    expect(limitsGateText("loading")).toBe(
+      "Loading this market's settings. Orders are paused until they load.",
+    );
+  });
+
+  it("holds the order when the read failed and says so", () => {
+    expect(limitsGate(true, undefined, "failed")).toBe("failed");
+    expect(limitsGateText("failed")).toBe(
+      "Market settings could not be read. Orders are paused until they load.",
+    );
+  });
+
+  it("lets the order through once the limits are known, and never gates a test build", () => {
+    expect(limitsGate(true, limits, "ready")).toBeNull();
+    expect(limitsGate(false, undefined, "failed")).toBeNull();
+  });
+
+  it("is what stops a 5 percent bid the old 10 percent check would have passed", () => {
+    const market = {
+      id: "NSOL-PERP",
+      kind: "perp",
+      base: "SOL",
+      quote: "USDC",
+      tickSize: "0.01",
+      lotSize: "0.1",
+      maxLeverage: 5,
+      markPrice: "100",
+      markPriceUpdatedAtMs: 0,
+      change24hPercent: 0,
+      volume24h: "0",
+      openInterest: "0",
+    } as const;
+    const bid = { side: "buy", price: "105.00", size: "1.0" } as const;
+    const mark = { price: "100", time: 1_000 };
+    expect(validateOrder(bid, market, mark, 1_000).valid).toBe(true);
+    expect(validateOrder(bid, market, mark, 1_000, false, limits).errors.price).toBe(
+      "bidAboveBand",
+    );
   });
 });

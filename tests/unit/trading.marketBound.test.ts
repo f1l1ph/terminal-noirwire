@@ -21,13 +21,20 @@ describe("marketOrderBound", () => {
     expect(marketOrderBound({ ...base, side: "sell", bandBps: 50 })).toBe("149.25");
   });
 
-  it("gives a close most of the band so it still finds a fill", () => {
+  it("lets a close reach quotes exactly at both band edges", () => {
     expect(marketOrderBound({ ...base, side: "sell", bandBps: 400, reduceOnly: true })).toBe(
-      "144.60",
+      "144.00",
     );
     expect(marketOrderBound({ ...base, side: "buy", bandBps: 400, reduceOnly: true })).toBe(
-      "155.40",
+      "156.00",
     );
+  });
+
+  it("stays inside the band for a mark and tick that do not line up with it", () => {
+    const odd = { markPrice: "151.37", tick: "0.05", priceDecimals: 2, bandBps: 400 };
+    // 151.37 * 1.04 = 157.4248 and 151.37 * 0.96 = 145.3152.
+    expect(marketOrderBound({ ...odd, side: "buy", reduceOnly: true })).toBe("157.40");
+    expect(marketOrderBound({ ...odd, side: "sell", reduceOnly: true })).toBe("145.35");
   });
 
   it("steps back inside the band when rounding away would leave it", () => {

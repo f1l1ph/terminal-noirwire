@@ -6,6 +6,7 @@ import {
   formatLeverage,
   leverageRatio,
   positionRisks,
+  unknownPositionRisks,
   type PositionRisk,
 } from "@/lib/trading/positionRisk";
 import {
@@ -93,6 +94,7 @@ export function AccountDock({
   onCancelOrder,
   cancellingOrderIds,
   limits = NO_LIMITS,
+  exposureUnreadable = false,
   transfers = null,
   bordered = true,
 }: {
@@ -123,6 +125,8 @@ export function AccountDock({
   cancellingOrderIds: ReadonlySet<string>;
   /** Each market's ratios as its account states them, by symbol; the estimates assume defaults for a market not listed. */
   limits?: ReadonlyMap<string, MarketLimits>;
+  /** The account holds exposure in a market this terminal cannot read: margin and liquidation figures are unknown. */
+  exposureUnreadable?: boolean;
   /** Deposits, withdrawals and the transfers that did not finish, shown above the tabs. */
   transfers?: React.ReactNode;
   /** False inside the desktop Account panel frame, which already supplies the border. True (default) on phone, where this renders standalone. */
@@ -168,6 +172,7 @@ export function AccountDock({
             now={now}
             quoteSymbol={quoteSymbol}
             limits={limits}
+            exposureUnreadable={exposureUnreadable}
             onClose={onClosePosition}
             onReduce={onReducePosition}
           />
@@ -203,6 +208,7 @@ export function AccountDock({
             marketSettings={marketSettings}
             quoteSymbol={quoteSymbol}
             limits={limits}
+            exposureUnreadable={exposureUnreadable}
           />
         )}
       </div>
@@ -272,6 +278,7 @@ function PositionsTable({
   now,
   quoteSymbol,
   limits,
+  exposureUnreadable,
   onClose,
   onReduce,
 }: {
@@ -282,167 +289,190 @@ function PositionsTable({
   now: number;
   quoteSymbol: string;
   limits: ReadonlyMap<string, MarketLimits>;
+  exposureUnreadable: boolean;
   onClose: (position: Position) => void;
   onReduce: (position: Position) => void;
 }) {
   const open = positions.filter((position) => Number(position.size) !== 0);
   if (open.length === 0) {
-    return (
+    return exposureUnreadable ? (
+      <UnreadableExposureNote />
+    ) : (
       <EmptyState
         title="No positions yet"
         hint="Your SOL-PERP positions appear here once an order fills."
       />
     );
   }
-  const risks = positionRisks(open, collateral?.total ?? null, freshMarkLookup(marksByMarket, now));
+  const risks = exposureUnreadable
+    ? unknownPositionRisks(open)
+    : positionRisks(open, collateral?.total ?? null, freshMarkLookup(marksByMarket, now));
   return (
-    <ul className="flex flex-col gap-2">
-      {open.map((position) => {
-        const settings = marketSettings(position.market);
-        const size = Number(position.size);
-        const long = size > 0;
-        const priceDecimals = settings ? priceDecimalsOf(settings) : 2;
-        const sizeDecimals = settings ? sizeDecimalsOf(settings) : 4;
-        const mark = marksByMarket[position.market] ?? null;
-        const markUsable = mark && !isStale(mark.time, now, STALE_MARK_MS);
-        const risk = risks?.get(position.market);
-        const unrealised = risks
-          ? risk?.pnlAtoms == null
-            ? null
-            : Number(fromFixedPoint(risk.pnlAtoms * 1_000n, 6))
-          : markUsable
-            ? (Number(mark.price) - Number(position.entryPrice)) * size
-            : null;
+    <>
+      {exposureUnreadable && <UnreadableExposureNote />}
+      <ul className="flex flex-col gap-2">
+        {open.map((position) => {
+          const settings = marketSettings(position.market);
+          const size = Number(position.size);
+          const long = size > 0;
+          const priceDecimals = settings ? priceDecimalsOf(settings) : 2;
+          const sizeDecimals = settings ? sizeDecimalsOf(settings) : 4;
+          const mark = marksByMarket[position.market] ?? null;
+          const markUsable = mark && !isStale(mark.time, now, STALE_MARK_MS);
+          const risk = risks?.get(position.market);
+          const unrealised = risks
+            ? risk?.pnlAtoms == null
+              ? null
+              : Number(fromFixedPoint(risk.pnlAtoms * 1_000n, 6))
+            : markUsable
+              ? (Number(mark.price) - Number(position.entryPrice)) * size
+              : null;
 
-        let marginUsed: string | null = null;
-        let liquidation: string | null = null;
-        if (settings && settings.kind === "perp") {
-          const estimate = positionCost(
-            long ? "buy" : "sell",
-            withoutSign(position.size),
-            position.entryPrice,
-            settings,
-            limits.get(position.market),
+          let marginUsed: string | null = null;
+          let liquidation: string | null = null;
+          if (settings && settings.kind === "perp") {
+            const estimate = positionCost(
+              long ? "buy" : "sell",
+              withoutSign(position.size),
+              position.entryPrice,
+              settings,
+              limits.get(position.market),
+            );
+            const display = displayOrderCost(estimate, priceDecimals);
+            marginUsed = display.initialMargin;
+            liquidation = display.liquidationPrice;
+          }
+          const liquidationShown = risks
+            ? liquidationCell(risk, priceDecimals)
+            : {
+                value:
+                  liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE,
+                title: `Estimate: a ${percentOfBps(limits.get(position.market)?.mmBps ?? MAINTENANCE_MARGIN_BPS)} maintenance margin, computed on this device. Not confirmed by the exchange.`,
+              };
+
+          const leverageShown = leverageCell(
+            risk ? leverageRatio(risk.notionalAtoms, risk.equityAtoms) : null,
+            settings?.kind === "perp" ? settings.maxLeverage : null,
           );
-          const display = displayOrderCost(estimate, priceDecimals);
-          marginUsed = display.initialMargin;
-          liquidation = display.liquidationPrice;
-        }
-        const liquidationShown = risks
-          ? liquidationCell(risk, priceDecimals)
-          : {
-              value: liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE,
-              title: `Estimate: a ${percentOfBps(limits.get(position.market)?.mmBps ?? MAINTENANCE_MARGIN_BPS)} maintenance margin, computed on this device. Not confirmed by the exchange.`,
-            };
 
-        const leverageShown = leverageCell(
-          risk ? leverageRatio(risk.notionalAtoms, risk.equityAtoms) : null,
-          settings?.kind === "perp" ? settings.maxLeverage : null,
-        );
-
-        return (
-          <li
-            key={position.market}
-            className="bg-surface-raised border-line-subtle rounded-tile border p-3"
-          >
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span
-                className={`rounded-tile px-2 py-0.5 text-[12px] font-medium ${
-                  long ? "bg-safe/15 text-safe" : "bg-danger/15 text-danger"
-                }`}
-              >
-                {long ? "Long" : "Short"}
-              </span>
-              <span className="text-ink-strong text-[14px] font-medium">
-                {marketDisplayName(position.market)}
-              </span>
-              <span className="tnum text-dim text-[13px]">
-                {formatDecimal(Math.abs(size), sizeDecimals)}
-                {settings ? ` ${settings.base}` : ""}
-              </span>
-              <span
-                className="ml-auto text-right"
-                title={
-                  risks
-                    ? `What this position adds to your equity at the mark. It includes profit already taken by earlier partial closes and funding already settled, and leaves out fees and funding not yet settled.`
-                    : undefined
-                }
-              >
-                <span className="text-faint block text-[11px]">
-                  {risks ? "Position P&L" : "Unrealised P&L"}
-                </span>
+          return (
+            <li
+              key={position.market}
+              className="bg-surface-raised border-line-subtle rounded-tile border p-3"
+            >
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span
-                  className={`tnum text-[15px] font-medium ${
-                    unrealised === null
-                      ? "text-faint"
-                      : unrealised >= 0
-                        ? "text-safe"
-                        : "text-danger"
+                  className={`rounded-tile px-2 py-0.5 text-[12px] font-medium ${
+                    long ? "bg-safe/15 text-safe" : "bg-danger/15 text-danger"
                   }`}
                 >
-                  {unrealised !== null
-                    ? `${unrealised > 0 ? "+" : ""}${formatMoney(unrealised, quoteSymbol)}`
-                    : "Price unavailable"}
+                  {long ? "Long" : "Short"}
                 </span>
-              </span>
-            </div>
-            <dl className="tnum mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-4">
-              <PositionStat
-                label={risks ? "Break-even" : "Entry"}
-                title={
-                  risks
-                    ? "The price at which this position's own cash flow nets to zero. It equals your average entry only while the position has never been reduced and no funding has been settled."
-                    : undefined
-                }
-                value={
-                  risks
-                    ? risk?.breakEven != null
-                      ? formatDecimal(fromFixedPoint(risk.breakEven, priceDecimals), priceDecimals)
-                      : UNAVAILABLE
-                    : formatDecimal(position.entryPrice, priceDecimals)
-                }
-              />
-              <PositionStat
-                label="Mark"
-                value={markUsable ? formatDecimal(mark!.price, priceDecimals) : UNAVAILABLE}
-              />
-              <PositionStat
-                label="Margin used (est.)"
-                value={marginUsed !== null ? formatMoney(marginUsed, quoteSymbol) : UNAVAILABLE}
-              />
-              <PositionStat
-                label="Liquidation (est.)"
-                title={liquidationShown.title}
-                value={liquidationShown.value}
-              />
-              {risk && (
+                <span className="text-ink-strong text-[14px] font-medium">
+                  {marketDisplayName(position.market)}
+                </span>
+                <span className="tnum text-dim text-[13px]">
+                  {formatDecimal(Math.abs(size), sizeDecimals)}
+                  {settings ? ` ${settings.base}` : ""}
+                </span>
+                <span
+                  className="ml-auto text-right"
+                  title={
+                    risks
+                      ? `What this position adds to your equity at the mark. It includes profit already taken by earlier partial closes and funding already settled, and leaves out fees and funding not yet settled.`
+                      : undefined
+                  }
+                >
+                  <span className="text-faint block text-[11px]">
+                    {risks ? "Position P&L" : "Unrealised P&L"}
+                  </span>
+                  <span
+                    className={`tnum text-[15px] font-medium ${
+                      unrealised === null
+                        ? "text-faint"
+                        : unrealised >= 0
+                          ? "text-safe"
+                          : "text-danger"
+                    }`}
+                  >
+                    {unrealised !== null
+                      ? `${unrealised > 0 ? "+" : ""}${formatMoney(unrealised, quoteSymbol)}`
+                      : "Price unavailable"}
+                  </span>
+                </span>
+              </div>
+              <dl className="tnum mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-4">
                 <PositionStat
-                  label="Leverage"
-                  title={leverageShown.title}
-                  value={leverageShown.value}
+                  label={risks ? "Break-even" : "Entry"}
+                  title={
+                    risks
+                      ? "The price at which this position's own cash flow nets to zero. It equals your average entry only while the position has never been reduced and no funding has been settled."
+                      : undefined
+                  }
+                  value={
+                    risks
+                      ? risk?.breakEven != null
+                        ? formatDecimal(
+                            fromFixedPoint(risk.breakEven, priceDecimals),
+                            priceDecimals,
+                          )
+                        : UNAVAILABLE
+                      : formatDecimal(position.entryPrice, priceDecimals)
+                  }
                 />
-              )}
-            </dl>
-            <div className="mt-3 flex gap-2">
-              <button
-                type="button"
-                className={`${btnGhost} flex-1 text-[12px]`}
-                onClick={() => onReduce(position)}
-              >
-                Reduce
-              </button>
-              <button
-                type="button"
-                className={`${btnGhost} flex-1 text-[12px]`}
-                onClick={() => onClose(position)}
-              >
-                Close position
-              </button>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
+                <PositionStat
+                  label="Mark"
+                  value={markUsable ? formatDecimal(mark!.price, priceDecimals) : UNAVAILABLE}
+                />
+                <PositionStat
+                  label="Margin used (est.)"
+                  value={marginUsed !== null ? formatMoney(marginUsed, quoteSymbol) : UNAVAILABLE}
+                />
+                <PositionStat
+                  label="Liquidation (est.)"
+                  title={liquidationShown.title}
+                  value={liquidationShown.value}
+                />
+                {risk && (
+                  <PositionStat
+                    label="Leverage"
+                    title={leverageShown.title}
+                    value={leverageShown.value}
+                  />
+                )}
+              </dl>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  className={`${btnGhost} flex-1 text-[12px]`}
+                  onClick={() => onReduce(position)}
+                >
+                  Reduce
+                </button>
+                <button
+                  type="button"
+                  className={`${btnGhost} flex-1 text-[12px]`}
+                  onClick={() => onClose(position)}
+                >
+                  Close position
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+export const UNREADABLE_EXPOSURE_NOTE =
+  "This account holds a position or order in a market this terminal does not trade. Its size, margin and liquidation price cannot be shown, so those figures are unknown and orders that could add risk are off. You can still close positions here.";
+
+function UnreadableExposureNote() {
+  return (
+    <p role="alert" className="text-warning mb-2 text-[12px]">
+      {UNREADABLE_EXPOSURE_NOTE}
+    </p>
   );
 }
 
@@ -677,6 +707,7 @@ function MarginTable({
   marketSettings,
   quoteSymbol,
   limits,
+  exposureUnreadable,
 }: {
   positions: Position[];
   collateral: Balance | null;
@@ -685,17 +716,17 @@ function MarginTable({
   marketSettings: MarketSettingsLookup;
   quoteSymbol: string;
   limits: ReadonlyMap<string, MarketLimits>;
+  exposureUnreadable: boolean;
 }) {
-  const risks = positionRisks(
-    positions,
-    collateral?.total ?? null,
-    freshMarkLookup(marksByMarket, now),
-  );
+  const risks = exposureUnreadable
+    ? unknownPositionRisks(positions)
+    : positionRisks(positions, collateral?.total ?? null, freshMarkLookup(marksByMarket, now));
   const perpPositions = positions.filter((position) => {
     const settings = marketSettings(position.market);
     return Number(position.size) !== 0 && settings?.kind === "perp";
   });
   if (perpPositions.length === 0) {
+    if (exposureUnreadable) return <UnreadableExposureNote />;
     return (
       <EmptyState
         title="No margin in use"
@@ -709,6 +740,7 @@ function MarginTable({
   const noteMaintenance = percentOfBps(noted?.mmBps ?? MAINTENANCE_MARGIN_BPS);
   return (
     <>
+      {exposureUnreadable && <UnreadableExposureNote />}
       <table className="tnum w-full text-left text-[13px]">
         <thead className="text-faint text-[11px] uppercase">
           <tr>
