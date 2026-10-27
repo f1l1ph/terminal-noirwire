@@ -692,6 +692,7 @@ export function Terminal() {
       }
       onClearUnknownHold={() => clearUnknownHold(market.id)}
       position={position}
+      openOrders={trading.state.openOrders}
       onCreateWallet={() => {
         if (!isMainnetBuild()) wallet.create();
       }}

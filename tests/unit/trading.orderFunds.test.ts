@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderFunds } from "@/lib/trading/sizing";
+import { orderFunds, unknownCollateralBlocks } from "@/lib/trading/sizing";
 import { toFixedPoint } from "@/lib/trading/decimal";
 
 const SPOT = { mode: "spot", price: "100", maxLeverage: 1 } as const;
@@ -76,5 +76,226 @@ describe("orderFunds", () => {
       availableBase: "1000",
     });
     expect(funds.shortfall?.asset).toBe("quote");
+  });
+});
+
+describe("orderFunds against an open position", () => {
+  const LONG = { position: "10" };
+
+  it("needs nothing for a reduce-only close, even with almost no balance", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "10",
+      availableQuote: "0",
+      exposure: LONG,
+      reduceOnly: true,
+    });
+    expect(funds.shortfall).toBeNull();
+    expect(funds.requiredQuote).toBe(0n);
+    expect(funds.marginQuote).toBe(0n);
+  });
+
+  it("lets the small-balance close from the live report through", () => {
+    const funds = orderFunds({
+      mode: "perp",
+      side: "sell",
+      quantity: "0.14",
+      price: "100",
+      maxLeverage: 5,
+      availableQuote: "1.19",
+      exposure: { position: "0.14" },
+      reduceOnly: true,
+    });
+    expect(funds.shortfall).toBeNull();
+  });
+
+  it("asks only for the fee when a plain sell equals the long", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "10",
+      availableQuote: "0.5",
+      exposure: LONG,
+    });
+    expect(funds.shortfall).toBeNull();
+    expect(funds.marginQuote).toBe(0n);
+    expect(funds.requiredQuote).toBe(toFixedPoint("0.5"));
+  });
+
+  it("needs no margin when a sell flips the long to a short of the same size", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "20",
+      availableQuote: "1",
+      exposure: LONG,
+    });
+    expect(funds.marginQuote).toBe(0n);
+    expect(funds.requiredQuote).toBe(toFixedPoint("1"));
+  });
+
+  it("asks for margin only on the growth when a sell goes past the flip", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "30",
+      availableQuote: "101.5",
+      exposure: LONG,
+    });
+    expect(funds.marginQuote).toBe(toFixedPoint("100"));
+    expect(funds.requiredQuote).toBe(toFixedPoint("101.5"));
+    expect(funds.shortfall).toBeNull();
+    expect(
+      orderFunds({ ...PERP, side: "sell", quantity: "30", availableQuote: "101.4", exposure: LONG })
+        .shortfall,
+    ).not.toBeNull();
+  });
+
+  it("asks for full margin when a buy adds to the long", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "buy",
+      quantity: "10",
+      availableQuote: "100.4",
+      exposure: LONG,
+    });
+    expect(funds.marginQuote).toBe(toFixedPoint("100"));
+    expect(funds.shortfall).toEqual({ asset: "quote", needed: "100.500000", available: "100.4" });
+  });
+
+  it("counts resting sells against the room a new sell has inside the long", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "20",
+      availableQuote: "100.5",
+      exposure: { position: "10", openAsks: "5" },
+    });
+    expect(funds.marginQuote).toBe(toFixedPoint("50"));
+  });
+
+  it("counts a resting buy as growth only beyond the worst case already held", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "10",
+      availableQuote: "0.5",
+      exposure: { position: "10", openBids: "5" },
+    });
+    expect(funds.marginQuote).toBe(0n);
+  });
+
+  it("leaves a buy that closes a short free of margin", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "buy",
+      quantity: "10",
+      availableQuote: "0.5",
+      exposure: { position: "-10" },
+    });
+    expect(funds.marginQuote).toBe(0n);
+    expect(funds.shortfall).toBeNull();
+  });
+
+  it("lets a perp reduce-only order through an unpriced collateral figure", () => {
+    expect(
+      unknownCollateralBlocks({ availableUnknown: true, isPerp: true, reduceOnly: true }),
+    ).toBe(false);
+  });
+
+  it("blocks every other order while the collateral figure is unpriced", () => {
+    expect(
+      unknownCollateralBlocks({ availableUnknown: true, isPerp: true, reduceOnly: false }),
+    ).toBe(true);
+    expect(
+      unknownCollateralBlocks({ availableUnknown: true, isPerp: false, reduceOnly: true }),
+    ).toBe(true);
+    expect(
+      unknownCollateralBlocks({ availableUnknown: false, isPerp: true, reduceOnly: false }),
+    ).toBe(false);
+  });
+
+  it("prices margin at the mark and the fee at the order price for a market sell bound below the mark", () => {
+    const base = { ...PERP, side: "sell", quantity: "10", price: "99", markPrice: "100" } as const;
+    const funds = orderFunds({ ...base, availableQuote: "100.4" });
+    expect(funds.marginQuote).toBe(toFixedPoint("100"));
+    expect(funds.requiredQuote).toBe(toFixedPoint("100.495"));
+    expect(funds.shortfall).not.toBeNull();
+    expect(orderFunds({ ...base, availableQuote: "100.495" }).shortfall).toBeNull();
+  });
+
+  it("rounds the fee up to a whole quote atom, as the venue charges it", () => {
+    const funds = orderFunds({
+      ...PERP,
+      maxLeverage: 5,
+      side: "buy",
+      quantity: "0.067",
+      price: "150.01",
+      markPrice: "150.001",
+      availableQuote: "2.015039",
+    });
+    expect(funds.requiredQuote).toBe(toFixedPoint("2.0100134") + toFixedPoint("0.005026"));
+    expect(funds.shortfall).not.toBeNull();
+  });
+
+  it("charges a reduce-only close that resting asks would turn into growth", () => {
+    const base = {
+      ...PERP,
+      side: "sell",
+      quantity: "0.14",
+      exposure: { position: "0.14", openAsks: "0.30" },
+      reduceOnly: true,
+    } as const;
+    const short = orderFunds({ ...base, availableQuote: "1.4" });
+    expect(short.reduceOnlyGrows).toBe(true);
+    expect(short.marginQuote).toBe(toFixedPoint("1.4"));
+    expect(short.requiredQuote).toBe(toFixedPoint("1.407"));
+    expect(short.shortfall).not.toBeNull();
+    expect(orderFunds({ ...base, availableQuote: "1.407" }).shortfall).toBeNull();
+  });
+
+  it("caps a reduce-only order to the position before judging growth", () => {
+    const funds = orderFunds({
+      ...PERP,
+      side: "sell",
+      quantity: "50",
+      availableQuote: "0",
+      exposure: LONG,
+      reduceOnly: true,
+    });
+    expect(funds.shortfall).toBeNull();
+    expect(funds.reduceOnlyGrows).toBe(false);
+  });
+
+  it("rounds margin and fee up so the form is never looser at the boundary", () => {
+    const base = { ...PERP, side: "buy", quantity: "1", price: "33.333333333" } as const;
+    expect(orderFunds({ ...base, availableQuote: "3.350000333" }).shortfall).not.toBeNull();
+    const exact = orderFunds({ ...base, availableQuote: "3.350000334" });
+    expect(exact.requiredQuote).toBe(toFixedPoint("3.333333334") + toFixedPoint("0.016667"));
+    expect(exact.shortfall).toBeNull();
+  });
+
+  it("blocks a growing reduce-only order on an unpriced collateral figure", () => {
+    expect(
+      unknownCollateralBlocks({
+        availableUnknown: true,
+        isPerp: true,
+        reduceOnly: true,
+        reduceOnlyGrows: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps spot unchanged whatever exposure or reduce-only flag is passed", () => {
+    const funds = orderFunds({
+      ...SPOT,
+      side: "buy",
+      quantity: "2",
+      availableQuote: "200",
+      exposure: { position: "5" },
+      reduceOnly: true,
+    });
+    expect(funds.shortfall).toEqual({ asset: "quote", needed: "200.100000", available: "200" });
   });
 });
