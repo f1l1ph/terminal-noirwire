@@ -76,7 +76,11 @@ export interface TransferEnv {
    * message: the seat's withdrawal is then signed by an order key through the
    * trading client, and the wallet signs no rollup transaction at all.
    */
-  withdrawByKey?(atoms: bigint): Promise<KeyWithdrawal>;
+  withdrawByKey?(
+    atoms: bigint,
+    /** Called with the order key's signed bytes before they are dispatched; the call must send nothing if it fails. */
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal>;
   journal: Journal;
   lock(owner: string): Promise<OwnerLock | null>;
   /** The only way the owner signs: the transaction must be exactly the one `shape` names before the app's own checks run. `chain` is "solana:mainnet" for a send to Solana, and absent for a rollup send. */
@@ -554,6 +558,7 @@ export async function reconciled(
       connection: env.solana,
       send,
       answer,
+      clock: env.clock,
     });
     if (verdict === "landed") landed = send;
     if (verdict === "wait") {
@@ -677,37 +682,6 @@ export type RollupSendState =
   /** The send was not written down with its signature, so there is nothing to look it up by. */
   | { kind: "unknown" };
 
-/** How long an order key's withdrawal can still run after it was last sent: the program takes a call only up to 60 seconds ahead of the rollup's clock, and this adds room for the clocks to differ. */
-export const ORDER_KEY_CALL_SETTLES_WITHIN_MS = 65_000;
-/** The longest an order key's withdrawal is retried on a stale price, from `withdraw.ts`. */
-const ORDER_KEY_RETRY_WINDOW_MS = 240_000;
-
-/**
- * Where an order key's withdrawal stands, which has no signature to look up:
- * the owner's token account in the rollup rising by the amount shows it ran,
- * and the same balance unchanged once the longest the call could still have
- * been running has passed shows it did not. The account is moved by nothing
- * else while a transfer is open, so unlike the seat's own balance it can decide.
- */
-async function orderKeySendState(
-  env: TransferEnv,
-  seat: SeatSend,
-  atoms: bigint | undefined,
-): Promise<RollupSendState> {
-  if (atoms === undefined) return { kind: "unknown" };
-  let held: bigint | null;
-  try {
-    held = await readTokenBalance(env.rollup, walletAccount(env));
-  } catch {
-    held = null;
-  }
-  if (held === null) return { kind: "unreadable" };
-  if (held >= BigInt(seat.before) + atoms) return { kind: "landed", finalized: true };
-  const last = Date.parse(seat.at) + ORDER_KEY_RETRY_WINDOW_MS + ORDER_KEY_CALL_SETTLES_WITHIN_MS;
-  if (Number.isNaN(last)) return { kind: "unknown" };
-  return env.clock.now() > last ? { kind: "not-seen" } : { kind: "pending" };
-}
-
 /**
  * Where a recorded rollup send stands, from its signature's status alone: a
  * success is `landed` (final once finalized), an error is `failed` only once
@@ -715,22 +689,16 @@ async function orderKeySendState(
  * status within its blockhash's life is `pending`, and none past it, read
  * successfully, is `not-seen`. The height is read before the status, so a
  * send that lands between the two reads is seen and never taken as absent.
- * The seat's balance never decides: trading can move it by the same amount. A
- * status read that fails is `unreadable`, never absent. An order key's
- * withdrawal has no signature, so `atoms`, what it asked for, lets the owner's
- * token account in the rollup decide.
+ * A balance never decides: the seat and the owner's token account can both be
+ * moved by something else. A status read that fails is `unreadable`, never
+ * absent. An order key's withdrawal recorded as landed was proven by the
+ * client from the account's own view, so it is final as recorded; before that
+ * it is judged by the signature written down just before it was dispatched,
+ * and one that was never signed or never dispatched has none and is `unknown`.
  */
-export async function rollupSendState(
-  env: TransferEnv,
-  seat: SeatSend,
-  atoms?: bigint,
-): Promise<RollupSendState> {
+export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise<RollupSendState> {
   const recordedLanded = seat.state === "landed";
-  if (seat.signer === "order-key") {
-    return recordedLanded
-      ? { kind: "landed", finalized: true }
-      : orderKeySendState(env, seat, atoms);
-  }
+  if (seat.signer === "order-key" && recordedLanded) return { kind: "landed", finalized: true };
   if (!seat.signature || seat.lastValidBlockHeight === undefined) {
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
   }
@@ -766,7 +734,7 @@ export async function rollupSendState(
  */
 export async function operationFinal(env: TransferEnv, record: OperationRecord): Promise<boolean> {
   if (record.seat) {
-    const state = await rollupSendState(env, record.seat, BigInt(record.atoms));
+    const state = await rollupSendState(env, record.seat);
     if (state.kind !== "landed" || !state.finalized) return false;
   }
   try {
@@ -842,11 +810,7 @@ export async function settledRollupSend(
 ): Promise<"none" | "landed" | { failed: string } | Stopped> {
   if (!seat) return "none";
   const owner = env.owner.toBase58();
-  const atoms =
-    seat.signer === "order-key"
-      ? BigInt((await env.journal.unfinished(owner)).find((record) => record.id === id)?.atoms ?? 0)
-      : undefined;
-  const state = await rollupSendState(env, seat, atoms || undefined);
+  const state = await rollupSendState(env, seat);
   if (state.kind === "landed") {
     if (seat.state === "pending") await env.journal.markSeatLanded(owner, id);
     if (requireFinal && !state.finalized) {
@@ -864,9 +828,7 @@ export async function settledRollupSend(
   if (state.kind === "pending") {
     return waiting(
       id,
-      seat.signer === "order-key"
-        ? ORDER_KEY_WITHDRAWAL_UNPROVEN
-        : `The rollup transaction ${seat.signature} may still land until the rollup passes block height ${seat.lastValidBlockHeight}. Nothing is sent again.`,
+      `The rollup transaction ${seat.signature} may still land until the rollup passes block height ${seat.lastValidBlockHeight}. Nothing is sent again.`,
     );
   }
   if (state.kind === "unreadable") {
@@ -876,15 +838,6 @@ export async function settledRollupSend(
     );
   }
   if (state.kind === "not-seen") {
-    if (seat.signer === "order-key") {
-      return {
-        status: "not-landed",
-        id,
-        signature: "",
-        message:
-          "The withdrawal was never shown and can no longer run: the owner's token account in the rollup did not rise. It stays on record until it is dismissed, and dismissing it sends nothing.",
-      };
-    }
     return {
       status: "not-landed",
       id,

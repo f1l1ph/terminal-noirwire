@@ -29,7 +29,7 @@ export function dismissRollupSend(env: TransferEnv): Promise<DismissOutcome> {
         "No rollup send is waiting on record. Nothing was changed.",
       );
     }
-    const state = await rollupSendState(env, record.seat, BigInt(record.atoms));
+    const state = await rollupSendState(env, record.seat);
     if (state.kind !== "not-seen") {
       return refuse(
         "not-dismissable",

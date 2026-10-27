@@ -9,7 +9,6 @@ import type { KeyWithdrawal } from "../trading/types";
 import {
   POLL_MS,
   SHOWN_IN_ROLLUP_WITHIN_MS,
-  ORDER_KEY_CALL_SETTLES_WITHIN_MS,
   ORDER_KEY_WITHDRAWAL_UNPROVEN,
   SOLANA_EXIT_LAMPORTS,
   balanceAccount,
@@ -44,6 +43,8 @@ import {
   readTokenBalance,
   simulationError,
 } from "./solanaRpc";
+import { NotDispatched } from "./keyedWithdrawal";
+import { signatureOf } from "./send";
 import { tokenAtoms } from "./verdicts";
 
 /** The program's `StalePrice`: the crank's next push mends it. */
@@ -159,46 +160,19 @@ async function balanceInRollup(
 }
 
 /**
- * What to do when the trading client threw: it does not say whether the call
- * was sent. The call cannot run any more once the longest it could still be
- * running has passed, and then the owner's token account in the rollup decides:
- * risen by the amount, the withdrawal ran; unchanged, it did not, and the
- * pending record is cleared so a new try is allowed. A balance that cannot be
- * read leaves the record, which the same read settles later, and nothing is
- * sent again.
- */
-async function settledAfterThrow(
-  env: TransferEnv,
-  id: string,
-  atoms: bigint,
-  held: bigint,
-): Promise<Stopped | null> {
-  const owner = env.owner.toBase58();
-  await env.clock.sleep(ORDER_KEY_CALL_SETTLES_WITHIN_MS);
-  const now = await readTokenBalance(env.rollup, walletAccount(env)).catch(() => null);
-  if (now === null) return waiting(id, ORDER_KEY_WITHDRAWAL_UNPROVEN);
-  if (now >= held + atoms) {
-    await env.journal.markSeatLanded(owner, id);
-    return null;
-  }
-  await env.journal.clearSeatSend(owner, id);
-  return refuse(
-    "send-failed",
-    "The withdrawal did not run and can no longer. Nothing moved. Try again.",
-  );
-}
-
-/**
  * The seat's withdrawal signed by an order key, with no wallet signature. The
- * trading client builds, signs and sends it, so the record is written before
- * the call and carries no signature to look up: it is closed by what the
- * client proves, and a send whose outcome is not proven stays on record and
- * is never sent again. A refusal leaves the key live and moves nothing, and a
- * stale mark is waited out as for a wallet-signed withdrawal.
+ * trading client builds, signs and sends it, but the key signs here in the
+ * browser, so the signed bytes are handed over before they are dispatched and
+ * their signature and blockhash expiry are written to the record first: from
+ * then on the send is judged by its status like any rollup send. A call that
+ * threw having dispatched nothing clears the pending record and refuses; one
+ * that threw otherwise, or whose outcome the client could not prove, stays on
+ * record and is never sent again. A refusal leaves the key live and moves
+ * nothing, and a stale mark is waited out as for a wallet-signed withdrawal.
  */
 async function seatWithdrawnByKey(
   env: TransferEnv,
-  withdrawByKey: (atoms: bigint) => Promise<KeyWithdrawal>,
+  withdrawByKey: NonNullable<TransferEnv["withdrawByKey"]>,
   id: string,
   atoms: bigint,
   held: bigint,
@@ -211,13 +185,22 @@ async function seatWithdrawnByKey(
     before: held.toString(),
     signer: "order-key",
   });
+  const writeSignature = async (raw: Uint8Array) => {
+    const { lastValidBlockHeight } = await freshBlockhash(env.rollup);
+    await env.journal.attachSeatSignature(owner, id, {
+      signature: signatureOf(raw),
+      lastValidBlockHeight,
+    });
+  };
   const deadline = env.clock.now() + FRESH_MARK_WITHIN_MS;
   for (;;) {
     let result: KeyWithdrawal;
     try {
-      result = await withdrawByKey(atoms);
-    } catch {
-      return settledAfterThrow(env, id, atoms, held);
+      result = await withdrawByKey(atoms, writeSignature);
+    } catch (error) {
+      if (!(error instanceof NotDispatched)) return waiting(id, ORDER_KEY_WITHDRAWAL_UNPROVEN);
+      await env.journal.clearSeatSend(owner, id);
+      return refuse("send-failed", "The withdrawal was not sent. Nothing moved. Try again.");
     }
     if (result.kind === "withdrawn") {
       await env.journal.markSeatLanded(owner, id);
@@ -430,7 +413,9 @@ export function finishCompleted(env: TransferEnv): Promise<void> {
     const owner = env.owner.toBase58();
     for (const record of await env.journal.unfinished(owner)) {
       if (record.kind === "deposit") {
-        if (record.seat?.state === "landed") await finishWhenFinalized(env, record.id);
+        if (record.seat?.state === "landed" || record.stranded) {
+          await finishWhenFinalized(env, record.id);
+        }
         continue;
       }
       if (record.seat?.state === "pending") continue;

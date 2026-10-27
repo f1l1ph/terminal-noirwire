@@ -132,7 +132,9 @@ export function outcomeLine(
     case "stranded":
       return {
         tone: "warn",
-        text: `${outcome.message} Under transfers that need attention, "Put it in my account" puts it in your account.`,
+        text: `${outcome.message} Under transfers that need attention, "${
+          outcome.recordKept ? "Try the deposit again" : "Put it in my account"
+        }" puts it in your account.`,
       };
   }
 }

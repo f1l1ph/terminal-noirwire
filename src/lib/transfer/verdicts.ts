@@ -5,8 +5,13 @@ export interface SolanaReader {
   getSignatureStatus(
     signature: string,
     config: { searchTransactionHistory: boolean },
-  ): Promise<{ value: { err: unknown; confirmationStatus?: string } | null }>;
+  ): Promise<{
+    /** The slot the node answered at, when it says. */
+    context?: { slot: number };
+    value: { err: unknown; confirmationStatus?: string } | null;
+  }>;
   getBlockHeight(commitment: "confirmed" | "finalized"): Promise<number>;
+  getSlot(commitment: "finalized"): Promise<number>;
 }
 
 /** One Solana transaction written down before it was broadcast. */
@@ -100,7 +105,8 @@ export function seatVerdict(
  * may answer null for an execution another node saw: it waits until it is
  * confirmed, the operator answers `landed:<signature>`, or the finalized
  * chain is past its blockhash's last valid height and the status is read again
- * (absent then is `safe`, a finalized status is `landed` or `failed`).
+ * (a finalized status is `landed` or `failed`; missing twice, from replies
+ * current to the finalized slot, is `safe`).
  * A send is `failed` only on a finalized status that carries an error; an
  * error on a status that is not finalized may still be rolled back, so it
  * waits. A read that fails throws, and nothing is sent on a guess.
@@ -109,6 +115,7 @@ export async function solanaVerdict(
   connection: SolanaReader,
   send: SolanaSend,
   answer?: string,
+  clock?: { sleep(ms: number): Promise<void> },
 ): Promise<SolanaVerdict> {
   const height = await connection.getBlockHeight("confirmed");
   const { value } = await connection.getSignatureStatus(send.signature, {
@@ -126,24 +133,54 @@ export async function solanaVerdict(
   }
   if (send.everProcessed) {
     if (answer === `landed:${send.signature}`) return "landed";
-    return height > send.lastValidBlockHeight ? finalizedVerdict(connection, send) : "wait";
+    return height > send.lastValidBlockHeight ? finalizedVerdict(connection, send, clock) : "wait";
   }
   return height > send.lastValidBlockHeight ? "safe" : "wait";
 }
 
-/** The verdict for a send that was seen and whose blockhash has expired: decided only once the finalized chain is past that height, from a status read after it. */
+/** How long apart the two reads are that must both find a seen send missing before it is taken as unable to land. */
+export const MISSING_RECHECK_MS = 5_000;
+
+/**
+ * One look at a seen send whose blockhash has expired, from the finalized
+ * chain: `wait` while the finalized height is not past the limit, and `absent`
+ * only when the status is missing from a reply whose context slot is at or past
+ * the finalized slot read after that height, so a node whose history lags
+ * behind its own finalized height proves nothing.
+ */
+async function finalizedLook(
+  connection: SolanaReader,
+  send: SolanaSend,
+): Promise<SolanaVerdict | "absent"> {
+  const finalizedHeight = await connection.getBlockHeight("finalized");
+  if (finalizedHeight <= send.lastValidBlockHeight) return "wait";
+  const finalizedSlot = await connection.getSlot("finalized");
+  const { context, value } = await connection.getSignatureStatus(send.signature, {
+    searchTransactionHistory: true,
+  });
+  if (!value) return context !== undefined && context.slot >= finalizedSlot ? "absent" : "wait";
+  if (value.confirmationStatus === "finalized") return value.err ? "failed" : "landed";
+  return !value.err && value.confirmationStatus !== "processed" ? "landed" : "wait";
+}
+
+/**
+ * The verdict for a send that was seen and whose blockhash has expired: decided
+ * only from the finalized chain. Missing counts as `safe` only when two looks,
+ * `MISSING_RECHECK_MS` apart, both find it missing in a reply that is current
+ * to the finalized slot; without a clock to wait on, or on any other result,
+ * it stays unresolved and is looked at again next time.
+ */
 async function finalizedVerdict(
   connection: SolanaReader,
   send: SolanaSend,
+  clock: { sleep(ms: number): Promise<void> } | undefined,
 ): Promise<SolanaVerdict> {
-  const finalizedHeight = await connection.getBlockHeight("finalized");
-  if (finalizedHeight <= send.lastValidBlockHeight) return "wait";
-  const { value } = await connection.getSignatureStatus(send.signature, {
-    searchTransactionHistory: true,
-  });
-  if (!value) return "safe";
-  if (value.confirmationStatus === "finalized") return value.err ? "failed" : "landed";
-  return !value.err && value.confirmationStatus !== "processed" ? "landed" : "wait";
+  const first = await finalizedLook(connection, send);
+  if (first !== "absent") return first;
+  if (!clock) return "wait";
+  await clock.sleep(MISSING_RECHECK_MS);
+  const second = await finalizedLook(connection, send);
+  return second === "absent" ? "safe" : second;
 }
 
 const sentSomething = (operation: ExitOperation) =>

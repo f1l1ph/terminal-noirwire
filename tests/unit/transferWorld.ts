@@ -77,8 +77,18 @@ export class FakeRpc implements SolanaRpc {
     return info ? info.data.readBigUInt64LE(64) : 0n;
   }
 
+  /** The slot the node's status replies are current to; its height unless a test sets it. */
+  statusSlot: number | undefined;
+
   async getSignatureStatus(signature: string) {
-    return { value: this.statuses.get(signature) ?? null };
+    return {
+      context: { slot: this.statusSlot ?? this.height },
+      value: this.statuses.get(signature) ?? null,
+    };
+  }
+
+  async getSlot() {
+    return this.height;
   }
 
   async getSignatureStatuses(signatures: string[]) {
@@ -184,7 +194,12 @@ export function browserLocks(): LockManagerLike {
 }
 
 export function makeWorld(
-  options: { withdrawByKey?: (atoms: bigint) => Promise<KeyWithdrawal> } = {},
+  options: {
+    withdrawByKey?: (
+      atoms: bigint,
+      onSigned?: (raw: Uint8Array) => Promise<void>,
+    ) => Promise<KeyWithdrawal>;
+  } = {},
 ) {
   const events: string[] = [];
   const keyed = options.withdrawByKey;
@@ -249,9 +264,9 @@ export function makeWorld(
       },
     },
     withdrawByKey: keyed
-      ? async (atoms) => {
+      ? async (atoms, onSigned) => {
           events.push("key-withdraw");
-          return keyed(atoms);
+          return keyed(atoms, onSigned);
         }
       : undefined,
     journal,

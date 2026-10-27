@@ -29,6 +29,8 @@ export interface OperationRecord {
   rollupBefore?: string;
   /** A deposit's deposit key, as a public key: the tokens went into the rollup as that key's balance, and the same key credits them to the account. */
   depositKey?: string;
+  /** A deposit whose last step the program refused for good: its tokens wait in the deposit key's rollup balance, and the record is kept only until every earlier send is final. */
+  stranded?: true;
   createdAt: number;
   updatedAt: number;
 }
@@ -69,8 +71,22 @@ export interface Journal {
    * seat send, since a second withdrawal could pay out twice.
    */
   recordSeatSend(owner: string, id: string, seat: SeatSend): Promise<void>;
+  /**
+   * Writes the signature and last valid block height of the signed bytes an
+   * order key's withdrawal is about to be dispatched with onto its pending
+   * seat record. Resolves only once durable; the bytes are dispatched after,
+   * never before. A re-signed call replaces the earlier signature, which the
+   * network refused outright.
+   */
+  attachSeatSignature(
+    owner: string,
+    id: string,
+    signed: { signature: string; lastValidBlockHeight: number },
+  ): Promise<void>;
   /** Marks the recorded seat send as landed. */
   markSeatLanded(owner: string, id: string): Promise<void>;
+  /** Marks a deposit as stranded: its seat step was refused for good. */
+  markStranded(owner: string, id: string): Promise<void>;
   /** Drops a seat send the chain refused outright (it moved nothing). */
   clearSeatSend(owner: string, id: string): Promise<void>;
 }
@@ -162,6 +178,25 @@ export function createJournal(storage: JournalStorage, now: () => number = Date.
         if (existing.seat)
           throw new Error(`Operation ${id} already has a seat withdrawal on record`);
         return { ...existing, seat, updatedAt: now() };
+      });
+    },
+
+    async attachSeatSignature(owner, id, signed) {
+      if (!Number.isSafeInteger(signed.lastValidBlockHeight) || signed.lastValidBlockHeight <= 0) {
+        throw new Error("The send has no valid last block height, so it cannot be judged later");
+      }
+      await storage.update(owner, id, (existing) => {
+        if (existing?.seat?.signer !== "order-key" || existing.seat.state !== "pending") {
+          throw new Error(`No pending order key withdrawal for operation ${id}`);
+        }
+        return { ...existing, seat: { ...existing.seat, ...signed }, updatedAt: now() };
+      });
+    },
+
+    async markStranded(owner, id) {
+      await storage.update(owner, id, (existing) => {
+        if (!existing) throw new Error(`No recorded operation ${id}`);
+        return { ...existing, stranded: true, updatedAt: now() };
       });
     },
 

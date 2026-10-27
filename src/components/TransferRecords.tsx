@@ -50,6 +50,9 @@ const KIND_COPY: Record<Exclude<Attention["kind"], "not-landed">, string> = {
 
 /** What a row says about its state; a deposit that did not go through already took the USDC out of the wallet, so it is not "nothing moved". */
 function kindCopy(item: Attention): string {
+  if (item.stranded && item.kind === "waiting") {
+    return "The exchange did not accept the last step of this deposit. Your USDC left your wallet and is safe, held by this browser's deposit key. The move into the rollup is still settling; do not start another transfer until it has.";
+  }
   if (item.kind !== "not-landed") return KIND_COPY[item.kind];
   return item.operation === "deposit"
     ? "The last step did not go through. Your USDC already left your wallet and is safe in the rollup. Dismiss this, then use the button that appears to finish the deposit."

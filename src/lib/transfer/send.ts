@@ -13,6 +13,7 @@ export async function judgeSend({
   connection,
   send,
   answer,
+  clock,
 }: {
   journal: Pick<Journal, "markSeen">;
   owner: string;
@@ -20,9 +21,11 @@ export async function judgeSend({
   connection: SolanaReader;
   send: JournalSend;
   answer?: string;
+  /** Lets a send seen and since missing be looked at twice, apart; without it such a send stays unresolved. */
+  clock?: { sleep(ms: number): Promise<void> };
 }): Promise<SolanaVerdict> {
   const seen = toSolanaSend(send);
-  const verdict = await solanaVerdict(connection, seen, answer);
+  const verdict = await solanaVerdict(connection, seen, answer, clock);
   if (seen.everProcessed && send.status === undefined) {
     await journal.markSeen(owner, id, send.signature, "processed");
   }

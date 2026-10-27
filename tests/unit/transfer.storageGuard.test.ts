@@ -170,6 +170,7 @@ describe("deposit copy", () => {
       {
         status: "stranded",
         id: "tx-1",
+        recordKept: false,
         message:
           "The exchange did not accept the last step. Your USDC left your wallet and is safe.",
       },

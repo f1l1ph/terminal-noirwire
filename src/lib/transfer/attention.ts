@@ -21,6 +21,8 @@ export interface Attention {
   returnable: boolean;
   /** Whether the deposit's tokens went into the rollup as the deposit key's balance, where "try the deposit again" is their way into the account. */
   keyed: boolean;
+  /** Whether the program refused the deposit's last step for good, so its USDC waits in the deposit key's rollup balance and only the move into the rollup is left to settle. */
+  stranded: boolean;
 }
 
 /** Whether a deposit is between its first step and its last: its record is written before the first send and removed when it finishes. */
@@ -29,12 +31,13 @@ export const depositInProgress = (records: readonly OperationRecord[]): boolean 
 
 /**
  * Whether a record is complete and only waiting for its sends to be final: a
- * deposit whose last step landed, or a withdrawal or return whose Solana send
- * was made and has no rollup send still unproven. Closing it needs no click.
+ * deposit whose last step landed or was refused for good (stranded), or a
+ * withdrawal or return whose Solana send was made and has no rollup send still
+ * unproven. Closing it needs no click.
  */
 export const awaitsFinality = (record: OperationRecord): boolean =>
   record.kind === "deposit"
-    ? record.seat?.state === "landed"
+    ? record.seat?.state === "landed" || record.stranded === true
     : record.seat?.state !== "pending" && record.sends.some((send) => send.moved === record.atoms);
 
 /** The actions a record may offer. A resend is never one of them: resuming runs the flow, which judges every earlier send first. */
@@ -67,6 +70,7 @@ export function attentionOf(
     operation,
     atoms: record.atoms,
     keyed: operation === "deposit" && record.depositKey !== undefined,
+    stranded: record.stranded === true,
   };
   const pending = record.seat?.state === "pending" ? record.seat : undefined;
   if (pending && seat === "not-seen") {
