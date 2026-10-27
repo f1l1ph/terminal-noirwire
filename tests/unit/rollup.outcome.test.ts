@@ -96,6 +96,75 @@ describe("placedToResult: outcome status mapping", () => {
     expect(mapped.reason).toMatch(/book is full/);
   });
 
+  it("names the missing buyers and the next step when a sell fills nothing", () => {
+    const placed = placedResult({
+      cancelled: 1_000n,
+      status: RESULT_STATUS_CODE.remainderCancelled,
+    });
+    const mapped = placedToResult(placed, UNITS, 6, undefined, { side: "sell" });
+    expect(mapped.status).toBe("cancelled");
+    expect(mapped.reason).toBe(
+      "No buyers at your price right now, so nothing filled and nothing was charged. The market maker may be refreshing its quotes. Try again in a few seconds.",
+    );
+  });
+
+  it("names the missing sellers when a buy fills nothing", () => {
+    const placed = placedResult({
+      cancelled: 1_000n,
+      status: RESULT_STATUS_CODE.remainderCancelled,
+    });
+    const mapped = placedToResult(placed, UNITS, 6, undefined, { side: "buy" });
+    expect(mapped.reason).toMatch(/^No sellers at your price right now/);
+  });
+
+  it("does not name a side it does not know", () => {
+    const placed = placedResult({
+      cancelled: 1_000n,
+      status: RESULT_STATUS_CODE.remainderCancelled,
+    });
+    expect(placedToResult(placed, UNITS, 6).reason).toMatch(/^No orders at your price/);
+  });
+
+  it("words a partly filled order's cancelled remainder by side", () => {
+    const placed = placedResult({
+      filled: 400n,
+      cancelled: 600n,
+      status: RESULT_STATUS_CODE.remainderCancelled,
+    });
+    const mapped = placedToResult(placed, UNITS, 6, undefined, { side: "sell" });
+    expect(mapped.status).toBe("partiallyFilled");
+    expect(mapped.reason).toBe("Part filled; the rest found no buyers and was cancelled.");
+  });
+
+  it("describes a fill-time check failure as margin or a market limit, not margin alone", () => {
+    const placed = placedResult({
+      cancelled: 1_000n,
+      status: RESULT_STATUS_CODE.remainderCancelledFillCheck,
+    });
+    const mapped = placedToResult(placed, UNITS, 6);
+    expect(mapped.status).toBe("cancelled");
+    expect(mapped.reason).toBe(
+      "Nothing filled. The rest was cancelled: it failed a check at fill time (margin or a market limit).",
+    );
+  });
+
+  it.each([
+    [77, /too far from the market, so trading is paused for safety/],
+    [37, /too far from the market price/],
+    [24, /fall below the margin/],
+    [43, /only shrink your position/],
+    [48, /position limit/],
+  ])("gives a refused result with code %i its own plain sentence", (code, sentence) => {
+    const mapped = placedToResult(
+      placedResult({ status: RESULT_STATUS_CODE.refused, code }),
+      UNITS,
+      6,
+    );
+    expect(mapped.status).toBe("rejected");
+    expect(mapped.reason).toMatch(sentence);
+    expect(mapped.reason).not.toMatch(/code \d/);
+  });
+
   it("maps a post-only refusal to rejected with a human reason, never a fill", () => {
     const placed = placedResult({ status: RESULT_STATUS_CODE.refusedPostOnlyWouldMatch });
     const mapped = placedToResult(placed, UNITS, 6);
@@ -156,6 +225,12 @@ describe("thrownToResult: OrderInvalid and TransactionFailed map to the rejected
     new TransactionFailed("sig", { InstructionError: [0, { Custom: code }] });
 
   it.each([
+    [6133, /after its time limit/],
+    [6077, /paused for safety/],
+    [6048, /position limit/],
+    [6043, /only shrink your position/],
+    [6037, /too far from the market price/],
+    [6024, /fall below the margin/],
     [6090, /blocked/],
     [6091, /listed makers/],
     [6092, /listed takers/],
@@ -216,7 +291,7 @@ describe("thrownToResult: OrderInvalid and TransactionFailed map to the rejected
   });
 
   it("keeps the program error number for a refusal it has no sentence for", () => {
-    expect(thrownToResult(failedWith(6024))?.reason).toMatch(/program error 6024/);
+    expect(thrownToResult(failedWith(6022))?.reason).toMatch(/program error 6022/);
   });
 
   it("returns null for an ordinary error, letting the caller's own handling take over", () => {

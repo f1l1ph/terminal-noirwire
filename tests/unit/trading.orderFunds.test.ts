@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderFunds, unknownCollateralBlocks } from "@/lib/trading/sizing";
+import { orderFunds, staleMarkBlocks, unknownCollateralBlocks } from "@/lib/trading/sizing";
 import { toFixedPoint } from "@/lib/trading/decimal";
 
 const SPOT = { mode: "spot", price: "100", maxLeverage: 1 } as const;
@@ -202,6 +202,34 @@ describe("orderFunds against an open position", () => {
     expect(
       unknownCollateralBlocks({ availableUnknown: true, isPerp: true, reduceOnly: true }),
     ).toBe(false);
+  });
+
+  it("prices a reduce-only close that does not grow exposure at zero, whatever the mark", () => {
+    const close = {
+      ...PERP,
+      side: "sell",
+      quantity: "10",
+      price: "99",
+      availableQuote: "0",
+      reduceOnly: true,
+      exposure: { position: "10" },
+    } as const;
+    for (const markPrice of ["100", "1", "100000"]) {
+      const funds = orderFunds({ ...close, markPrice });
+      expect(funds.requiredQuote).toBe(0n);
+      expect(funds.reduceOnlyGrows).toBe(false);
+      expect(funds.shortfall).toBeNull();
+    }
+  });
+
+  it("lets a stale mark through only for a perp reduce-only order that does not grow", () => {
+    const stale = { markStale: true, isPerp: true, reduceOnly: true, reduceOnlyGrows: false };
+    expect(staleMarkBlocks(stale)).toBe(false);
+    expect(staleMarkBlocks({ ...stale, reduceOnlyGrows: true })).toBe(true);
+    expect(staleMarkBlocks({ ...stale, reduceOnlyGrows: undefined })).toBe(true);
+    expect(staleMarkBlocks({ ...stale, reduceOnly: false })).toBe(true);
+    expect(staleMarkBlocks({ ...stale, isPerp: false })).toBe(true);
+    expect(staleMarkBlocks({ ...stale, markStale: false, reduceOnly: false })).toBe(false);
   });
 
   it("blocks every other order while the collateral figure is unpriced", () => {

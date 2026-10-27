@@ -199,6 +199,23 @@ export function unknownCollateralBlocks(params: {
   );
 }
 
+/**
+ * Whether a stale mark stops the order. The venue takes a perp reduce-only
+ * order on a stale price while it cannot raise the worst-case size, so only
+ * that order, with its funds known not to grow, goes ahead; every other
+ * order waits for a fresh mark.
+ */
+export function staleMarkBlocks(params: {
+  markStale: boolean;
+  isPerp: boolean;
+  reduceOnly: boolean;
+  reduceOnlyGrows?: boolean;
+}): boolean {
+  return (
+    params.markStale && !(params.isPerp && params.reduceOnly && params.reduceOnlyGrows === false)
+  );
+}
+
 function roundDownToLot(quantityFp: bigint, lotFp: bigint): bigint {
   if (lotFp <= 0n) return quantityFp;
   return quantityFp - (quantityFp % lotFp);

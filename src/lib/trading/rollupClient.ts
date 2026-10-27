@@ -719,6 +719,7 @@ export class RollupTradingClient implements TradingClient {
       const refusalContext = {
         maxPriceAgeSeconds: session.maxPriceAgeSeconds?.get(binding.numericId),
         isPerp: binding.isPerp,
+        side: order.side,
       };
       // Tracked before the send, so an order that lands after this call
       // gave up on it still has its fills recognised as this trader's own.

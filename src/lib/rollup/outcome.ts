@@ -1,5 +1,11 @@
 import { formatDuration } from "../format";
-import type { CancelResult, OrderStatus, PlaceOrderResult, TransferResult } from "../trading/types";
+import type {
+  CancelResult,
+  OrderStatus,
+  PlaceOrderResult,
+  Side,
+  TransferResult,
+} from "../trading/types";
 import type { MarketUnits } from "./units";
 import { lotsToSize } from "./units";
 import {
@@ -38,7 +44,13 @@ const PROGRAM_ERROR = {
   exchangePaused: 30,
   marketPaused: 31,
   marketReduceOnly: 32,
+  insufficientMargin: 24,
+  priceOutsideBand: 37,
   stalePrice: 38,
+  reduceOnlyWouldIncrease: 43,
+  positionCapExceeded: 48,
+  oracleDislocated: 77,
+  instructionExpired: 133,
   priceTooOld: 79,
   quoteGuardTripped: 81,
   seatBlocked: ACCESS_ERROR.seatBlocked - WIRE_ERROR_OFFSET,
@@ -52,6 +64,8 @@ export interface RefusalContext {
   maxPriceAgeSeconds?: number;
   /** Whether the market is a perpetual; reduce-only orders exist only there. */
   isPerp?: boolean;
+  /** The order's own side, which names who was missing when nothing matched. */
+  side?: Side;
 }
 
 function knownPriceAgeLimit({ maxPriceAgeSeconds }: RefusalContext): number | null {
@@ -89,6 +103,18 @@ function describeProgramError(number: number, market: RefusalContext = {}): stri
       return stalePriceReason(market);
     case PROGRAM_ERROR.priceTooOld:
       return priceTooOldReason(market);
+    case PROGRAM_ERROR.oracleDislocated:
+      return "The on-chain price is too far from the market, so trading is paused for safety until it catches up. Try again shortly. No fill occurred.";
+    case PROGRAM_ERROR.priceOutsideBand:
+      return "This price is too far from the market price. Move it closer, or use a market order. No fill occurred.";
+    case PROGRAM_ERROR.insufficientMargin:
+      return "Your collateral would fall below the margin this order needs. Lower the size or leverage, or add collateral. No fill occurred.";
+    case PROGRAM_ERROR.reduceOnlyWouldIncrease:
+      return "A reduce-only order can only shrink your position, and this one would not. Check the side and that you still hold the position. No fill occurred.";
+    case PROGRAM_ERROR.positionCapExceeded:
+      return "This order could take your position past this market's position limit. Lower the size. No fill occurred.";
+    case PROGRAM_ERROR.instructionExpired:
+      return "The order reached the venue after its time limit and was not run. Try again. No fill occurred.";
     case PROGRAM_ERROR.exchangePaused:
       return "The venue is paused, so it takes no orders right now. No fill occurred.";
     case PROGRAM_ERROR.marketPaused:
@@ -326,6 +352,27 @@ function describeOrderInvalid(
   }
 }
 
+function nothingFilledLead(filledAny: boolean): string {
+  return filledAny ? "" : "Nothing filled. ";
+}
+
+/** The side that would have had to be resting for this order to match: a sell needs buyers. */
+function counterparties(side: Side | undefined): string {
+  if (side === undefined) return "orders";
+  return side === "sell" ? "buyers" : "sellers";
+}
+
+/**
+ * An order that matched nothing, or only part, and whose remainder was
+ * cancelled. The book is private, so the cause is named only as likely: the
+ * house market maker briefly has no quotes while it refreshes or is paused.
+ */
+function noMatchReason(filledAny: boolean, side: Side | undefined): string {
+  const others = counterparties(side);
+  if (filledAny) return `Part filled; the rest found no ${others} and was cancelled.`;
+  return `No ${others} at your price right now, so nothing filled and nothing was charged. The market maker may be refreshing its quotes. Try again in a few seconds.`;
+}
+
 function describeStatus(
   result: OrderResult,
   filledSize: string,
@@ -340,24 +387,24 @@ function describeStatus(
     case RESULT_STATUS_CODE.remainderCancelled:
       return {
         status: filledAny ? "partiallyFilled" : "cancelled",
-        reason: "The remainder did not match and was cancelled, not rested.",
+        reason: noMatchReason(filledAny, market.side),
       };
     case RESULT_STATUS_CODE.remainderCancelledStepLimit:
       return {
         status: filledAny ? "partiallyFilled" : "cancelled",
-        reason: "The remainder was cancelled: this order crossed the venue's per-order fill limit.",
+        reason: `${nothingFilledLead(filledAny)}The remainder was cancelled: this order crossed the venue's per-order fill limit.`,
       };
     case RESULT_STATUS_CODE.remainderCancelledBookFull:
       return {
         status: filledAny ? "partiallyFilled" : "cancelled",
-        reason: "The remainder was cancelled: that side of the book is full.",
+        reason: `${nothingFilledLead(filledAny)}The remainder was cancelled: that side of the book is full.`,
       };
     case RESULT_STATUS_CODE.refusedPostOnlyWouldMatch:
       return { status: "rejected", reason: "Refused: a post-only order would have matched." };
     case RESULT_STATUS_CODE.remainderCancelledFillCheck:
       return {
         status: filledAny ? "partiallyFilled" : "cancelled",
-        reason: "The remainder was cancelled: it failed the venue's margin check at this price.",
+        reason: `${nothingFilledLead(filledAny)}The rest was cancelled: it failed a check at fill time (margin or a market limit).`,
       };
     case RESULT_STATUS_CODE.refused:
       return {
