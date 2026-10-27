@@ -49,7 +49,8 @@ export function sideWord(isPerp: boolean, side: Side): "Long" | "Short" | "Buy" 
   return side === "buy" ? "Buy" : "Sell";
 }
 
-export type TradeGate = "needsAccount" | "accountUnknown" | "keysNotReady" | "keysFailed";
+export type TradeGate =
+  "needsAccount" | "accountUnknown" | "keysNotReady" | "keysFailed" | "otherTab";
 
 /**
  * Why an order cannot be placed yet on a mainnet build. Fails closed: null
@@ -74,6 +75,7 @@ const GATE_LABELS: Record<TradeGate, string> = {
   needsAccount: "Open your account to trade",
   accountUnknown: "Checking your account…",
   keysNotReady: "Setting up trading keys…",
+  otherTab: "Trading is open in another tab",
 };
 
 export const tradeGateLabel = (gate: TradeGate): string => GATE_LABELS[gate];

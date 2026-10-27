@@ -103,6 +103,8 @@ export interface RollupSession {
   tokenExpiresAtMs: number;
   /** Saves this session's current order-key checkpoint, for the next session to restore from. See checkpointStore.ts. */
   saveKeyCheckpoint(): void;
+  /** Brings the idle order keys in line with the keys the view holds, after another tab or device used one. A test fake may omit it. */
+  resyncKeys?(view: View): void;
   /** Ends the client's background subscription and refreshes (0.5.0+); a no-op for a test fake that omits `close`. */
   close(): void;
 }
@@ -512,6 +514,7 @@ async function buildSession(
     },
     tokenExpiresAtMs: signedIn.expiresAtMs,
     saveKeyCheckpoint,
+    resyncKeys: (view) => keys.resync(view),
     close: () => client.close(),
   };
 }
