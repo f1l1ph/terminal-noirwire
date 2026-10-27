@@ -115,6 +115,8 @@ const PRICE_SOURCE_NOT_READY =
   "The exchange's price source is not set up as expected, so it cannot check prices right now. This is on our side. Try again later. No fill occurred.";
 const FEE_ACCOUNT_NOT_READY =
   "The exchange's fee account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
+const INSURANCE_ACCOUNT_NOT_READY =
+  "The exchange's insurance account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
 
 /**
  * One plain sentence for each of those refusals. Each says what happened,
@@ -164,7 +166,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.feeSeatNotOpen]: FEE_ACCOUNT_NOT_READY,
   [PROGRAM_ERROR.orderExpired]:
     "This order's own time limit had already passed when it reached the exchange, so it was not run. Try again. No fill occurred.",
-  [PROGRAM_ERROR.insuranceSeatNotOpen]: FEE_ACCOUNT_NOT_READY,
+  [PROGRAM_ERROR.insuranceSeatNotOpen]: INSURANCE_ACCOUNT_NOT_READY,
   [PROGRAM_ERROR.positionCapExceeded]:
     "This order could take your position past this market's position limit. Lower the size. No fill occurred.",
   [PROGRAM_ERROR.orderNotFound]:
