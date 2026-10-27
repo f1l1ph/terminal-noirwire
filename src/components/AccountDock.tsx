@@ -1,7 +1,13 @@
 "use client";
 
 import { fromFixedPoint } from "@/lib/trading/decimal";
-import { positionRisks, type PositionRisk } from "@/lib/trading/positionRisk";
+import {
+  accountLeverage,
+  formatLeverage,
+  leverageRatio,
+  positionRisks,
+  type PositionRisk,
+} from "@/lib/trading/positionRisk";
 import {
   formatClockTime,
   formatDecimal,
@@ -206,6 +212,21 @@ function liquidationCell(
   };
 }
 
+const LEVERAGE_BASIS = `Position value at the current mark divided by your account equity (collateral plus every position's P&L at its mark). It moves with the price. ${FUNDING_NOTE}`;
+const LEVERAGE_UNAVAILABLE = `Not available: it needs a fresh mark for every open position and positive account equity. ${LEVERAGE_BASIS}`;
+
+function leverageCell(
+  ratio: number | null,
+  maxLeverage: number | null,
+): { value: string; title: string } {
+  if (ratio === null) return { value: UNAVAILABLE, title: LEVERAGE_UNAVAILABLE };
+  const value = formatLeverage(ratio);
+  return {
+    value: maxLeverage !== null ? `${value} of ${maxLeverage}x max` : value,
+    title: LEVERAGE_BASIS,
+  };
+}
+
 function PositionsTable({
   positions,
   collateral,
@@ -274,6 +295,11 @@ function PositionsTable({
               value: liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE,
               title: `Estimate: a ${MAINTENANCE_MARGIN_BPS / 100}% maintenance margin, computed on this device. Not confirmed by the exchange.`,
             };
+
+        const leverageShown = leverageCell(
+          risk ? leverageRatio(risk.notionalAtoms, risk.equityAtoms) : null,
+          settings?.kind === "perp" ? settings.maxLeverage : null,
+        );
 
         return (
           <li
@@ -350,6 +376,13 @@ function PositionsTable({
                 title={liquidationShown.title}
                 value={liquidationShown.value}
               />
+              {risk && (
+                <PositionStat
+                  label="Leverage"
+                  title={leverageShown.title}
+                  value={leverageShown.value}
+                />
+              )}
             </dl>
             <div className="mt-3 flex gap-2">
               <button
@@ -629,6 +662,7 @@ function MarginTable({
       />
     );
   }
+  const accountLeverageShown = leverageCell(risks ? accountLeverage(risks) : null, null);
   return (
     <>
       <table className="tnum w-full text-left text-[13px]">
@@ -674,6 +708,12 @@ function MarginTable({
           })}
         </tbody>
       </table>
+      {risks && (
+        <p className="text-dim tnum mt-2 text-[13px]" title={accountLeverageShown.title}>
+          Account leverage{" "}
+          <span className="text-ink underline decoration-dotted">{accountLeverageShown.value}</span>
+        </p>
+      )}
       <p className={`${sectionLabel} mt-2`}>Estimate, not a guarantee</p>
       <p className="text-faint mt-1 text-[11px] leading-relaxed">
         {risks

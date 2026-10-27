@@ -157,6 +157,15 @@ describe("a mapped rollup position carries what the program computes margin from
     expect(html).toContain("+500.00 nUSD");
   });
 
+  it("shows the position's leverage against the market maximum, and none in dev mode", async () => {
+    const html = dockFor(await stateFor(new Map([[0, 500]])));
+    // 10 * 150 = 1500 of value over 500 collateral + 500 profit = 1000 equity.
+    expect(html).toContain("Leverage");
+    expect(html).toContain("1.5x of 10x max");
+    const dev = dockFor(await stateFor(undefined));
+    expect(dev).not.toContain("Leverage");
+  });
+
   it("keeps the older labels when the session knows no maintenance margin", async () => {
     const state = await stateFor(undefined);
     expect(state.positions["NSOL-PERP"]?.maintenanceMarginBps).toBeUndefined();

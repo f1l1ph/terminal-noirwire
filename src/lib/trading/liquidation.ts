@@ -95,6 +95,28 @@ export function estimateLiquidation(
 }
 
 /**
+ * The account's equity in quote atoms, `collateral + sum(base * mark + quote)`,
+ * or null when any open position has no fresh mark.
+ */
+export function accountEquityAtoms(
+  collateralAtoms: bigint,
+  positions: RiskPosition[],
+): bigint | null {
+  let equity = collateralAtoms;
+  for (const position of positions) {
+    if (position.size === 0n) continue;
+    if (position.mark === null) return null;
+    equity += positionPnlAtoms(position.size, position.quoteAtoms, position.mark);
+  }
+  return equity;
+}
+
+/** `|base| * mark` in quote atoms: the position's value at this mark. */
+export function positionNotionalAtoms(size: bigint, mark: bigint): bigint {
+  return floorDiv(abs(size) * mark, ATOMS_SCALE);
+}
+
+/**
  * The price at which the position's own cash flow nets to zero, `-quote /
  * base`. It is the average entry price only while the position has never
  * been reduced and no funding has been settled; reductions and funding
