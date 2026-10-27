@@ -310,6 +310,8 @@ export interface TradingClient {
     wallet: WalletIdentity,
     listener: (stopped: boolean) => void,
   ): () => void;
+  /** Tells the listener each time this wallet's session is replaced (a token refused and replaced, a refresh, the owner signing in again), as soon as the new one is in place. Optional: dev mode has no session. */
+  subscribeSessionGeneration?(wallet: WalletIdentity, listener: () => void): () => void;
   /** The owner's own action after automatic sign-in stopped: signs in once more. Optional: dev mode has no sign-in. */
   signInAgain?(wallet: WalletIdentity): Promise<void>;
   /** The deployment the wallet's session was built against. Optional: dev mode has no session. */

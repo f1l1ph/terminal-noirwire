@@ -170,6 +170,27 @@ describe("one sign-in at a time per owner", () => {
     expect(builds()).toBe(3);
   });
 
+  it("tells the hook the moment an automatic 401 replacement puts a new session in place", async () => {
+    const { rollup, builds } = harness([], [null, new Error("401 Missing token query param")]);
+    const seenBuilds: number[] = [];
+    rollup.subscribeSessionGeneration(WALLET, () => seenBuilds.push(builds()));
+    expect(await rollup.accountStatus(WALLET)).toBe("unknown");
+    // One signal, sent when the second session already existed to read from.
+    expect(seenBuilds).toEqual([2]);
+  });
+
+  it("tells the hook when the owner signs in again after the stop", async () => {
+    const refusals = Array.from({ length: 20 }, () => new Error("401 Missing token query param"));
+    const { rollup } = harness([], [null, ...refusals]);
+    for (let tick = 0; tick < 4; tick += 1) await rollup.fetchState(WALLET).catch(() => {});
+    let signals = 0;
+    rollup.subscribeSessionGeneration(WALLET, () => {
+      signals += 1;
+    });
+    await rollup.signInAgain(WALLET);
+    expect(signals).toBe(1);
+  });
+
   it("does not retry a network refusal or a stale signer", async () => {
     for (const cause of [new NetworkRefused("wrong network"), new StaleSigner()]) {
       const { rollup, builds } = harness([new SessionAuthError(cause)]);

@@ -304,6 +304,7 @@ export class RollupTradingClient implements TradingClient {
   private replacements = new WeakSet<OpenSession>();
   /** Wallets whose automatic sign-in has stopped until the owner signs in again. */
   private refused = new Set<string>();
+  private generationListeners = new Map<string, Set<() => void>>();
   private refusedListeners = new Map<string, Set<(stopped: boolean) => void>>();
   private orderKeyListeners = new Map<string, Set<(state: OrderKeyState) => void>>();
   private lastOrderKeys = new Map<string, OrderKeyState>();
@@ -383,7 +384,20 @@ export class RollupTradingClient implements TradingClient {
     if (current && current !== stale) return current;
     const next = this.openSession(wallet);
     if (stale) closeSession(stale);
+    // The new session is already the wallet's current one, so anything read
+    // because of this signal comes from it.
+    for (const listener of this.generationListeners.get(wallet.address) ?? []) listener();
     return next;
+  }
+
+  /** Tells `listener` each time this wallet's session is replaced by a new one. */
+  subscribeSessionGeneration(wallet: WalletIdentity, listener: () => void): () => void {
+    const listeners = this.generationListeners.get(wallet.address) ?? new Set();
+    this.generationListeners.set(wallet.address, listeners);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   private refreshSession(wallet: WalletIdentity): Promise<RollupSession> {

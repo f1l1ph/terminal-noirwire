@@ -870,6 +870,19 @@ export function OrderEntry({
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [boundLeftBand]);
 
+  // The market limits were dropped (a new session is being read): a review
+  // built on the old ones no longer stands, so it closes at once.
+  const reviewLostLimits = showConfirm && limitsBlock !== null;
+  useEffect(() => {
+    if (!reviewLostLimits) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setShowConfirm(false);
+    setBoundNote(null);
+    if (frozen && !frozen.priceTyped) setPriceOverride(null);
+    setSubmitError("The market settings changed. Review the order again once they load.");
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [reviewLostLimits, frozen]);
+
   async function runSubmit(order: FrozenOrder) {
     if (!market || submittingRef.current) return;
     // The full check again, on the frozen order and the mark as it is now.

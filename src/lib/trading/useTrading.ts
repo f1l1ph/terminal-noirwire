@@ -8,6 +8,7 @@ import type { PublicDeployment } from "../rollup/deployment";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
 import { createLatestReads } from "./latestRead";
+import { createLimitsReads } from "./limitsRead";
 import type { LimitsState } from "./uiRules";
 import {
   hasExposureIn,
@@ -281,31 +282,24 @@ export function useTrading(
     return () => setFlows((prev) => withoutOpenOutcome(prev, walletKey));
   }, [walletKey]);
 
-  const [limitsReads] = useState(createLatestReads);
+  const [limitsReads] = useState(() => createLimitsReads((owner, view) => patchFlow(owner, view)));
   /**
-   * Reads the market limits. What was known is dropped first and again if the
-   * read fails, so limits from an earlier session are never used while the
-   * current ones are unread; only the newest read's answer counts.
+   * Reads the market limits from the session as it stands now. What was known
+   * is dropped first and again if the read fails, so limits from an earlier
+   * session are never used while the current ones are unread.
    */
   const readLimits = useCallback(
     (identity: WalletIdentity, onFailed?: () => void) => {
-      if (!client.marketLimits) return;
-      const owner = identity.address;
-      const ticket = limitsReads.begin(owner);
-      const current = () => limitsReads.isCurrent(owner, ticket, currentOwnerRef.current);
-      patchFlow(owner, { limits: NO_LIMITS, limitsState: "loading" });
-      client.marketLimits(identity).then(
-        (limits) => {
-          if (current()) patchFlow(owner, { limits, limitsState: "ready" });
-        },
-        () => {
-          if (!current()) return;
-          patchFlow(owner, { limits: NO_LIMITS, limitsState: "failed" });
-          onFailed?.();
-        },
+      const read = client.marketLimits;
+      if (!read) return;
+      limitsReads.start(
+        identity.address,
+        () => read.call(client, identity),
+        () => currentOwnerRef.current,
+        onFailed,
       );
     },
-    [client, patchFlow, limitsReads],
+    [client, limitsReads],
   );
 
   useEffect(() => {
@@ -339,10 +333,16 @@ export function useTrading(
     const stopWatchingSession = client.subscribeSessionStopped?.(wallet, (sessionStopped) => {
       if (active) patchFlow(wallet.address, { sessionStopped });
     });
+    // A new session (a token refused and replaced, or the owner signing in
+    // again) may sit over different chain limits: drop them and read again.
+    const stopWatchingGenerations = client.subscribeSessionGeneration?.(wallet, () => {
+      if (active) readLimits(wallet);
+    });
     return () => {
       active = false;
       stopKeys?.();
       stopWatchingSession?.();
+      stopWatchingGenerations?.();
     };
   }, [client, wallet, patchFlow, statusReads, readLimits]);
 

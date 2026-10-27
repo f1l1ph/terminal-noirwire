@@ -120,6 +120,18 @@ export class LazyRollupTradingClient implements TradingClient {
     };
   }
 
+  subscribeSessionGeneration(wallet: WalletIdentity, listener: () => void): () => void {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void this.load().then((client) => {
+      if (!cancelled) unsubscribe = client.subscribeSessionGeneration?.(wallet, listener) ?? null;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }
+
   async signInAgain(wallet: WalletIdentity): Promise<void> {
     await (await this.load()).signInAgain?.(wallet);
   }
