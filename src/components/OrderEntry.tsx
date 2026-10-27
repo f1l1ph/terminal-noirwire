@@ -20,7 +20,12 @@ import {
 } from "@/lib/trading/uiRules";
 import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
-import { orderFunds, unknownCollateralBlocks } from "@/lib/trading/sizing";
+import {
+  orderFunds,
+  staleMarkBlocks,
+  staleReduceOnlyNotice,
+  unknownCollateralBlocks,
+} from "@/lib/trading/sizing";
 import {
   amountForPercent,
   displayBase,
@@ -369,8 +374,6 @@ export function OrderEntry({
       }
     : null;
 
-  const validation = market && draft ? validateOrder(draft, market, mark, now) : null;
-
   const estimate = useMemo(() => {
     if (!market || !referencePrice || !quantityText.trim()) return null;
     try {
@@ -433,6 +436,16 @@ export function OrderEntry({
     reduceOnly,
   ]);
 
+  const staleBlock = staleMarkBlocks({
+    markStale,
+    isPerp,
+    reduceOnly,
+    reduceOnlyGrows: funds?.reduceOnlyGrows,
+  });
+  const staleMarkAllowed = markStale && !staleBlock;
+  const validation =
+    market && draft ? validateOrder(draft, market, mark, now, staleMarkAllowed) : null;
+
   const leftAvailable =
     funds && !funds.shortfall && !isSpotSell
       ? fromFixedPoint(toFixedPoint(availableQuote) - funds.requiredQuote, 2)
@@ -483,7 +496,6 @@ export function OrderEntry({
 
   const shortfall = funds?.shortfall ?? null;
   const unaffordable = shortfall !== null;
-  const staleBlock = markStale;
 
   const amountEntered = amountText.trim() !== "";
   const amountValue = parseAmount(amountText);
@@ -621,6 +633,12 @@ export function OrderEntry({
         tone: "error",
       };
     }
+    if (staleMarkAllowed) {
+      return {
+        text: staleReduceOnlyNotice(markAge !== null ? formatRelativeAge(markAge) : null),
+        tone: "warning",
+      };
+    }
     return null;
   })();
 
@@ -706,7 +724,7 @@ export function OrderEntry({
   async function runSubmit(order: FrozenOrder) {
     if (!market || submittingRef.current) return;
     // The full check again, on the frozen order and the mark as it is now.
-    const recheck = validateOrder(order.draft, market, mark, now);
+    const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed);
     const marginExpired = unknownCollateralBlocks({
       availableUnknown: isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now())),
       isPerp,

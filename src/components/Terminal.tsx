@@ -244,7 +244,7 @@ export function Terminal() {
           confirmedSteps,
           "cancelled",
           Date.now(),
-          `Nothing filled. ${result.reason ?? "The order did not match and was cancelled."}`,
+          result.reason ?? "Nothing filled. The order did not match and was cancelled.",
         ),
         trackedOrderId: null,
         trackedTag: null,

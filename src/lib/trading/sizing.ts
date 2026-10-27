@@ -199,6 +199,32 @@ export function unknownCollateralBlocks(params: {
   );
 }
 
+/**
+ * Whether a stale mark stops the order. The venue takes a perp reduce-only
+ * order on a stale price while it cannot raise the worst-case size, so only
+ * that order, with its funds known not to grow, goes ahead; every other
+ * order waits for a fresh mark.
+ */
+export function staleMarkBlocks(params: {
+  markStale: boolean;
+  isPerp: boolean;
+  reduceOnly: boolean;
+  reduceOnlyGrows?: boolean;
+}): boolean {
+  return (
+    params.markStale && !(params.isPerp && params.reduceOnly && params.reduceOnlyGrows === false)
+  );
+}
+
+/**
+ * The warning shown while a reduce-only order goes ahead on an old mark. The
+ * venue still checks the price against its own current one, so the order can
+ * be refused if the market has moved.
+ */
+export function staleReduceOnlyNotice(ageText: string | null): string {
+  return `The price is ${ageText ?? "too"} old. A close can still go through, but it may be refused if the market has moved. Wait for a fresh price to be safe.`;
+}
+
 function roundDownToLot(quantityFp: bigint, lotFp: bigint): bigint {
   if (lotFp <= 0n) return quantityFp;
   return quantityFp - (quantityFp % lotFp);

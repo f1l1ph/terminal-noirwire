@@ -124,6 +124,20 @@ describe("validateOrder: price band around the mark", () => {
     expect(result.errors.price).toBe("markStale");
   });
 
+  it("accepts a stale mark when the caller allows it, and still holds the band against it", () => {
+    const stale = { price: "150.000000", time: NOW - STALE_MARK_MS - 1 };
+    const allowed = (price: string) =>
+      validateOrder({ price, size: "1.0" }, PERP_MARKET, stale, NOW, true);
+    expect(allowed("149.25").valid).toBe(true);
+    expect(allowed("200.00").errors.price).toBe("priceTooFarFromMark");
+  });
+
+  it("still refuses a missing mark when a stale one is allowed", () => {
+    expect(
+      validateOrder({ price: "149.25", size: "1.0" }, PERP_MARKET, null, NOW, true).valid,
+    ).toBe(false);
+  });
+
   it("accepts the same order when the mark is exactly at the stale limit", () => {
     const edge = { price: "150.000000", time: NOW - STALE_MARK_MS };
     expect(check("149.25", edge).valid).toBe(true);

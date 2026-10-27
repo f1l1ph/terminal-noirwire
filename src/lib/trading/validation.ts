@@ -53,6 +53,7 @@ function priceDeviationError(
   price: bigint,
   mark: OrderMark | null | undefined,
   now: number,
+  allowStaleMark: boolean,
 ): OrderFieldError | null {
   let markPrice: bigint;
   try {
@@ -61,7 +62,7 @@ function priceDeviationError(
     return "markUnavailable";
   }
   if (markPrice <= 0n) return "markUnavailable";
-  if (isStale(mark?.time, now, STALE_MARK_MS)) return "markStale";
+  if (!allowStaleMark && isStale(mark?.time, now, STALE_MARK_MS)) return "markStale";
   return distanceError(price, markPrice);
 }
 
@@ -80,13 +81,15 @@ function distanceError(price: bigint, mark: bigint): OrderFieldError | null {
  * must also sit within MAX_LIMIT_PRICE_DEVIATION_BPS of the mark, for a
  * limit order as much as a market one; without a usable, fresh mark (see
  * STALE_MARK_MS) there is nothing to check it against, so the order is
- * refused.
+ * refused. `allowStaleMark` lets a stale mark through (the distance check
+ * still runs against it) for an order the venue accepts without a fresh price.
  */
 export function validateOrder(
   input: Pick<NewOrderInput, "price" | "size">,
   market: MarketInfo,
   mark: OrderMark | null | undefined,
   now: number,
+  allowStaleMark = false,
 ): OrderValidationResult {
   const errors: OrderValidationResult["errors"] = {};
 
@@ -122,7 +125,7 @@ export function validateOrder(
       } else if (!isMultipleOf(price, tick)) {
         errors.price = "priceNotMultipleOfTick";
       } else {
-        const deviation = priceDeviationError(price, mark, now);
+        const deviation = priceDeviationError(price, mark, now, allowStaleMark);
         if (deviation) errors.price = deviation;
       }
     } catch {
