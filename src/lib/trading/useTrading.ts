@@ -7,6 +7,7 @@ import { redactToken } from "../rollup/redact";
 import { loadTrackedSecrets } from "../rollup/secretStore";
 import { createTradingClient } from "./index";
 import { createLatestReads } from "./latestRead";
+import { nextMarginRefreshDelayMs } from "./marginRefresh";
 import { withoutOpenOutcome } from "./openCopy";
 import type {
   AccountStatus,
@@ -293,17 +294,27 @@ export function useTrading(
   useEffect(() => {
     if (!wallet || marginValidUntilMs === undefined) return;
     let active = true;
-    const refresh = setTimeout(
-      () => {
+    let refresh: ReturnType<typeof setTimeout> | undefined;
+    const arm = (lastReadAtMs: number | null) => {
+      const delay = nextMarginRefreshDelayMs(marginValidUntilMs, Date.now(), lastReadAtMs);
+      refresh = setTimeout(() => {
+        const readAtMs = Date.now();
         client.fetchState(wallet).then(
           (next) => {
-            if (active) setStateSynced(wallet.address, next);
+            if (!active) return;
+            setStateSynced(wallet.address, next);
+            const nextValidUntilMs = next.collateral?.availableValidUntilMs;
+            if (nextValidUntilMs === undefined || nextValidUntilMs <= marginValidUntilMs) {
+              arm(readAtMs);
+            }
           },
-          () => {},
+          () => {
+            if (active) arm(readAtMs);
+          },
         );
-      },
-      Math.max(marginValidUntilMs - Date.now(), 0) + 250,
-    );
+      }, delay);
+    };
+    arm(null);
     return () => {
       active = false;
       clearTimeout(refresh);

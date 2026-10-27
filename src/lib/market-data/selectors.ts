@@ -1,8 +1,28 @@
 import { isMainnetBuild } from "@/lib/network";
-import { MIN_LATENCY_SAMPLE_SIZE, type StatsResponse } from "./types";
+import { MIN_LATENCY_SAMPLE_SIZE, type MarketInfo, type StatsResponse } from "./types";
 
 export function candlesLoadingKey(market: string, interval: string): string {
   return `${market}:${interval}`;
+}
+
+/**
+ * The market row is fetched once; live marks arrive afterwards over the
+ * websocket and land in the store's mark map. This returns the market with
+ * its mark taken from whichever of the two is newer (a live mark wins a tie),
+ * so a reader of the row never prices from a mark the venue has long replaced.
+ */
+export function marketWithLiveMark(
+  markets: readonly MarketInfo[],
+  marksByMarket: Readonly<Record<string, { price: string; time: number } | null | undefined>>,
+  id: string,
+): MarketInfo | undefined {
+  const market = markets.find((item) => item.id === id);
+  const live = marksByMarket[id];
+  if (!market || !live) return market;
+  if (market.markPriceUpdatedAtMs !== null && market.markPriceUpdatedAtMs > live.time) {
+    return market;
+  }
+  return { ...market, markPrice: live.price, markPriceUpdatedAtMs: live.time };
 }
 
 /**

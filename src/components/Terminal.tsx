@@ -9,7 +9,12 @@ import {
   useMarketDataState,
   useSharedMarketDataStore,
 } from "@/lib/market-data/hooks";
-import { candlesLoadingKey, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
+import {
+  candlesLoadingKey,
+  isStale,
+  marketWithLiveMark,
+  STALE_MARK_MS,
+} from "@/lib/market-data/selectors";
 import { isMainnetBuild } from "@/lib/network";
 import { useOwnerIdentity } from "@/lib/wallet/useOwnerIdentity";
 import { useWallet } from "@/lib/wallet/useWallet";
@@ -118,7 +123,10 @@ export function Terminal() {
   // this lookup reads the store, so it never changes identity, and trading
   // starts only once the market list it binds against has loaded.
   const marketSettingsFromStore = useCallback(
-    (id: string) => store.getState().markets.find((item) => item.id === id),
+    (id: string) => {
+      const state = store.getState();
+      return marketWithLiveMark(state.markets, state.marksByMarket, id);
+    },
     [store],
   );
   const marketsLoaded = data.markets.length > 0;
