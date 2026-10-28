@@ -77,6 +77,8 @@ export interface TraderClientLike {
   ): Promise<OrderResult & Timing>;
   cancelAll(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
   syncView(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
+  /** Whether the view holds a seat right now: a `sync_view` read back. Optional: only the real SDK client has it; a unit-test fake may omit it. */
+  confirmSeat?(expirySeconds?: number): Promise<{ seated: boolean; view: View }>;
   /** Optional: only the real SDK client (0.8.0+) has it; a unit-test fake may omit it. */
   withdrawByKey?(token: CustodyToken, amount: bigint, expirySeconds?: number): Promise<Withdrawn>;
   transferBetweenBalances(

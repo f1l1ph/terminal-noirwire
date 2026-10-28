@@ -66,12 +66,13 @@ function stateFor(maintenance: ReadonlyMap<number, number> | undefined): Promise
     orderKeys: [],
     resultsWritten: 1,
     results: [],
+    seatRecorded: true,
+    snapshotOld: false,
     snapshot: {
       seat: {
         collateral: 500n * USDC,
         spot: [],
-        perp: [{ ...emptySlot, base: 10_000n, quote: -1000n * USDC }, { ...emptySlot }],
-        openOrders: [],
+        positions: [{ ...emptySlot, marketId: 0, base: 10_000n, quote: -1000n * USDC }],
       },
       marketId: 0,
       orders: [],
@@ -116,12 +117,14 @@ function dockFor(
   {
     tab = "positions",
     exposureUnreadable = false,
-  }: { tab?: Tab; exposureUnreadable?: boolean } = {},
+    unseated = false,
+  }: { tab?: Tab; exposureUnreadable?: boolean; unseated?: boolean } = {},
 ): string {
   return renderToStaticMarkup(
     <AccountDock
       tab={tab}
       exposureUnreadable={exposureUnreadable}
+      unseated={unseated}
       onTabChange={() => {}}
       positions={Object.values(state.positions)}
       openOrders={[]}
@@ -161,6 +164,16 @@ describe("a mapped rollup position carries what the program computes margin from
     expect(html).toContain("52.63");
     // 10 * 150 - 1000
     expect(html).toContain("+500.00 nUSD");
+  });
+
+  it("gives way to the prompt to deposit when the account holds no seat", async () => {
+    const state = await stateFor(new Map([[0, 500]]));
+    for (const tab of ["positions", "openOrders", "balances", "margin"] as const) {
+      const html = dockFor(state, { tab, unseated: true });
+      expect(html).toContain("Deposit to start trading");
+      expect(html).not.toContain("No positions yet");
+    }
+    expect(dockFor(state)).not.toContain("Deposit to start trading");
   });
 
   it("shows the position's leverage against the market maximum, and none in dev mode", async () => {

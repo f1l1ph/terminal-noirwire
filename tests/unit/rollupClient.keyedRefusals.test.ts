@@ -42,12 +42,13 @@ function viewWith(base: bigint, resultsWritten: number): View {
     orderKeys: [],
     resultsWritten,
     results: [],
+    seatRecorded: true,
+    snapshotOld: false,
     snapshot: {
       seat: {
         collateral: 500n * USDC,
         spot: [],
-        perp: [{ ...emptySlot, base, quote: base === 0n ? 0n : -1000n * USDC }],
-        openOrders: [],
+        positions: [{ ...emptySlot, marketId: 0, base, quote: base === 0n ? 0n : -1000n * USDC }],
       },
       marketId: 0,
       orders: [],

@@ -4,7 +4,6 @@ import {
   ROUND_TRIP_LAMPORTS,
   POLL_MS,
   beginOperation,
-  custodyAccount,
   finishWhenFinalized,
   holdsSol,
   intentRefusal,
@@ -34,10 +33,13 @@ import {
   moveKeyInstructions,
 } from "./depositKey";
 import { errorCode, pollUntil, readTokenBalance, type SolanaRpc } from "./solanaRpc";
+import { firstDepositNeeds } from "./amount";
 import { tokenAtoms } from "./verdicts";
 
 const CUSTODY_CAP_REACHED = 6150;
-const NO_SEAT = 6114;
+const ACCOUNT_MISSING = 6114;
+const SEAT_TABLE_FULL = 6013;
+const SEAT_DEPOSIT_TOO_SMALL = 6156;
 const DELEGATION_SHOWN_WITHIN_MS = 60_000;
 
 export type DepositOutcome =
@@ -69,12 +71,13 @@ export interface DepositInput {
 
 /**
  * Whether the deposit may start, checked before any signature is asked for:
- * the account is open, the exchange is not paused, custody has room under its
- * cap (read from the custody account itself, equal allowed), and the wallet
- * holds the tokens and the SOL for the steps. A private rollup serves the
- * custody account only to its owner, a program address no reader can sign in
- * as, so there the cap is left to the program: a deposit it refuses leaves the
- * tokens in the owner's rollup balance, from where they can be returned.
+ * the account is open, the exchange is not paused, a first deposit meets the
+ * exchange's minimum for opening the trading account, and the wallet holds the
+ * tokens and the SOL for the steps. The minimum is checked only when it is set
+ * and the amount is below it, and then only after the exchange confirms the
+ * account holds no seat: a seat given back leaves the view recording it, so a
+ * small deposit staged on the strength of that record could be refused after
+ * the wallet's funds had moved to the browser key.
  */
 async function depositRefusal(
   env: TransferEnv,
@@ -93,12 +96,15 @@ async function depositRefusal(
       "The exchange is paused, so it takes no deposit. Nothing was sent.",
     );
   }
-  const custody = await readTokenBalance(env.rollup, custodyAccount(env));
-  if (custody !== null && custody + atoms > exchange.custodyCap) {
-    return refuse(
-      "custody-cap",
-      `The deposit would take custody to ${custody + atoms} atoms, past the cap of ${exchange.custodyCap}. Nothing was sent.`,
-    );
+  if (exchange.minSeatDeposit > 0n && atoms < exchange.minSeatDeposit) {
+    const seated = await env.exchange.confirmSeat();
+    const { minSeatDeposit } = await env.exchange.read();
+    if (!seated && atoms < minSeatDeposit) {
+      return refuse(
+        "below-seat-minimum",
+        `${firstDepositNeeds(minSeatDeposit, env.decimals)}. Nothing was sent.`,
+      );
+    }
   }
   const wallet = await readTokenBalance(env.solana, walletAccount(env));
   if (wallet === null || wallet < atoms) {
@@ -294,9 +300,13 @@ function strandedBy(id: string, error: string, recordKept: boolean): DepositOutc
   const why =
     code === CUSTODY_CAP_REACHED
       ? "The exchange is at its deposit limit right now."
-      : code === NO_SEAT
+      : code === ACCOUNT_MISSING
         ? "Your wallet has no open account on the exchange."
-        : "The exchange did not accept the last step.";
+        : code === SEAT_TABLE_FULL
+          ? "New trading accounts are full right now. Try again later."
+          : code === SEAT_DEPOSIT_TOO_SMALL
+            ? "Your first deposit was too small to open your trading account."
+            : "The exchange did not accept the last step.";
   return {
     status: "stranded",
     id,

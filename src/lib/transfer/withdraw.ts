@@ -35,6 +35,7 @@ import {
   walletAccount,
   withdrawInstruction,
   type Intent,
+  type Refused,
   type Stopped,
   type TransferEnv,
 } from "./operation";
@@ -51,6 +52,15 @@ import { tokenAtoms } from "./verdicts";
 
 /** The program's `StalePrice`: the crank's next push mends it. */
 const STALE_PRICE = 6038;
+/** The program's `NotSeated`: a withdrawal that took everything gives the seat back, so a second one finds the account empty. */
+const NOT_SEATED = 6155;
+
+function nothingInAccount(): Refused {
+  return refuse(
+    "nothing-in-account",
+    "Your trading account holds no funds, so there is nothing to withdraw. Nothing was sent.",
+  );
+}
 /** Longer than the crank's push interval, so a mark that has just gone stale is waited out. */
 export const FRESH_MARK_WITHIN_MS = 240_000;
 export const FRESH_MARK_POLL_MS = 10_000;
@@ -253,6 +263,7 @@ async function seatWithdrawnByKey(
           "This exchange has more markets than a withdrawal can name in one message, so it cannot be made from here. Nothing was sent.",
         );
       default:
+        if (result.code === NOT_SEATED) return nothingInAccount();
         return result.code === STALE_PRICE
           ? refuse(
               "stale-price",
@@ -323,6 +334,7 @@ async function seatWithdrawn(
     await env.clock.sleep(FRESH_MARK_POLL_MS);
   }
   if (failed !== null) {
+    if (errorCode(failed) === NOT_SEATED) return nothingInAccount();
     return errorCode(failed) === STALE_PRICE
       ? refuse(
           "stale-price",

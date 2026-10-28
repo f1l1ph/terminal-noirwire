@@ -69,6 +69,12 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await this.load()).openAccount(wallet, invite);
   }
 
+  async confirmSeat(wallet: WalletIdentity): Promise<boolean> {
+    const client = await this.load();
+    if (!client.confirmSeat) throw new Error("This client has no seats to confirm");
+    return client.confirmSeat(wallet);
+  }
+
   async rollupReader(wallet: WalletIdentity): Promise<Connection> {
     const client = await this.load();
     if (!client.rollupReader)

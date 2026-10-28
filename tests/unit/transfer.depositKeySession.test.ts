@@ -40,9 +40,10 @@ describe("the rollup address the deposit key signs in at", () => {
       rollupEndpoint: "https://session.example/rollup?token=secret",
       depositKey: key,
       accountOpen: async () => true,
+      confirmSeat: async () => true,
       readExchange: async () => ({
         paused: false,
-        custodyCap: 1n,
+        minSeatDeposit: 0n,
         sealed: false,
         token: { mint, custodyNonce: 7n },
         perpMarketIds: [],

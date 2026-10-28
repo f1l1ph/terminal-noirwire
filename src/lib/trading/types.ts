@@ -215,6 +215,12 @@ export interface TraderState {
    * figures are unknown and orders that could grow risk are blocked.
    */
   exposureUnreadable?: boolean;
+  /**
+   * Rollup mode: the account holds no seat, so every balance is zero. This is
+   * the account's normal state before its first deposit and after a withdrawal
+   * takes everything; the first collateral deposit takes a seat.
+   */
+  unseated?: boolean;
 }
 
 export interface SpotAssets {
@@ -296,6 +302,8 @@ export interface TradingClient {
    * was built. Optional: dev mode opens accounts lazily.
    */
   accountStatus?(wallet: WalletIdentity, options?: { fresh?: boolean }): Promise<AccountStatus>;
+  /** Whether the owner's account holds a seat right now, confirmed with the exchange by a `sync_view` (a refresh only). Optional: dev mode has no seats. */
+  confirmSeat?(wallet: WalletIdentity): Promise<boolean>;
   /** The rollup connection signed in as the owner, which deposits and withdrawals read the rollup through. Optional: dev mode has no rollup. */
   rollupReader?(wallet: WalletIdentity): Promise<Connection>;
   /** How the owner consents to account actions here, as the deployment says; "transaction" when it does not. Needs no wallet. Optional: dev mode has no such choice. */

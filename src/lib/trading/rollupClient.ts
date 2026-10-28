@@ -62,6 +62,7 @@ import {
   connectionTo,
   ORDER_TYPE_CODE,
   ownerActionText,
+  positionOn,
   programAddresses,
   SIDE_CODE,
   randomSecret,
@@ -331,6 +332,10 @@ export class RollupTradingClient implements TradingClient {
   private listeners = new Map<string, Set<StateListener>>();
   private errorListeners = new Map<string, Set<(error: Error) => void>>();
   private newestResultsWritten = new Map<string, number>();
+  /** Wallets whose view is being rewritten because its snapshot is from before the seat layout changed. */
+  private refreshingOld = new Set<string>();
+  /** Sessions that have confirmed their seat with the exchange; a session is new after every reconnect. */
+  private confirmedSessions = new WeakSet<RollupSession>();
   /** address -> the newest view shown for it, with its session, so the account can be re-valued against newer marks without a read. */
   private lastViews = new Map<string, { session: RollupSession; view: View }>();
   /** address -> perp market id -> the resting orders last read from the view, with the slot's open lots at that moment. */
@@ -460,7 +465,7 @@ export class RollupTradingClient implements TradingClient {
     const stop = session.client.subscribeView((view) => this.emitState(session, view));
     const address = session.owner.publicKey.toBase58();
     try {
-      const view = await session.client.view();
+      const view = await this.currentView(session);
       // A missing view reads the same as the SDK's own "not readable" answer.
       if (!view) throw new Error(VIEW_NOT_READABLE_MESSAGE);
       this.emitState(session, view);
@@ -507,10 +512,75 @@ export class RollupTradingClient implements TradingClient {
   private emitState(session: RollupSession, view: View): void {
     const address = session.owner.publicKey.toBase58();
     if (view.resultsWritten < (this.newestResultsWritten.get(address) ?? 0)) return;
+    if (this.needsConfirmation(session, view)) {
+      this.refreshOldSnapshot(session);
+      return;
+    }
     this.newestResultsWritten.set(address, view.resultsWritten);
     markAccountOpened(this.storage, address);
     const state = this.mapViewFrom(session, view);
     for (const listener of this.listeners.get(address) ?? []) listener(state);
+  }
+
+  /**
+   * A view that must be confirmed (see `needsConfirmation`) is never shown as
+   * it stands: a `sync_view` rewrites it from the seat (a refresh only, it
+   * never closes or releases anything) and the rewritten view is shown
+   * instead. If the confirmation fails the account stays unknown, with the
+   * error reported. One refresh runs at a time per wallet.
+   */
+  private refreshOldSnapshot(session: RollupSession): void {
+    const address = session.owner.publicKey.toBase58();
+    if (this.refreshingOld.has(address)) return;
+    this.refreshingOld.add(address);
+    this.confirmedSeat(session)
+      .then(({ view }) => this.emitState(session, view))
+      .catch((error: unknown) => {
+        const failure =
+          error instanceof Error ? scrubError(error) : new Error(redactToken(String(error)));
+        for (const onError of this.errorListeners.get(address) ?? []) onError(failure);
+      })
+      .finally(() => this.refreshingOld.delete(address));
+  }
+
+  /**
+   * Whether a view must be rewritten by a `sync_view` before it is shown: its
+   * snapshot is from before the seat layout changed, or it records a seat that
+   * this session has not yet confirmed. The release sweep gives back an empty
+   * seat without touching its view, so a view last synced while holding funds
+   * can show a balance the seat no longer has. A session (a new one follows
+   * every reconnect) confirms once, before its first seated view is shown.
+   */
+  private needsConfirmation(session: RollupSession, view: View): boolean {
+    if (view.snapshotOld) return true;
+    return (
+      view.seatRecorded && !!session.client.confirmSeat && !this.confirmedSessions.has(session)
+    );
+  }
+
+  /** The view as the rollup shows it, confirmed first when it must not be shown as it stands. A confirmation that fails throws: the old figures are never shown in its place. */
+  private async currentView(session: RollupSession): Promise<View> {
+    const view = await session.client.view();
+    if (!view || !this.needsConfirmation(session, view)) return view;
+    return (await this.confirmedSeat(session)).view;
+  }
+
+  /** A `sync_view` read back: whether the seat is held, and the view as it left the program. */
+  private async confirmedSeat(session: RollupSession): Promise<{ seated: boolean; view: View }> {
+    if (!session.client.confirmSeat) throw new Error("This session cannot confirm a seat");
+    const confirmed = await session.client.confirmSeat(DEFAULT_EXPIRY_SECONDS);
+    this.confirmedSessions.add(session);
+    session.saveKeyCheckpoint();
+    return confirmed;
+  }
+
+  /** Whether the account holds a seat right now, confirmed with the exchange (a `sync_view`). The view shown is refreshed from the answer. */
+  async confirmSeat(wallet: WalletIdentity): Promise<boolean> {
+    return this.withSession(wallet, async (session) => {
+      const confirmed = await this.confirmedSeat(session);
+      this.emitState(session, confirmed.view);
+      return confirmed.seated;
+    });
   }
 
   /**
@@ -1136,11 +1206,26 @@ export class RollupTradingClient implements TradingClient {
     inUseElsewhere: (value: T) => T,
   ): Promise<KeyedAttempt<T>> {
     let attempt = await run();
+    if (attempt.refusal === PROGRAM_ERROR.notSeated) await this.showUnseatedView(session);
     if (attempt.refusal !== PROGRAM_ERROR.notOrderKey) return attempt;
     if (await this.resyncKeys(session)) attempt = await run();
     return attempt.refusal === PROGRAM_ERROR.notOrderKey
       ? { ...attempt, value: inUseElsewhere(attempt.value) }
       : attempt;
+  }
+
+  /**
+   * The program refused a call because the account holds no seat: the view
+   * still shown may be from before the seat was given back. A `sync_view`
+   * repairs the view (it only refreshes, it never closes or releases
+   * anything), and the account is then shown empty with the prompt to deposit.
+   */
+  private async showUnseatedView(session: RollupSession): Promise<void> {
+    try {
+      this.emitState(session, (await this.confirmedSeat(session)).view);
+    } catch {
+      // The subscription still delivers the repaired view.
+    }
   }
 
   private async resyncKeys(session: RollupSession): Promise<boolean> {
@@ -1214,10 +1299,8 @@ export class RollupTradingClient implements TradingClient {
     const requested = sizeToLots(binding.units, order.size);
     const chain = session.limits?.get(binding.numericId);
     if (!order.reduceOnly || !chain) return requested;
-    const held =
-      this.lastViews.get(session.owner.publicKey.toBase58())?.view.snapshot.seat.perp[
-        binding.numericId
-      ]?.base ?? 0n;
+    const shownSeat = this.lastViews.get(session.owner.publicKey.toBase58())?.view.snapshot.seat;
+    const held = shownSeat ? positionOn(shownSeat, binding.numericId).base : 0n;
     return reduceOnlyLots({
       requested,
       position: held,
@@ -1568,7 +1651,7 @@ export class RollupTradingClient implements TradingClient {
 
   /** A read that comes back older than a view already shown yields that newer view instead, so a slow read never rolls the account back. */
   private mapView(session: RollupSession): Promise<TraderState> {
-    return session.client.view().then((view) => {
+    return this.currentView(session).then((view) => {
       const held = this.lastViews.get(session.owner.publicKey.toBase58());
       return held && held.view.resultsWritten > view.resultsWritten
         ? this.mapViewFrom(held.session, held.view)
@@ -1582,6 +1665,7 @@ export class RollupTradingClient implements TradingClient {
     if (!held || view.resultsWritten >= held.view.resultsWritten) {
       this.lastViews.set(address, { session, view });
     }
+    if (!view.seatRecorded) return { ...this.emptyState(session), unseated: true };
     const bindings = this.bindings(session);
     const seat = view.snapshot.seat;
 
@@ -1610,10 +1694,9 @@ export class RollupTradingClient implements TradingClient {
     let exposureUnreadable = false;
     for (const market of session.deployment.markets) {
       if (market.kind !== "perp") continue;
-      const slot = seat.perp[market.marketId];
-      if (!slot) continue;
-      const openBidLots = slot.openBidLots ?? 0n;
-      const openAskLots = slot.openAskLots ?? 0n;
+      const slot = positionOn(seat, market.marketId);
+      const openBidLots = slot.openBidLots;
+      const openAskLots = slot.openAskLots;
       const hasExposure = slot.base !== 0n || openBidLots !== 0n || openAskLots !== 0n;
       const binding = bindings.get(market.symbol);
       if (!binding) {
@@ -1666,14 +1749,13 @@ export class RollupTradingClient implements TradingClient {
     // Every slot the account can carry exposure in counts, not only the markets
     // this terminal trades: one outside them leaves the margin unknown.
     const listedMarketIds = new Set(session.deployment.markets.map((market) => market.marketId));
-    seat.perp.forEach((slot, marketId) => {
-      if (!slot || listedMarketIds.has(marketId)) return;
-      const openBidLots = slot.openBidLots ?? 0n;
-      const openAskLots = slot.openAskLots ?? 0n;
-      if (slot.base === 0n && openBidLots === 0n && openAskLots === 0n) return;
+    for (const slot of seat.positions) {
+      if (listedMarketIds.has(slot.marketId)) continue;
+      const { openBidLots, openAskLots } = slot;
+      if (slot.base === 0n && openBidLots === 0n && openAskLots === 0n) continue;
       exposures.push(unreadableExposure(slot.base, slot.quote, openBidLots, openAskLots));
       exposureUnreadable = true;
-    });
+    }
 
     const margin = summarizeMargin(seat.collateral, exposures);
     const collateral: Balance = {
@@ -1741,11 +1823,11 @@ export class RollupTradingClient implements TradingClient {
       }));
 
     if (snapshotBinding?.isPerp) {
-      const slot = seat.perp[snapshotBinding.numericId];
+      const slot = positionOn(seat, snapshotBinding.numericId);
       seen.set(snapshotBinding.numericId, {
         orders: mapOrders(snapshotBinding),
-        bidLots: slot?.openBidLots ?? 0n,
-        askLots: slot?.openAskLots ?? 0n,
+        bidLots: slot.openBidLots,
+        askLots: slot.openAskLots,
       });
     }
 
@@ -1753,13 +1835,11 @@ export class RollupTradingClient implements TradingClient {
     for (const binding of bindings.values()) {
       if (!binding.isPerp) continue;
       const read = seen.get(binding.numericId);
-      const slot = seat.perp[binding.numericId];
+      const slot = positionOn(seat, binding.numericId);
       const unchanged =
         read &&
         (binding === snapshotBinding ||
-          (slot &&
-            read.bidLots === (slot.openBidLots ?? 0n) &&
-            read.askLots === (slot.openAskLots ?? 0n)));
+          (read.bidLots === slot.openBidLots && read.askLots === slot.openAskLots));
       if (!unchanged) {
         seen.delete(binding.numericId);
         continue;

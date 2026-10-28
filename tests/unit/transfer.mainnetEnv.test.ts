@@ -22,7 +22,7 @@ const programId = new PublicKey(MAINNET_PINS.programId);
 
 const exchange = (overrides: Partial<ExchangeFacts> = {}): ExchangeFacts => ({
   paused: false,
-  custodyCap: 1_000_000_000n,
+  minSeatDeposit: 0n,
   sealed: false,
   token: { mint, custodyNonce: 7n },
   perpMarketIds: [0],
@@ -49,6 +49,7 @@ const parts = (signer: OwnerSigner, facts: ExchangeFacts = exchange()) => ({
   rollupEndpoint: "https://rollup.invalid/path?token=secret",
   depositKey: Keypair.generate(),
   accountOpen: async () => true,
+  confirmSeat: async () => true,
   readExchange: async () => facts,
   journal,
 });
