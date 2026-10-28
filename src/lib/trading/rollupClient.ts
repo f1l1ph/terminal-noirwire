@@ -65,6 +65,7 @@ import {
   programAddresses,
   SIDE_CODE,
   randomSecret,
+  rollupClockSeconds,
   TransactionFailed,
   VIEW_NOT_READABLE_MESSAGE,
   WithdrawalUnknown,
@@ -84,6 +85,7 @@ import {
 import { priceDecimalsOf, sizeDecimalsOf } from "../market-data/precision";
 import { isStale, STALE_MARK_MS } from "../market-data/selectors";
 import { summarizeMargin, type PerpExposure } from "./accountMargin";
+import { reduceOnlyLots } from "./closeSize";
 import { wireOrderType } from "./orderType";
 import { priceOutsideBand } from "./validation";
 import type {
@@ -147,6 +149,8 @@ async function readAccountUnsigned(
 const GRANT_SYNC_ATTEMPTS = 8;
 const GRANT_SYNC_GAP_MS = 1_500;
 const GOOD_FOR_SECONDS: Record<"1m" | "1h", bigint> = { "1m": 60n, "1h": 3_600n };
+/** How long a reading of the rollup's clock is trusted before it is read again. */
+const CLOCK_FRESH_FOR_MS = 300_000;
 /**
  * Passed explicitly on every keyed call (place/cancel/transfer/sync) so this
  * client can compute `PendingSettlement.expiresAtMs` itself from the same
@@ -333,6 +337,8 @@ export class RollupTradingClient implements TradingClient {
   private restingByMarket = new Map<string, Map<number, RestingRead>>();
   /** `address:market` -> the secret (hex) of an order that may have reached the venue, until its outcome is proven or released. */
   private unresolvedOrders = new Map<string, UnknownHold>();
+  /** session -> how many seconds the rollup's clock runs ahead of this device's (negative when behind), and when that was read. */
+  private clocks = new WeakMap<RollupSession, { offsetSeconds: number; readAtMs: number }>();
 
   constructor(private readonly options: RollupTradingClientOptions) {
     this.storage = options.storage ?? browserLocalStorage();
@@ -775,9 +781,56 @@ export class RollupTradingClient implements TradingClient {
           bandBps: chain.bandBps,
           minSize: lotsToSize(binding.units, chain.minSize),
           minNotional: quoteAtomsToAmount(chain.minNotional),
+          positionCap: lotsToSize(binding.units, chain.positionCap),
+          maxOpenOrders: chain.maxOpenOrders,
         });
       }
       return limits;
+    });
+  }
+
+  /**
+   * How many seconds the rollup's clock runs ahead of this device's, read from
+   * the rollup and kept for a few minutes. Null when it cannot be read, in which
+   * case this device's clock stands in for it.
+   */
+  private async clockOffsetSeconds(session: RollupSession): Promise<number | null> {
+    const known = this.clocks.get(session);
+    const sinceRead = known ? this.now() - known.readAtMs : 0;
+    if (known && sinceRead >= 0 && sinceRead < CLOCK_FRESH_FOR_MS) return known.offsetSeconds;
+    if (!session.reader) return known?.offsetSeconds ?? null;
+    try {
+      const rollupSeconds = await rollupClockSeconds(session.reader);
+      const offsetSeconds = rollupSeconds - Math.floor(this.now() / 1000);
+      this.clocks.set(session, { offsetSeconds, readAtMs: this.now() });
+      return offsetSeconds;
+    } catch {
+      return known?.offsetSeconds ?? null;
+    }
+  }
+
+  /** The rollup's clock now, in unix milliseconds, read from the rollup this moment and never from a kept reading; null when it cannot be read. */
+  async rollupNowMs(wallet: WalletIdentity): Promise<number | null> {
+    return this.withSession(wallet, async (session) => {
+      if (!session.reader) return null;
+      try {
+        const rollupSeconds = await rollupClockSeconds(session.reader);
+        this.clocks.set(session, {
+          offsetSeconds: rollupSeconds - Math.floor(this.now() / 1000),
+          readAtMs: this.now(),
+        });
+        return rollupSeconds * 1000;
+      } catch {
+        return null;
+      }
+    });
+  }
+
+  /** The rollup's clock against this device's, in milliseconds (positive when the rollup is ahead); null while it has not been read. */
+  async clockOffsetMs(wallet: WalletIdentity): Promise<number | null> {
+    return this.withSession(wallet, async (session) => {
+      const offsetSeconds = await this.clockOffsetSeconds(session);
+      return offsetSeconds === null ? null : offsetSeconds * 1000;
     });
   }
 
@@ -1151,6 +1204,29 @@ export class RollupTradingClient implements TradingClient {
     return mark != null && priceOutsideBand(order.side, order.price, mark, chain.bandBps);
   }
 
+  /** The lots to send: the typed size, except that a full reduce-only close is lifted to what the minimums need, which the program trims to the position. */
+  private sizeToSend(
+    session: RollupSession,
+    binding: MarketBinding,
+    order: NewOrderInput,
+    price: bigint,
+  ): bigint {
+    const requested = sizeToLots(binding.units, order.size);
+    const chain = session.limits?.get(binding.numericId);
+    if (!order.reduceOnly || !chain) return requested;
+    const held =
+      this.lastViews.get(session.owner.publicKey.toBase58())?.view.snapshot.seat.perp[
+        binding.numericId
+      ]?.base ?? 0n;
+    return reduceOnlyLots({
+      requested,
+      position: held,
+      price,
+      minSize: chain.minSize,
+      minNotional: chain.minNotional,
+    });
+  }
+
   private async placeOnce(
     wallet: WalletIdentity,
     session: RollupSession,
@@ -1159,7 +1235,7 @@ export class RollupTradingClient implements TradingClient {
     const binding = this.bindings(session).get(order.market);
     if (!binding) throw new Error(`${order.market} was not found on chain`);
     const price = priceToChainAtoms(binding.units, order.price);
-    const size = sizeToLots(binding.units, order.size);
+    const size = this.sizeToSend(session, binding, order, price);
     // The session picked for this send may be a newer one than the form
     // validated against (a token refresh during the submit): check the order
     // against its limits, and send nothing if they no longer allow it.
@@ -1168,13 +1244,18 @@ export class RollupTradingClient implements TradingClient {
     }
     const makersListedNow = await this.makersListedNow(session, binding.numericId);
     const secret = randomSecret();
-    const expiry = expiryFor(order.goodFor, this.now);
+    const offsetSeconds = (await this.clockOffsetSeconds(session)) ?? 0;
+    const expiry = expiryFor(order.goodFor, Math.floor(this.now() / 1000) + offsetSeconds);
     const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
+    const chain = session.limits?.get(binding.numericId);
     const refusalContext = {
       maxPriceAgeSeconds: session.maxPriceAgeSeconds?.get(binding.numericId),
       isPerp: binding.isPerp,
       side: order.side,
       reduceOnly: !!order.reduceOnly,
+      limit: order.type === "limit",
+      positionCap: chain && lotsToSize(binding.units, chain.positionCap, binding.sizeDecimals),
+      maxOpenOrders: chain?.maxOpenOrders,
     };
     // Tracked before the send, so an order that lands after this call
     // gave up on it still has its fills recognised as this trader's own.
@@ -1189,7 +1270,7 @@ export class RollupTradingClient implements TradingClient {
       price: order.price,
       tag: bytesToHex(secret),
       sentAtMs: this.now(),
-      orderExpiresAtMs: expiry === undefined ? null : Number(expiry) * 1000,
+      orderExpiresAtMs: expiry === undefined ? null : (Number(expiry) - offsetSeconds) * 1000,
     };
     if (!this.holdOrder(wallet, hold)) {
       untrackSecret(this.storage, wallet.address, secret);
@@ -1327,8 +1408,18 @@ export class RollupTradingClient implements TradingClient {
         },
         (result) => ({ ...result, reason: KEYS_IN_USE_ELSEWHERE_REASON }),
       );
+      if (attempt.value.cancelled > 0) await this.showViewAfterCancel(session);
       return attempt.value;
     });
+  }
+
+  /** The cancel has landed: the account the ticket sizes from is read again now rather than whenever the subscription next pushes, so the margin an order frees is not left shown as held. */
+  private async showViewAfterCancel(session: RollupSession): Promise<void> {
+    try {
+      this.emitState(session, await session.client.view());
+    } catch {
+      // The subscription still delivers the new view.
+    }
   }
 
   async cancelAllInMarket(wallet: WalletIdentity, market: string): Promise<CancelResult> {
@@ -1399,18 +1490,17 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
-  async syncMarket(wallet: WalletIdentity, market: string): Promise<void> {
-    await this.withSession(wallet, async (session) => {
+  /** Whether the view was refreshed: false when the sync did not go through, so the caller can ask again. A market this terminal does not trade has nothing to refresh and counts as done. */
+  async syncMarket(wallet: WalletIdentity, market: string): Promise<boolean> {
+    return this.withSession(wallet, async (session) => {
       const binding = this.bindings(session).get(market);
-      if (!binding) return;
+      if (!binding) return true;
       try {
-        await session.client.syncView(binding.numericId, DEFAULT_EXPIRY_SECONDS);
+        const result = await session.client.syncView(binding.numericId, DEFAULT_EXPIRY_SECONDS);
         session.saveKeyCheckpoint();
+        return resultRefusalNumber(result) === null;
       } catch {
-        // Best effort, same as before: an own fill's view sync is a
-        // background nicety (the next trading instruction re-syncs it
-        // regardless), so an unknown or busy-slots outcome here is not
-        // worth surfacing to the trader.
+        return false;
       }
     });
   }
@@ -1712,9 +1802,13 @@ function signInDeclined(error: unknown): boolean {
   return error instanceof SessionAuthError && isWalletDecline(error.cause);
 }
 
-function expiryFor(goodFor: NewOrderInput["goodFor"], now: () => number): bigint | undefined {
+/** A resting order's own expiry, in unix seconds of the rollup's clock; `rollupNowSeconds` is that clock now. */
+function expiryFor(
+  goodFor: NewOrderInput["goodFor"],
+  rollupNowSeconds: number,
+): bigint | undefined {
   if (!goodFor || goodFor === "untilCancelled") return undefined;
-  return BigInt(Math.floor(now() / 1000)) + GOOD_FOR_SECONDS[goodFor];
+  return BigInt(rollupNowSeconds) + GOOD_FOR_SECONDS[goodFor];
 }
 
 function spotAssetsOf(deployment: PublicDeployment): Record<string, SpotAssets> {

@@ -7,6 +7,7 @@ import {
   maxAmount,
   maxSpotSellAmount,
   parseAmount,
+  positionRoom,
   sizeFromAmount,
 } from "@/lib/trading/ticketSizing";
 import { estimateOrderCost } from "@/lib/trading/risk";
@@ -241,5 +242,67 @@ describe("ticket sizing with the market account's ratios", () => {
     const chain = estimateLiquidation({ ...base, maintenanceBps: 1000 });
     expect(assumed).toEqual({ kind: "price", price: "84.26" });
     expect(chain).toEqual({ kind: "price", price: "88.94" });
+  });
+});
+
+describe("positionRoom", () => {
+  const cap = { positionCap: "2.2" };
+
+  it("is the whole limit with no position and no resting orders", () => {
+    expect(positionRoom({ ...cap, side: "buy", position: "0" })).toBe("2.200000000");
+  });
+
+  it("takes the position on the order's own side off the limit", () => {
+    expect(positionRoom({ ...cap, side: "buy", position: "1.5" })).toBe("0.700000000");
+    expect(positionRoom({ ...cap, side: "sell", position: "-1.5" })).toBe("0.700000000");
+  });
+
+  it("does not let a position on the other side add room, so a sell that flips a long counts in full", () => {
+    expect(positionRoom({ ...cap, side: "sell", position: "1.5" })).toBe("2.200000000");
+    expect(positionRoom({ ...cap, side: "buy", position: "-1.5" })).toBe("2.200000000");
+  });
+
+  it("takes the resting orders on the same side off the limit, and no others", () => {
+    const resting = { openBids: "1.5", openAsks: "0.4" };
+    expect(positionRoom({ ...cap, ...resting, side: "buy", position: "0" })).toBe("0.700000000");
+    expect(positionRoom({ ...cap, ...resting, side: "sell", position: "0" })).toBe("1.800000000");
+  });
+
+  it("is zero, never negative, once the limit is reached", () => {
+    expect(positionRoom({ ...cap, side: "buy", position: "2.2", openBids: "1" })).toBe(
+      "0.000000000",
+    );
+  });
+});
+
+describe("maxAmount with a position limit", () => {
+  const params = {
+    available: "1000",
+    leverage: 5,
+    maxLeverage: 5,
+    boundPrice: "100",
+    refPrice: "100",
+    imBps: 2000,
+    takerFeeBps: 5,
+  };
+
+  it("is held to the size the limit leaves, priced at the reference and spread over the leverage", () => {
+    expect(maxAmount({ ...params, sizeRoom: "2.2" })).toBe("44.00");
+  });
+
+  it("changes nothing while the limit is further off than the funds", () => {
+    expect(maxAmount({ ...params })).toBe(maxAmount({ ...params, sizeRoom: "100" }));
+  });
+
+  it("is zero when no room is left", () => {
+    expect(maxAmount({ ...params, sizeRoom: "0" })).toBe("0.00");
+  });
+
+  it("never gives a size over the room", () => {
+    for (const room of ["0.003", "1.337", "2.2", "9.999"]) {
+      const amount = maxAmount({ ...params, available: "100000", sizeRoom: room });
+      const size = sizeFromAmount({ amount, leverage: 5, price: "100", lotSize: "0.001" });
+      expect(Number(size || "0")).toBeLessThanOrEqual(Number(room));
+    }
   });
 });

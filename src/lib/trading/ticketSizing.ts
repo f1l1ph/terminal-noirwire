@@ -77,6 +77,29 @@ export function sizeFromAmount(params: {
 }
 
 /**
+ * How much more an order on `side` may add before the market's position limit
+ * stops it, in base units. The program counts the position on that side (a long
+ * does not offset a sell), the resting orders on that side and the new order
+ * together against the limit, so a resting order narrows what a market order
+ * may add. Never negative.
+ */
+export function positionRoom(params: {
+  side: Side;
+  /** Signed position size: positive long, negative short. */
+  position: string;
+  openBids?: string;
+  openAsks?: string;
+  positionCap: string;
+}): string {
+  const position = toFixedPoint(params.position);
+  const onSide =
+    params.side === "buy" ? (position > 0n ? position : 0n) : position < 0n ? -position : 0n;
+  const resting = toFixedPoint((params.side === "buy" ? params.openBids : params.openAsks) ?? "0");
+  const room = toFixedPoint(params.positionCap) - onSide - resting;
+  return fromFixedPoint(room > 0n ? room : 0n, 9);
+}
+
+/**
  * The largest amount (to the cent) that can be committed at this leverage
  * without the fee and the market's fixed initial margin on its notional
  * exceeding what is available. The margin is reserved on the order's worst-case
@@ -92,6 +115,8 @@ export function maxAmount(params: {
   takerFeeBps?: number;
   /** The market account's initial margin ratio in basis points; implied by `maxLeverage` when absent. */
   imBps?: number;
+  /** The most size, in base units, the market's position limit still lets this order add (`positionRoom`); absent when the limit is not known. */
+  sizeRoom?: string;
 }): string {
   try {
     const available = toFixedPoint(params.available);
@@ -107,7 +132,14 @@ export function maxAmount(params: {
     const notionalAtRef = divFixedPoint(maxNotional, ratio > ONE ? ratio : ONE);
     const byLeverage = divFixedPoint(notionalAtRef, leverageFixedPoint(params.leverage));
     const capped = byLeverage < available ? byLeverage : available;
-    return fromFixedPoint(floorTo(capped, CENT), 2);
+    const byRoom =
+      params.sizeRoom === undefined
+        ? capped
+        : divFixedPoint(
+            mulFixedPoint(toFixedPoint(params.sizeRoom), refPrice),
+            leverageFixedPoint(params.leverage),
+          );
+    return fromFixedPoint(floorTo(byRoom < capped ? byRoom : capped, CENT), 2);
   } catch {
     return "0.00";
   }

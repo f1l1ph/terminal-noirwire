@@ -301,16 +301,20 @@ function counterparties(side: Side | undefined): string {
 
 /**
  * An order that matched nothing, or only part, and whose remainder was
- * cancelled. The book is private, so the cause is named only as likely: the
- * house market maker briefly has no quotes while it refreshes or is paused.
+ * cancelled. The book is private, so the cause is named only as possible:
+ * nothing is quoted at that price, or the market maker has no quotes up at
+ * all. A reduce-only limit never rests, so one that did not match says so.
  */
 function noMatchReason(filledAny: boolean, market: RefusalContext): string {
   const others = counterparties(market.side);
   if (filledAny) return `Part filled; the rest found no ${others} and was cancelled.`;
-  if (market.reduceOnly) {
-    return "Nothing was available to close against at that moment, so nothing filled and nothing was charged. Your position is unchanged. Try again in a few seconds.";
+  if (market.reduceOnly && market.limit) {
+    return "Nothing could close at your price or better, so nothing filled and nothing was charged. A reduce-only limit order never rests. Your position is unchanged. Set a price the market can meet, or close at the market price.";
   }
-  return `No ${others} at your price right now, so nothing filled and nothing was charged. The market maker may be refreshing its quotes. Try again in a few seconds.`;
+  if (market.reduceOnly) {
+    return "Nothing was available to close against, so nothing filled and nothing was charged. The market may be quiet, or its market maker may have no quotes up. Your position is unchanged. Try again later.";
+  }
+  return `No ${others} at your price, so nothing filled and nothing was charged. The market may have nothing quoted at that price, or its market maker may have no quotes up. Try again later or at a different price.`;
 }
 
 /** Matching stops at the first fill the taker cannot take: too little margin, the market's open-interest cap, or the USDC guard. */

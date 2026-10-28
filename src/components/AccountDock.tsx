@@ -79,6 +79,7 @@ export function AccountDock({
   onTabChange,
   positions,
   openOrders,
+  expiryNow,
   ownFills,
   balances,
   collateral,
@@ -101,6 +102,8 @@ export function AccountDock({
   onTabChange: (tab: Tab) => void;
   positions: Position[];
   openOrders: OpenOrder[];
+  /** The time an order's expiry is compared with: the rollup's clock, which can differ from this device's. Defaults to `now`. */
+  expiryNow?: number;
   ownFills: OwnFillRecord[];
   balances: Balance[];
   /** The separate perpetuals collateral account. `null` in dev mode: one balance, not two. */
@@ -178,7 +181,7 @@ export function AccountDock({
           <OpenOrdersTable
             openOrders={openOrders}
             marketSettings={marketSettings}
-            now={now}
+            now={expiryNow ?? now}
             onCancel={onCancelOrder}
             cancellingOrderIds={cancellingOrderIds}
           />
@@ -490,6 +493,10 @@ function EmptyState({ title, hint }: { title: string; hint: string }) {
   );
 }
 
+function isExpired(order: OpenOrder, now: number): boolean {
+  return typeof order.expiresAtMs === "number" && now > order.expiresAtMs;
+}
+
 function OpenOrdersTable({
   openOrders,
   marketSettings,
@@ -540,7 +547,14 @@ function OpenOrdersTable({
                   : UNAVAILABLE}
               </td>
               <td>{formatDecimal(order.remainingSize, settings ? sizeDecimalsOf(settings) : 4)}</td>
-              <td className="text-faint" title="When the order's own expiry passes">
+              <td
+                className={isExpired(order, now) ? "text-warning" : "text-faint"}
+                title={
+                  isExpired(order, now)
+                    ? "This order has expired. It still holds its margin until it is cancelled."
+                    : "When the order's own expiry passes"
+                }
+              >
                 {order.expiresAtMs === undefined
                   ? UNAVAILABLE
                   : order.expiresAtMs === null

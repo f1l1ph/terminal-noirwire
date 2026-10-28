@@ -7,7 +7,7 @@ import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import type { MarketInfo } from "@/lib/market-data/types";
 import { isMainnetBuild } from "@/lib/network";
 import { browserLocalStorage } from "@/lib/wallet";
-import { limitSentAsIoc } from "@/lib/trading/orderType";
+import { limitSentAsIoc, orderCanRest } from "@/lib/trading/orderType";
 import {
   limitLineFor,
   priceAtTick,
@@ -48,8 +48,17 @@ import {
   maxAmount,
   maxSpotSellAmount,
   parseAmount,
+  positionRoom,
   sizeFromAmount,
 } from "@/lib/trading/ticketSizing";
+import {
+  CLOSING_WHILE_PAUSED_NOTE,
+  MARKET_ORDERS_PAUSED_REASON,
+  NON_RESTING_ORDERS_PAUSED_REASON,
+  pauseStopsOrder,
+  TRADING_PAUSED_NOTICE,
+  type TradingPause,
+} from "@/lib/trading/tradingHealth";
 import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
@@ -171,6 +180,7 @@ export function OrderEntry({
   limits,
   limitsState = "ready",
   exposureUnreadable = false,
+  tradingPause = null,
   onLimitLineChange,
 }: {
   /** Told the draft limit price and side while the form is a limit order with a valid price, null otherwise; the chart draws it. */
@@ -246,6 +256,8 @@ export function OrderEntry({
   limitsState?: LimitsState;
   /** The account holds exposure in a market this terminal cannot read: orders that could add risk are off. */
   exposureUnreadable?: boolean;
+  /** The market maker has no quotes up: only an order that can rest is accepted, and the ticket says so. Null when trading is not known to be paused. */
+  tradingPause?: TradingPause | null;
 }) {
   const mainnet = isMainnetBuild();
   const testCopy = mainnet ? null : TEST_ONLY_COPY;
@@ -410,6 +422,30 @@ export function OrderEntry({
     : "";
   const quantityText = quantityOverride ?? derivedQuantity;
 
+  const exposure = useMemo(() => {
+    if (!market || market.kind !== "perp") return undefined;
+    const resting = (openSide: Side) =>
+      (openOrders ?? [])
+        .filter((order) => order.market === market.id && order.side === openSide)
+        .reduce((sum, order) => sum + toFixedPoint(order.remainingSize), 0n);
+    return {
+      position: position?.size ?? "0",
+      openBids: fromFixedPoint(resting("buy"), 9),
+      openAsks: fromFixedPoint(resting("sell"), 9),
+    };
+  }, [market, position, openOrders]);
+
+  const sizeRoom =
+    exposure && limits && !reduceOnly
+      ? positionRoom({
+          side,
+          position: exposure.position,
+          openBids: exposure.openBids,
+          openAsks: exposure.openAsks,
+          positionCap: limits.positionCap,
+        })
+      : undefined;
+
   const maxAmountText = useMemo(() => {
     if (!market || !referencePrice) return "0.00";
     if (isSpotSell) return maxSpotSellAmount(availableBase, referencePrice);
@@ -423,6 +459,7 @@ export function OrderEntry({
       refPrice: referencePrice,
       takerFeeBps: limits?.takerFeeBps,
       imBps: limits?.imBps,
+      sizeRoom,
     });
   }, [
     market,
@@ -433,9 +470,16 @@ export function OrderEntry({
     effectiveLeverage,
     priceText,
     limits,
+    sizeRoom,
   ]);
 
   const sentAsIoc = limitSentAsIoc(orderType, makersListed, isPerp && reduceOnly);
+  const reduceOnlyLimit = orderType === "limit" && isPerp && reduceOnly;
+  const canRest = orderCanRest(orderType, makersListed, isPerp && reduceOnly);
+  const closing = isPerp && reduceOnly;
+  const pausedBlock = pauseStopsOrder(tradingPause !== null, { canRest, reduceOnly: closing });
+  const pausedReason =
+    orderType === "market" ? MARKET_ORDERS_PAUSED_REASON : NON_RESTING_ORDERS_PAUSED_REASON;
   const draft: NewOrderInput | null = market
     ? {
         market: market.id,
@@ -444,7 +488,7 @@ export function OrderEntry({
         price: priceText,
         size: quantityText,
         reduceOnly: isPerp && reduceOnly ? true : undefined,
-        goodFor: supportsGoodFor && orderType === "limit" && !sentAsIoc ? goodFor : undefined,
+        goodFor: supportsGoodFor && canRest ? goodFor : undefined,
       }
     : null;
 
@@ -466,19 +510,6 @@ export function OrderEntry({
   }, [market, referencePrice, quantityText, side, isPerp, limits]);
 
   const estimateDisplay = market && estimate ? displayOrderCost(estimate, priceDecimals) : null;
-
-  const exposure = useMemo(() => {
-    if (!market || market.kind !== "perp") return undefined;
-    const resting = (openSide: Side) =>
-      (openOrders ?? [])
-        .filter((order) => order.market === market.id && order.side === openSide)
-        .reduce((sum, order) => sum + toFixedPoint(order.remainingSize), 0n);
-    return {
-      position: position?.size ?? "0",
-      openBids: fromFixedPoint(resting("buy"), 9),
-      openAsks: fromFixedPoint(resting("sell"), 9),
-    };
-  }, [market, position, openOrders]);
 
   const markPrice = mark?.price;
   const funds = useMemo(() => {
@@ -528,8 +559,24 @@ export function OrderEntry({
     reduceOnly,
     reduceOnlyGrows: funds?.reduceOnlyGrows,
   });
+  /** A reduce-only order for the whole position is sent lifted to the market's minimums, which the program trims back to the position, so a small position is not held to them. */
+  function limitsForOrder(size: string, reduceOnlyOrder: boolean | undefined) {
+    if (!limits || !isPerp || !reduceOnlyOrder || !position) return limits;
+    const held = fixedPointOrZero(withoutSign(position.size));
+    const closesWhole = held > 0n && fixedPointOrZero(size) >= held;
+    return closesWhole ? { ...limits, minSize: "0", minNotional: "0" } : limits;
+  }
   const validation =
-    market && draft ? validateOrder(draft, market, mark, now, staleMarkAllowed, limits) : null;
+    market && draft
+      ? validateOrder(
+          draft,
+          market,
+          mark,
+          now,
+          staleMarkAllowed,
+          limitsForOrder(draft.size, draft.reduceOnly),
+        )
+      : null;
   // The names a field message uses: the balance names this ticket shows, not the market list's.
   const fieldMarket = market
     ? { ...market, base: baseName, quote: quoteUnit || market.quote }
@@ -539,6 +586,13 @@ export function OrderEntry({
     funds && !funds.shortfall && !isSpotSell
       ? fromFixedPoint(toFixedPoint(availableQuote) - funds.requiredQuote, 2)
       : null;
+
+  const priceNumber = Number(priceText);
+  const restsPassively =
+    canRest &&
+    Number.isFinite(markNumber) &&
+    Number.isFinite(priceNumber) &&
+    (side === "buy" ? priceNumber < markNumber : priceNumber > markNumber);
 
   const summaryRows: SummaryRow[] | null = estimateDisplay
     ? [
@@ -556,7 +610,10 @@ export function OrderEntry({
               },
             ]
           : []),
-        { label: "Fee", value: money(estimateDisplay.fee) },
+        {
+          label: "Fee",
+          value: restsPassively ? "None while it rests" : money(estimateDisplay.fee),
+        },
         ...(orderType === "market" && priceText
           ? [
               {
@@ -578,7 +635,7 @@ export function OrderEntry({
           side,
           quantity: quantityText,
           entryPrice: referencePrice,
-          collateral: availableQuote,
+          collateral: collateral ? collateral.total : availableQuote,
           priceDecimals,
           takerFeeBps: limits?.takerFeeBps,
           maintenanceBps: limits?.mmBps,
@@ -649,6 +706,7 @@ export function OrderEntry({
     !accountUnknown &&
     !availableBlocks &&
     !limitsBlock &&
+    !pausedBlock &&
     !noFunds &&
     !!market &&
     !!validation?.valid &&
@@ -666,6 +724,7 @@ export function OrderEntry({
     if (unknownHold) return "An earlier order may have reached the venue. Check it first.";
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
     if (limitsBlock) return limitsGateText(limitsBlock);
+    if (pausedBlock) return pausedReason;
     if (availableBlocks) {
       return exposureUnreadable
         ? UNREADABLE_EXPOSURE_ORDERS_NOTICE
@@ -695,6 +754,7 @@ export function OrderEntry({
         tone: limitsBlock === "failed" ? "error" : "neutral",
       };
     }
+    if (pausedBlock) return { text: pausedReason, tone: "warning" };
     if (availableBlocks) {
       return exposureUnreadable
         ? { text: UNREADABLE_EXPOSURE_ORDERS_NOTICE, tone: "warning" }
@@ -886,7 +946,14 @@ export function OrderEntry({
   async function runSubmit(order: FrozenOrder) {
     if (!market || submittingRef.current) return;
     // The full check again, on the frozen order and the mark as it is now.
-    const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed, limits);
+    const recheck = validateOrder(
+      order.draft,
+      market,
+      mark,
+      now,
+      staleMarkAllowed,
+      limitsForOrder(order.draft.size, order.draft.reduceOnly),
+    );
     const marginExpired = unknownCollateralBlocks({
       availableUnknown: isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now())),
       isPerp,
@@ -1117,10 +1184,20 @@ export function OrderEntry({
           value={orderType}
           onChange={(event) => setOrderType(event.target.value as "market" | "limit")}
         >
-          <option value="market">Market</option>
+          <option value="market" disabled={tradingPause !== null && !closing}>
+            Market
+          </option>
           <option value="limit">Limit</option>
         </select>
       </div>
+
+      {tradingPause && (
+        <div role="status" className="text-warning bg-surface-raised rounded-tile p-2 text-[12px]">
+          <p>{TRADING_PAUSED_NOTICE}</p>
+          {tradingPause.reason && <p className="text-dim mt-1">{tradingPause.reason}</p>}
+          {closing && <p className="mt-1">{CLOSING_WHILE_PAUSED_NOTE}</p>}
+        </div>
+      )}
 
       <div
         className="bg-surface-raised border-line flex gap-0.5 rounded-full border p-0.5"
@@ -1271,11 +1348,15 @@ export function OrderEntry({
               className={`${rangeBrand} mt-3`}
             />
           )}
-          <p className="text-faint mt-1 text-[11px]">Fills only at this price or better.</p>
+          <p className="text-faint mt-1 text-[11px]">
+            {reduceOnlyLimit
+              ? "Closes now at this price or better. A reduce-only order never rests, so any part that does not fill is cancelled."
+              : "Fills only at this price or better."}
+          </p>
         </div>
       )}
 
-      {supportsGoodFor && orderType === "limit" && !sentAsIoc && (
+      {supportsGoodFor && canRest && (
         <div>
           <label className="text-faint text-[12px]" htmlFor="order-good-for">
             Good for

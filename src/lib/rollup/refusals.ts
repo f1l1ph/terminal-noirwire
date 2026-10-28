@@ -10,6 +10,12 @@ export interface RefusalContext {
   side?: Side;
   /** Whether the order only closes or reduces a position, so nothing filling means the price moved, not that the book was empty. */
   reduceOnly?: boolean;
+  /** Whether the order was a limit order, which a reduce-only order never rests as. */
+  limit?: boolean;
+  /** The most the market lets one seat hold on one side, in base units as shown, resting orders included. */
+  positionCap?: string;
+  /** The most resting orders the market lets one seat have. */
+  maxOpenOrders?: number;
 }
 
 /**
@@ -111,6 +117,22 @@ function marketReduceOnlyReason(market: RefusalContext): string {
     : "This market only takes orders that shrink a position right now, which a spot order cannot be, so it takes no orders. No fill occurred.";
 }
 
+function positionCapReason({ positionCap }: RefusalContext): string {
+  const limit =
+    positionCap === undefined
+      ? "this market's position limit"
+      : `this market's limit of ${positionCap} on one side`;
+  return `This order could take your position past ${limit}. Your resting orders on that side count toward it. Lower the size or cancel a resting order. No fill occurred.`;
+}
+
+function tooManyOpenOrdersReason({ maxOpenOrders }: RefusalContext): string {
+  const limit =
+    maxOpenOrders === undefined
+      ? "the most open orders"
+      : `the most open orders (${maxOpenOrders})`;
+  return `You have ${limit} this market allows. Orders that have expired still count until they are cancelled. Cancel one, then try again. No fill occurred.`;
+}
+
 const INTERNAL_CHECK =
   "The exchange hit an internal check and stopped safely. Nothing was changed. Try again in a moment, and contact support if it repeats.";
 const PRICE_SOURCE_NOT_READY =
@@ -159,8 +181,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.stalePrice]: stalePriceReason,
   [PROGRAM_ERROR.priceUnavailable]:
     "This market has no price yet, so it takes no orders. Try again in a minute. No fill occurred.",
-  [PROGRAM_ERROR.tooManyOpenOrders]:
-    "You have the most open orders this market allows. Cancel one, then try again. No fill occurred.",
+  [PROGRAM_ERROR.tooManyOpenOrders]: tooManyOpenOrdersReason,
   [PROGRAM_ERROR.reduceOnlyWouldIncrease]:
     "A reduce-only order can only shrink your position, and this one would not. Check the side and that you still hold the position. No fill occurred.",
   [PROGRAM_ERROR.marketDataMissing]:
@@ -169,8 +190,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.orderExpired]:
     "This order's own time limit had already passed when it reached the exchange, so it was not run. Try again. No fill occurred.",
   [PROGRAM_ERROR.insuranceSeatNotOpen]: INSURANCE_ACCOUNT_NOT_READY,
-  [PROGRAM_ERROR.positionCapExceeded]:
-    "This order could take your position past this market's position limit. Lower the size. No fill occurred.",
+  [PROGRAM_ERROR.positionCapExceeded]: positionCapReason,
   [PROGRAM_ERROR.orderNotFound]:
     "That order is not open any more: it has probably filled, expired or been cancelled. Check your open orders and positions.",
   [PROGRAM_ERROR.shortfallOutstanding]:

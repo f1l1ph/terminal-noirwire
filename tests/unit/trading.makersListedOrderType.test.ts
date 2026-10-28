@@ -8,7 +8,23 @@ import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { isMakersListed, ORDER_TYPE_CODE } from "@/lib/rollup/sdk";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { NewOrderInput, WalletIdentity } from "@/lib/trading/types";
-import { limitSentAsIoc, wireOrderType } from "@/lib/trading/orderType";
+import { limitSentAsIoc, orderCanRest, wireOrderType } from "@/lib/trading/orderType";
+
+describe("orderCanRest", () => {
+  it("lets only a limit order rest", () => {
+    expect(orderCanRest("limit", false, undefined)).toBe(true);
+    expect(orderCanRest("market", false, undefined)).toBe(false);
+  });
+
+  it("does not let a limit rest when makers are listed, since it is sent as immediate-or-cancel", () => {
+    expect(orderCanRest("limit", true, undefined)).toBe(false);
+  });
+
+  it("never lets a reduce-only order rest, as the program cancels what does not fill", () => {
+    expect(orderCanRest("limit", false, true)).toBe(false);
+    expect(orderCanRest("limit", true, true)).toBe(false);
+  });
+});
 
 describe("limitSentAsIoc", () => {
   it("sends a limit as immediate-or-cancel only while makers are listed", () => {

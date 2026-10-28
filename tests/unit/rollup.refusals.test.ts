@@ -189,6 +189,24 @@ describe("the sentence for every refusal a trader can meet", () => {
   });
 });
 
+describe("the limits a refusal names", () => {
+  it("gives the position limit as a number, and says resting orders count toward it", () => {
+    const sentence = describeProgramError(48, { positionCap: "2.200" }) ?? "";
+    expect(sentence).toContain("this market's limit of 2.200 on one side");
+    expect(sentence).toMatch(/resting orders on that side count/);
+  });
+
+  it("keeps a plain position limit sentence when the number is not known", () => {
+    expect(describeProgramError(48)).toMatch(/past this market's position limit/);
+  });
+
+  it("gives the open order limit as a number, and says expired orders still count", () => {
+    const sentence = describeProgramError(40, { maxOpenOrders: 32 }) ?? "";
+    expect(sentence).toContain("the most open orders (32) this market allows");
+    expect(sentence).toMatch(/expired still count until they are cancelled/);
+  });
+});
+
 describe("the sentences the issue calls out", () => {
   it.each([
     [22, /available balance does not cover/],

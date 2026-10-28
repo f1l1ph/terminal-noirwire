@@ -46,6 +46,10 @@ export interface MarketLimits {
   minSize: string;
   /** The smallest order value (price times size), in quote units. */
   minNotional: string;
+  /** The most one seat may hold on one side, in base units: the position on that side, the resting orders on it and a new order together. */
+  positionCap: string;
+  /** The most resting orders one seat may have in this market. */
+  maxOpenOrders: number;
 }
 
 /** What opening an account came to; the UI renders each kind and never a bare success. */
@@ -356,8 +360,13 @@ export interface TradingClient {
    * that is filled by someone else's taker order does not touch this
    * trader's view until this is called (DESIGN.md section 3). Call it when
    * an own fill is seen on a resting order (RULES.md section 10's receipts).
+   * Answers whether the view was refreshed; false means ask again.
    */
-  syncMarket?(wallet: WalletIdentity, market: string): Promise<void>;
+  syncMarket?(wallet: WalletIdentity, market: string): Promise<boolean>;
+  /** The rollup's clock now in unix milliseconds, read afresh; null when it cannot be read. Optional: dev mode has no rollup clock. */
+  rollupNowMs?(wallet: WalletIdentity): Promise<number | null>;
+  /** How far the rollup's clock runs ahead of this device's, in milliseconds (negative when behind); null while it cannot be read. Optional: dev mode has no rollup clock. */
+  clockOffsetMs?(wallet: WalletIdentity): Promise<number | null>;
   /**
    * The concrete evidence behind the privacy claim (DESIGN.md section 1):
    * reads this trader's own view account and `market`'s book account from

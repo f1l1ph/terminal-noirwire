@@ -110,7 +110,7 @@ export function ConfirmOrderDialog({
           {marketDisplayName(draft.market)} ·{" "}
           {draft.type === "market"
             ? "Market"
-            : limitSentAsIoc(draft.type, makersListed, draft.reduceOnly)
+            : draft.reduceOnly || limitSentAsIoc(draft.type, makersListed, draft.reduceOnly)
               ? "Limit (fills now or cancels)"
               : "Limit"}{" "}
           · {sideWord(isPerp, draft.side)} {formatDecimal(draft.size, sizeDecimals)} {baseName}

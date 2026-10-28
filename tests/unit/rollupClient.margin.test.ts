@@ -198,6 +198,8 @@ describe("RollupTradingClient: margin-aware collateral", () => {
           bandBps: 400,
           minSize: 2n,
           minNotional: 5n * USDC,
+          positionCap: 3_000n,
+          maxOpenOrders: 32,
         },
       ],
     ]);
@@ -217,6 +219,8 @@ describe("RollupTradingClient: margin-aware collateral", () => {
       bandBps: 400,
       minSize: "0.002000",
       minNotional: "5.000000",
+      positionCap: "3.000000",
+      maxOpenOrders: 32,
     });
   });
 

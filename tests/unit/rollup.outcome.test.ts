@@ -104,11 +104,12 @@ describe("placedToResult: outcome status mapping", () => {
     const mapped = placedToResult(placed, UNITS, 6, undefined, { side: "sell" });
     expect(mapped.status).toBe("cancelled");
     expect(mapped.reason).toBe(
-      "No buyers at your price right now, so nothing filled and nothing was charged. The market maker may be refreshing its quotes. Try again in a few seconds.",
+      "No buyers at your price, so nothing filled and nothing was charged. The market may have nothing quoted at that price, or its market maker may have no quotes up. Try again later or at a different price.",
     );
+    expect(mapped.reason).not.toMatch(/refreshing|few seconds/);
   });
 
-  it("says the position is unchanged and to retry, without blaming the price, when a close fills nothing", () => {
+  it("says the position is unchanged and names both possible causes when a close fills nothing", () => {
     const placed = placedResult({
       cancelled: 1_000n,
       status: RESULT_STATUS_CODE.remainderCancelled,
@@ -118,9 +119,26 @@ describe("placedToResult: outcome status mapping", () => {
       reduceOnly: true,
     });
     expect(mapped.reason).toBe(
-      "Nothing was available to close against at that moment, so nothing filled and nothing was charged. Your position is unchanged. Try again in a few seconds.",
+      "Nothing was available to close against, so nothing filled and nothing was charged. The market may be quiet, or its market maker may have no quotes up. Your position is unchanged. Try again later.",
     );
-    expect(mapped.reason).not.toMatch(/market maker|price moved/);
+    expect(mapped.reason).not.toMatch(/refreshing|few seconds/);
+  });
+
+  it("says a reduce-only limit never rests when it matched nothing", () => {
+    const placed = placedResult({
+      cancelled: 1_000n,
+      status: RESULT_STATUS_CODE.remainderCancelled,
+    });
+    const mapped = placedToResult(placed, UNITS, 6, undefined, {
+      side: "sell",
+      reduceOnly: true,
+      limit: true,
+    });
+    expect(mapped.status).toBe("cancelled");
+    expect(mapped.reason).toBe(
+      "Nothing could close at your price or better, so nothing filled and nothing was charged. A reduce-only limit order never rests. Your position is unchanged. Set a price the market can meet, or close at the market price.",
+    );
+    expect(mapped.reason).not.toMatch(/market maker|few seconds/);
   });
 
   it("names the missing sellers when a buy fills nothing", () => {
@@ -129,7 +147,7 @@ describe("placedToResult: outcome status mapping", () => {
       status: RESULT_STATUS_CODE.remainderCancelled,
     });
     const mapped = placedToResult(placed, UNITS, 6, undefined, { side: "buy" });
-    expect(mapped.reason).toMatch(/^No sellers at your price right now/);
+    expect(mapped.reason).toMatch(/^No sellers at your price, so nothing filled/);
   });
 
   it("does not name a side it does not know", () => {
