@@ -24,6 +24,7 @@ import { depositKeyAccount } from "@/lib/transfer/depositKey";
 import { isStaged } from "@/lib/transfer/journal";
 import {
   TOKEN_ACCOUNT_BYTES,
+  SHUTTLE_CHARGE_LAMPORTS,
   keyMoveAccountBytes,
   keyMoveLamports,
   keyShortfallLamports,
@@ -40,6 +41,7 @@ const RENT_PER_BYTE = 3_480 * 2;
 const rentOf = (accounts: number[]) =>
   accounts.reduce((sum, bytes) => sum + (128 + bytes) * RENT_PER_BYTE, 0);
 const FEES = BASE_FEE_LAMPORTS + MAX_MOVE_PRIORITY_LAMPORTS;
+const OWN_RENT = rentOf([0]);
 
 const resumeOf = (world: World, id = "id1", atoms = ATOMS) =>
   deposit(world.env, {
@@ -99,33 +101,52 @@ describe("the SOL the wallet sends the deposit key", () => {
 
   it("is the rent of the first move's accounts and its fees for a first deposit, escrow missing", async () => {
     const world = makeWorld();
-    expect(await sentFor(world)).toBe(rentOf([32, 72, 165, 72, 72, 96, 125]) + FEES);
+    expect(await sentFor(world)).toBe(rentOf([32, 72, 165, 72, 72, 96, 125]) + FEES + OWN_RENT);
   });
 
   it("leaves out the escrow's rent when it exists", async () => {
     const world = makeWorld();
     withEscrow(world);
-    expect(await sentFor(world)).toBe(rentOf([72, 72, 96, 125]) + FEES);
+    expect(await sentFor(world)).toBe(rentOf([72, 72, 96, 125]) + FEES + OWN_RENT);
   });
 
-  it("is the rent of the shuttle a later move makes, and its fees, for a later deposit", async () => {
+  it("is the shuttle's charge and the fees, and no rent, for a later deposit", async () => {
     const world = makeWorld();
     withEscrow(world);
     world.delegateKey(USDC);
-    expect(await sentFor(world)).toBe(rentOf([72, 72, 165, 72, 96, 125]) + FEES);
+    expect(await sentFor(world)).toBe(SHUTTLE_CHARGE_LAMPORTS + FEES + OWN_RENT);
+  });
+
+  it("keeps the key's own rent after a first move, so a key that held nothing is not left below it", async () => {
+    const world = makeWorld();
+    withEscrow(world);
+    const spent = await keyMoveLamports(world.solana, {
+      first: true,
+      vaultMissing: false,
+      sealed: false,
+    });
+    expect(await sentFor(world)).toBeGreaterThanOrEqual(spent + OWN_RENT);
+  });
+
+  it("sends only what lifts a key that holds less than its own rent, never more", async () => {
+    const world = makeWorld();
+    withEscrow(world);
+    world.delegateKey(USDC);
+    world.solana.lamportsOf.set(world.depositKey.publicKey.toBase58(), OWN_RENT - 1_000);
+    expect(await sentFor(world)).toBe(SHUTTLE_CHARGE_LAMPORTS + FEES + 1_000);
   });
 
   it("adds the permission and its delegation for a sealed first deposit", async () => {
     const world = makeWorld();
     world.env.sealed = true;
     withEscrow(world);
-    expect(await sentFor(world)).toBe(rentOf([72, 72, 96, 125, 72, 72, 96, 104]) + FEES);
+    expect(await sentFor(world)).toBe(rentOf([72, 72, 96, 125, 72, 72, 96, 104]) + FEES + OWN_RENT);
   });
 
   it("is what the move needs less what the key holds", async () => {
     const world = makeWorld();
     withEscrow(world);
-    const needed = rentOf([72, 72, 96, 125]) + FEES;
+    const needed = rentOf([72, 72, 96, 125]) + FEES + OWN_RENT;
     world.solana.lamportsOf.set(world.depositKey.publicKey.toBase58(), 1_000_000);
     expect(await sentFor(world)).toBe(needed - 1_000_000);
   });
@@ -133,7 +154,7 @@ describe("the SOL the wallet sends the deposit key", () => {
   it("is nothing, and no transfer instruction, when the key already holds enough", async () => {
     const world = makeWorld();
     withEscrow(world);
-    const needed = rentOf([72, 72, 96, 125]) + FEES;
+    const needed = rentOf([72, 72, 96, 125]) + FEES + OWN_RENT;
     world.solana.lamportsOf.set(world.depositKey.publicKey.toBase58(), needed);
     expect(await sentFor(world)).toBe(0);
     const programs = Transaction.from(world.solana.rawSent[0]).instructions.map((each) =>
@@ -153,7 +174,7 @@ describe("the SOL the wallet sends the deposit key", () => {
     const keyAccountRent =
       await world.solana.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_BYTES);
     expect(
-      worst + keyAccountRent + BASE_FEE_LAMPORTS + MAX_FUND_PRIORITY_LAMPORTS,
+      worst + OWN_RENT + keyAccountRent + BASE_FEE_LAMPORTS + MAX_FUND_PRIORITY_LAMPORTS,
     ).toBeLessThanOrEqual(ROUND_TRIP_LAMPORTS);
   });
 
@@ -163,11 +184,10 @@ describe("the SOL the wallet sends the deposit key", () => {
     ]);
     const world = makeWorld();
     const parts = { first: false, vaultMissing: false, sealed: false };
-    expect(await keyMoveLamports(world.solana, parts)).toBe(
-      rentOf(keyMoveAccountBytes(parts)) + FEES,
-    );
+    expect(keyMoveAccountBytes(parts)).toEqual([]);
+    expect(await keyMoveLamports(world.solana, parts)).toBe(SHUTTLE_CHARGE_LAMPORTS + FEES);
     expect(await keyShortfallLamports(world.solana, world.depositKey.publicKey, parts)).toBe(
-      rentOf(keyMoveAccountBytes(parts)) + FEES,
+      SHUTTLE_CHARGE_LAMPORTS + FEES + OWN_RENT,
     );
   });
 });
@@ -533,6 +553,72 @@ describe("sweeping the deposit key's spare SOL back to the owner", () => {
     expect(new Set(world.solana.sent).size).toBe(4);
     expect(world.rows.has(`${world.owner}/${stale}`)).toBe(false);
     expect(world.rows.size).toBe(1);
+  });
+
+  it("does not stand in the way of a new deposit once it landed, and closes its record", async () => {
+    const world = makeWorld();
+    await depositLeaving(world, 20_000_000);
+    sweepLanding(world);
+    await sweepKeySol(world.env);
+    expect(world.rows.size).toBe(1);
+    world.stagedLanding(ATOMS);
+    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
+    const outcome = await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } });
+    expect(outcome).toMatchObject({ status: "done" });
+    expect(world.rows.size).toBe(0);
+  });
+
+  it("makes a new deposit wait, with a plain line and nothing sent, while the sweep may still land", async () => {
+    const world = makeWorld();
+    await depositLeaving(world, 20_000_000);
+    world.solana.swallowAll();
+    await sweepKeySol(world.env);
+    world.solana.clearPlans();
+    const sent = new Set(world.solana.sent).size;
+    const outcome = await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } });
+    expect(outcome).toMatchObject({ status: "waiting" });
+    expect((outcome as { message: string }).message).toMatch(/returning its spare SOL/);
+    expect((outcome as { message: string }).message).not.toMatch(/earlier exit/);
+    expect(new Set(world.solana.sent).size).toBe(sent);
+  });
+
+  it("makes a new deposit wait while a sweep that landed is not final, then goes on", async () => {
+    const world = makeWorld();
+    await depositLeaving(world, 20_000_000);
+    world.solana.script({ fate: "land", commitment: "confirmed" });
+    await sweepKeySol(world.env);
+    const sweep = world.record()!.id;
+    const sent = new Set(world.solana.sent).size;
+    const outcome = await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } });
+    expect(outcome).toMatchObject({ status: "waiting" });
+    expect((outcome as { message: string }).message).toMatch(/returning its spare SOL/);
+    expect(new Set(world.solana.sent).size).toBe(sent);
+    expect(world.rows.has(`${world.owner}/${sweep}`)).toBe(true);
+    world.solana.statuses.set(world.solana.sent[world.solana.sent.length - 1], {
+      err: null,
+      confirmationStatus: "finalized",
+    });
+    world.stagedLanding(ATOMS);
+    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
+    expect(await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } })).toMatchObject({
+      status: "done",
+    });
+    expect(world.rows.size).toBe(0);
+  });
+
+  it("drops a sweep that can never land and goes on with the new deposit", async () => {
+    const world = makeWorld();
+    await depositLeaving(world, 20_000_000);
+    world.solana.swallowAll();
+    await sweepKeySol(world.env);
+    world.solana.clearPlans();
+    world.solana.height += 400;
+    world.stagedLanding(ATOMS);
+    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
+    expect(await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } })).toMatchObject({
+      status: "done",
+    });
+    expect(world.rows.size).toBe(0);
   });
 
   it("skips an excess below the threshold, and sweeps one at it", async () => {

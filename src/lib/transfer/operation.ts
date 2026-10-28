@@ -14,6 +14,7 @@ import { redactToken } from "../rollup/redact";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
 export { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "./computeBudget";
 import {
+  isKeySweep,
   toSolanaSend,
   type Journal,
   type JournalSend,
@@ -350,7 +351,9 @@ export async function intentRefusal(
   intent: Intent | undefined,
 ): Promise<Refused | null> {
   if (!intent) return null;
-  const records = await env.journal.unfinished(env.owner.toBase58());
+  const records = (await env.journal.unfinished(env.owner.toBase58())).filter(
+    (record) => !isKeySweep(record),
+  );
   if (intent.kind === "new") {
     return records.length === 0
       ? null
@@ -377,6 +380,30 @@ export async function intentRefusal(
 }
 
 /**
+ * Judges the payments of spare SOL from the deposit key to the owner that are
+ * still on record before a new transfer starts. One that can never land is
+ * dropped; one that landed is closed once final. Until then the start stops
+ * with a plain wait: a payment that may still land, or one that landed but is
+ * not final, would let the key's balance be read from before it, and the new
+ * transfer would send the key too little SOL.
+ */
+async function settleKeySweeps(env: TransferEnv): Promise<Stopped | null> {
+  const owner = env.owner.toBase58();
+  const stillReturning = (id: string) =>
+    waiting(
+      id,
+      "Your deposit key is still returning its spare SOL to your wallet. Wait a moment and try again. Nothing was sent.",
+    );
+  for (const sweep of (await env.journal.unfinished(owner)).filter(isKeySweep)) {
+    const judged = await reconciled(env, sweep.id, sweep.sends, undefined);
+    if ("status" in judged) return stillReturning(sweep.id);
+    if (!judged.landed) await env.journal.finish(owner, sweep.id);
+    else if (!(await finishWhenFinalized(env, sweep.id))) return stillReturning(sweep.id);
+  }
+  return null;
+}
+
+/**
  * The operation to carry on for `method` and `atoms`: the unfinished one when
  * it asked for the same, else a new id; a refusal when an unfinished one asked
  * for something else, since carrying on with different figures would hide what
@@ -387,14 +414,18 @@ export async function beginOperation(
   method: "deposit" | "withdraw",
   atoms: bigint,
   resumeId?: string,
-): Promise<{ id: string; record: OperationRecord | null } | Refused> {
+): Promise<{ id: string; record: OperationRecord | null } | Stopped> {
   const owner = env.owner.toBase58();
   for (const done of await env.journal.unfinished(owner)) {
     if (done.step === "deposit" && done.seat?.state === "landed") {
       await finishWhenFinalized(env, done.id);
     }
   }
-  const current = currentRecord(await env.journal.unfinished(owner));
+  const stillSweeping = await settleKeySweeps(env);
+  if (stillSweeping) return stillSweeping;
+  const current = currentRecord(
+    (await env.journal.unfinished(owner)).filter((record) => !isKeySweep(record)),
+  );
   if (resumeId !== undefined && current?.id !== resumeId) {
     return refuse(
       "record-changed",

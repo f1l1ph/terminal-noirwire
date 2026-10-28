@@ -48,10 +48,11 @@ const delegationBytes = (accountBytes: number, seeds: number[]) => [
 /**
  * The data size of every account the deposit key's move creates. A first move
  * makes the key's balance account and delegates it, with its permission when
- * the custody is sealed; a later move makes a shuttle (its account, its
- * delegated balance and its wallet token account) that carries the tokens in;
- * a missing escrow adds the mint's vault, its balance account and its token
- * account.
+ * the custody is sealed; a missing escrow adds the mint's vault, its balance
+ * account and its token account. A later move makes a shuttle, but the token
+ * program pays that account's rent from its own rent account and charges the
+ * key `SHUTTLE_CHARGE_LAMPORTS` instead, so it makes no account at the key's
+ * cost.
  */
 export function keyMoveAccountBytes({ first, vaultMissing, sealed }: KeyMoveParts): number[] {
   const accounts: number[] = [];
@@ -64,18 +65,18 @@ export function keyMoveAccountBytes({ first, vaultMissing, sealed }: KeyMovePart
         ...delegationBytes(PERMISSION_BYTES, [PERMISSION_SEED.length, 32]),
       );
     }
-  } else {
-    accounts.push(
-      EPHEMERAL_ATA_BYTES,
-      EPHEMERAL_ATA_BYTES,
-      TOKEN_ACCOUNT_BYTES,
-      ...delegationBytes(EPHEMERAL_ATA_BYTES, [32, 32]),
-    );
   }
   return accounts;
 }
 
-/** The SOL the deposit key's move needs to make its accounts and pay its fee at the dearest priority, in lamports. */
+/** What the token program takes from the key for the shuttle of a later move, measured on devnet at 500000 lamports (the shuttle's rent came from the program's own rent account). */
+const SHUTTLE_CHARGE_MEASURED_LAMPORTS = 500_000;
+/** Kept on top of the measured charge, so a small change in it does not stop the move. */
+const SHUTTLE_CHARGE_MARGIN_LAMPORTS = 100_000;
+export const SHUTTLE_CHARGE_LAMPORTS =
+  SHUTTLE_CHARGE_MEASURED_LAMPORTS + SHUTTLE_CHARGE_MARGIN_LAMPORTS;
+
+/** The SOL the deposit key's move spends: the rent of the accounts it makes (or the shuttle's charge for a later move) and its fee at the dearest priority, in lamports. */
 export async function keyMoveLamports(
   rpc: Pick<SolanaRpc, "getMinimumBalanceForRentExemption">,
   parts: KeyMoveParts,
@@ -84,19 +85,28 @@ export async function keyMoveLamports(
     keyMoveAccountBytes(parts).map((bytes) => rpc.getMinimumBalanceForRentExemption(bytes)),
   );
   return (
-    rents.reduce((sum, rent) => sum + rent, 0) + BASE_FEE_LAMPORTS + MAX_MOVE_PRIORITY_LAMPORTS
+    rents.reduce((sum, rent) => sum + rent, 0) +
+    (parts.first ? 0 : SHUTTLE_CHARGE_LAMPORTS) +
+    BASE_FEE_LAMPORTS +
+    MAX_MOVE_PRIORITY_LAMPORTS
   );
 }
 
-/** What the wallet must send the deposit key so it can make its move: what the move needs less what the key holds, never below 0. */
+/**
+ * What the wallet must send the deposit key so it can make its move: what the
+ * move spends and what the key must keep afterwards (the rent of its own empty
+ * account, which the network requires of a paying account that is not
+ * emptied), less what the key holds, never below 0.
+ */
 export async function keyShortfallLamports(
   rpc: Pick<SolanaRpc, "getMinimumBalanceForRentExemption" | "getBalance">,
   deposit: PublicKey,
   parts: KeyMoveParts,
 ): Promise<number> {
-  const [needed, held] = await Promise.all([
+  const [spent, kept, held] = await Promise.all([
     keyMoveLamports(rpc, parts),
+    rpc.getMinimumBalanceForRentExemption(0),
     rpc.getBalance(deposit, "confirmed"),
   ]);
-  return Math.max(0, needed - held);
+  return Math.max(0, spent + kept - held);
 }
