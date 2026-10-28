@@ -108,7 +108,7 @@ describe("placedToResult: outcome status mapping", () => {
     );
   });
 
-  it("says the price moved, not that the maker is refreshing, when a close fills nothing", () => {
+  it("says the position is unchanged and to retry, without blaming the price, when a close fills nothing", () => {
     const placed = placedResult({
       cancelled: 1_000n,
       status: RESULT_STATUS_CODE.remainderCancelled,
@@ -118,9 +118,9 @@ describe("placedToResult: outcome status mapping", () => {
       reduceOnly: true,
     });
     expect(mapped.reason).toBe(
-      "The price moved away from your limit before the order reached the exchange, so nothing filled and nothing was charged. Close again at the current price.",
+      "Nothing was available to close against at that moment, so nothing filled and nothing was charged. Your position is unchanged. Try again in a few seconds.",
     );
-    expect(mapped.reason).not.toMatch(/market maker/);
+    expect(mapped.reason).not.toMatch(/market maker|price moved/);
   });
 
   it("names the missing sellers when a buy fills nothing", () => {
