@@ -308,7 +308,7 @@ function noMatchReason(filledAny: boolean, market: RefusalContext): string {
   const others = counterparties(market.side);
   if (filledAny) return `Part filled; the rest found no ${others} and was cancelled.`;
   if (market.reduceOnly) {
-    return "The price moved away from your limit before the order reached the exchange, so nothing filled and nothing was charged. Close again at the current price.";
+    return "Nothing was available to close against at that moment, so nothing filled and nothing was charged. Your position is unchanged. Try again in a few seconds.";
   }
   return `No ${others} at your price right now, so nothing filled and nothing was charged. The market maker may be refreshing its quotes. Try again in a few seconds.`;
 }
