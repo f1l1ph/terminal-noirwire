@@ -1,5 +1,12 @@
-import { Message, type PublicKey, type Transaction } from "@solana/web3.js";
+import {
+  ComputeBudgetProgram,
+  Message,
+  Transaction,
+  type PublicKey,
+  type TransactionInstruction,
+} from "@solana/web3.js";
 import nacl from "tweetnacl";
+import { computeUnitLimitOf, computeUnitsFor } from "../transfer/computeBudget";
 
 /** The program a wallet appends its own assertions with: they only check account state after execution and fail the transaction if it differs, and move no funds. */
 export const WALLET_ASSERTION_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
@@ -22,12 +29,29 @@ const requiredSigners = (message: Message) =>
     .sort();
 
 /**
+ * Whether `theirs` is `ours`, a compute unit limit, raised and no higher than
+ * `cap`. A wallet raises it to pay for the assertions it appends.
+ */
+function raisedUnitLimit(
+  ours: TransactionInstruction,
+  theirs: TransactionInstruction,
+  cap: number,
+): boolean {
+  const was = computeUnitLimitOf(ours);
+  const now = computeUnitLimitOf(theirs);
+  return was !== null && now !== null && now > was && now <= cap;
+}
+
+/**
  * Whether `signedMessage` is `builtMessage` plus instructions of the wallet's
  * assertion program and nothing else, judged on the message, where an
  * account has one signer and one writable status for every instruction:
  * - the same fee payer, blockhash and required signers (count and keys);
  * - each of our instructions in our order, with the same program, data and
- *   account keys (the additions may sit between them or around them);
+ *   account keys (the additions may sit between them or around them), except
+ *   that alongside at least one assertion our compute unit limit may be
+ *   raised, up to the allowance for our instruction count: the priority fee
+ *   the transfer's SOL check already reserves, at our unchanged price;
  * - every account of ours keeps exactly its signer and writable status;
  * - an account the wallet introduced is never a signer;
  * - every other instruction is of the assertion program, which may name our
@@ -64,17 +88,32 @@ function onlyWalletAssertionsAdded(builtMessage: Uint8Array, signedMessage: Uint
     }
   }
   const mine = before.instructions.map((instruction) => listed(before, instruction));
+  const ourInstructions = Transaction.populate(before).instructions;
+  const theirInstructions = Transaction.populate(after).instructions;
+  const unitCap = computeUnitsFor(
+    ourInstructions.filter((each) => !each.programId.equals(ComputeBudgetProgram.programId)).length,
+  );
   let next = 0;
-  for (const instruction of after.instructions) {
+  let assertions = 0;
+  let raised = false;
+  for (const [index, instruction] of after.instructions.entries()) {
     if (next < mine.length && listed(after, instruction) === mine[next]) {
       next += 1;
     } else if (
-      after.accountKeys[instruction.programIdIndex].toBase58() !== WALLET_ASSERTION_PROGRAM
+      next < mine.length &&
+      raisedUnitLimit(ourInstructions[next], theirInstructions[index], unitCap)
     ) {
+      raised = true;
+      next += 1;
+    } else if (
+      after.accountKeys[instruction.programIdIndex].toBase58() === WALLET_ASSERTION_PROGRAM
+    ) {
+      assertions += 1;
+    } else {
       return false;
     }
   }
-  return next === mine.length;
+  return next === mine.length && (!raised || assertions > 0);
 }
 
 const plural = (count: number) => `${count} instruction${count === 1 ? "" : "s"}`;

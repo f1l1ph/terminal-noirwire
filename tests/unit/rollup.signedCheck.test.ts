@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ComputeBudgetProgram,
   Keypair,
   Message,
   PublicKey,
@@ -502,5 +503,74 @@ describe("signedDiffers on a wallet that appends its assertions", () => {
     expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
       "your wallet changed the transaction",
     );
+  });
+
+  describe("with our compute budget in front", () => {
+    const limit = (units: number) => ComputeBudgetProgram.setComputeUnitLimit({ units });
+    const price = (microLamports: number) =>
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports });
+    /** Ours: a 50,000 unit limit at 50,000 micro-lamports, then the two payments, whose allowance is 400,000 units. */
+    const budgeted = () => {
+      const w = world();
+      return { ...w, built: w.make([limit(50_000), price(50_000), ...w.ours]) };
+    };
+
+    it("accepts the limit raised to pay for assertions, as a wallet signs a withdrawal", () => {
+      const w = budgeted();
+      const signed = w.walletSigns([
+        limit(71_119),
+        price(50_000),
+        assertion([readOnly()]),
+        ...w.ours,
+        assertion(),
+      ]);
+      expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toBeNull();
+    });
+
+    it("accepts the limit raised to exactly the allowance for our instructions", () => {
+      const w = budgeted();
+      const signed = w.walletSigns([limit(400_000), price(50_000), ...w.ours, assertion()]);
+      expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toBeNull();
+    });
+
+    it("refuses the limit raised past the allowance for our instructions", () => {
+      const w = budgeted();
+      const signed = w.walletSigns([limit(400_001), price(50_000), ...w.ours, assertion()]);
+      expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+        "your wallet changed the transaction",
+      );
+    });
+
+    it("refuses a raised limit with no assertion beside it", () => {
+      const w = budgeted();
+      const signed = w.walletSigns([limit(71_119), price(50_000), ...w.ours]);
+      expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+        "your wallet changed the transaction",
+      );
+    });
+
+    it("refuses a lowered limit", () => {
+      const w = budgeted();
+      const signed = w.walletSigns([limit(40_000), price(50_000), ...w.ours, assertion()]);
+      expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+        "your wallet changed the transaction",
+      );
+    });
+
+    it("refuses a changed unit price", () => {
+      const w = budgeted();
+      const signed = w.walletSigns([limit(71_119), price(60_000), ...w.ours, assertion()]);
+      expect(signedDiffers(w.built, signed, w.owner.publicKey, true)).toContain(
+        "your wallet changed the transaction",
+      );
+    });
+
+    it("refuses a raised limit on a rollup send", () => {
+      const w = budgeted();
+      const signed = w.walletSigns([limit(71_119), price(50_000), ...w.ours, assertion()]);
+      expect(signedDiffers(w.built, signed, w.owner.publicKey, false)).toContain(
+        "your wallet changed the transaction",
+      );
+    });
   });
 });
