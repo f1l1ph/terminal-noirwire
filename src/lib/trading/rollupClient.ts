@@ -1647,6 +1647,7 @@ export class RollupTradingClient implements TradingClient {
         remainingSize: lotsToSize(binding.units, order.remaining, binding.sizeDecimals),
         // The view's order record has no reduce-only flag; the venue keeps it off-view.
         reduceOnly: false,
+        expiresAtMs: order.expiry > 0n ? Number(order.expiry) * 1000 : null,
       }));
 
     if (snapshotBinding?.isPerp) {

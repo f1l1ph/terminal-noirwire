@@ -8,6 +8,7 @@ import {
   formatPercent,
   formatRelativeAge,
   formatShortAddress,
+  formatTimeLeft,
   formatUpdatedAge,
   UNAVAILABLE,
 } from "@/lib/format";
@@ -91,6 +92,26 @@ describe("formatRelativeAge", () => {
     expect(formatRelativeAge(120_000)).toBe("2m");
     expect(formatRelativeAge(7_200_000)).toBe("2h");
     expect(formatRelativeAge(172_800_000)).toBe("2d");
+  });
+});
+
+describe("formatTimeLeft", () => {
+  const now = 1_000_000;
+  it("reads the time until expiry in the two largest units", () => {
+    expect(formatTimeLeft(now + 30_000, now)).toBe("under 1m");
+    expect(formatTimeLeft(now + 52 * 60_000 + 20_000, now)).toBe("52m");
+    expect(formatTimeLeft(now + (3 * 60 + 10) * 60_000, now)).toBe("3h 10m");
+    expect(formatTimeLeft(now + 2 * 3_600_000, now)).toBe("2h");
+    expect(formatTimeLeft(now + 51 * 3_600_000, now)).toBe("2d 3h");
+  });
+
+  it("says Expired once the moment has passed", () => {
+    expect(formatTimeLeft(now, now)).toBe("Expired");
+    expect(formatTimeLeft(now - 5_000, now)).toBe("Expired");
+  });
+
+  it("reports a non-finite time as Unavailable", () => {
+    expect(formatTimeLeft(Number.NaN, now)).toBe(UNAVAILABLE);
   });
 });
 

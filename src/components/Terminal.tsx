@@ -197,11 +197,6 @@ export function Terminal() {
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [prefillRequest, setPrefillRequest] = useState<PrefillRequest | null>(null);
   const syncedMakerFillsRef = useRef(new Set<string>());
-  // This device's own first-seen time per open order id - there is no
-  // venue-reported placement time on `OpenOrder` to show instead, and
-  // inventing one would be exactly the kind of fabricated figure the
-  // account dock must not show (second design review, item 6/7).
-  const [openOrderFirstSeenAtMs, setOpenOrderFirstSeenAtMs] = useState<Record<string, number>>({});
 
   function appendStep(
     prev: RailStep[],
@@ -644,29 +639,6 @@ export function Terminal() {
       ]
     : [];
 
-  const openOrderIdsKey = trading.state.openOrders
-    .map((order) => order.orderId)
-    .sort()
-    .join(",");
-  useEffect(() => {
-    const ids = new Set(trading.state.openOrders.map((order) => order.orderId));
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setOpenOrderFirstSeenAtMs((prev) => {
-      const next: Record<string, number> = {};
-      let changed = ids.size !== Object.keys(prev).length;
-      for (const id of ids) {
-        if (prev[id] !== undefined) {
-          next[id] = prev[id];
-        } else {
-          next[id] = Date.now();
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openOrderIdsKey]);
-
   // A small cross-market "recent activity" control: every other market
   // this session placed an order in, most recent first.
   const recentMarkets: RecentMarketActivity[] = ownSessions
@@ -833,7 +805,6 @@ export function Terminal() {
       onTabChange={handleDockTabChange}
       positions={positionsArray}
       openOrders={trading.state.openOrders}
-      openOrderFirstSeenAtMs={openOrderFirstSeenAtMs}
       ownFills={ownFillsForMarket}
       balances={balancesArray}
       collateral={trading.state.collateral ?? null}

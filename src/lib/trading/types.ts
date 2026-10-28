@@ -179,6 +179,8 @@ export interface OpenOrder {
   size: string;
   remainingSize: string;
   reduceOnly: boolean;
+  /** The order's own expiry in unix milliseconds; null when it never expires, absent when the source does not report one. */
+  expiresAtMs?: number | null;
 }
 
 export interface TraderState {

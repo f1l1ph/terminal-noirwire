@@ -207,6 +207,7 @@ export const openOrderSchema = z.object({
   size: z.string(),
   remainingSize: z.string(),
   reduceOnly: z.boolean(),
+  expiresAtMs: z.number().nullable().optional(),
 });
 export type OpenOrder = z.infer<typeof openOrderSchema>;
 

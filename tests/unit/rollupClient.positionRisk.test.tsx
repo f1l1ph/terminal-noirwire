@@ -125,7 +125,6 @@ function dockFor(
       onTabChange={() => {}}
       positions={Object.values(state.positions)}
       openOrders={[]}
-      openOrderFirstSeenAtMs={{}}
       ownFills={[]}
       balances={[]}
       collateral={state.collateral ?? null}
