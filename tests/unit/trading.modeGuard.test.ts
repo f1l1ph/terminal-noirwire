@@ -22,9 +22,16 @@ describe("mainnetRefusals Solana RPC url", () => {
   });
 
   it.each([
-    "https://rpc.example.com?api-key=abc",
+    "https://mainnet.helius-rpc.com/?api-key=abc",
     "https://rpc.example.com/path?api-key=abc",
+    "https://solana-mainnet.g.alchemy.com/v2/abc",
+  ])("accepts a provider key in the query or path, %s", (url) => {
+    expect(mainnetWith(url)).toEqual([]);
+  });
+
+  it.each([
     "https://rpc.example.com/path#frag",
+    "https://rpc.example.com/?api-key=abc#frag",
     "https://user:pass@rpc.example.com",
     "https://rpc.example.com/",
     "http://rpc.example.com",

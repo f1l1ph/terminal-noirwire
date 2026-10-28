@@ -10,19 +10,20 @@ export interface MainnetConfig {
 
 /**
  * Why `url` cannot be the Solana RPC a mainnet build reads the cluster's
- * genesis hash from, or null when it can: an https URL with no credentials
- * and no trailing slash, query string or hash (a key in the URL would ship
- * in the browser bundle), so the one origin it names is the one the page's
- * content security policy opens.
+ * genesis hash from, or null when it can: an https URL with no credentials,
+ * trailing slash or hash, so the one origin it names is the one the page's
+ * content security policy opens. A provider key in its path or query ships in
+ * the browser bundle like any key the page uses, so it must be one the
+ * provider restricts to this site's origin.
  */
 function solanaRpcUrlRefusal(url: string | undefined): string | null {
   if (!url) return "NEXT_PUBLIC_NETWORK=mainnet requires NEXT_PUBLIC_SOLANA_RPC_URL.";
   const problem =
-    "NEXT_PUBLIC_SOLANA_RPC_URL must be an https URL with no credentials, trailing slash, query string or hash.";
-  if (!url.startsWith("https://") || url.endsWith("/") || /[?#]/.test(url)) return problem;
+    "NEXT_PUBLIC_SOLANA_RPC_URL must be an https URL with no credentials, trailing slash or hash.";
+  if (!url.startsWith("https://") || url.endsWith("/") || url.includes("#")) return problem;
   try {
     const parsed = new URL(url);
-    return parsed.username || parsed.password || parsed.search || parsed.hash ? problem : null;
+    return parsed.username || parsed.password || parsed.hash ? problem : null;
   } catch {
     return problem;
   }
