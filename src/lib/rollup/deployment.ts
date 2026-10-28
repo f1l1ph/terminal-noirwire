@@ -92,10 +92,17 @@ const cache = new Map<string, Promise<Loaded>>();
 
 const KEPT_NAME = "deployment";
 
+/** Drops the description cached for the page's life, so the next `fetchDeployment` asks the service again. */
+export function forgetDeployment(simUrl: string): void {
+  cache.delete(simUrl);
+}
+
 interface Loaded {
   deployment: PublicDeployment;
   /** True when the service could not be reached and the description is the one this browser kept. */
   kept: boolean;
+  /** The live description was accepted by this build's checks and has been kept for the next visit. */
+  stored?: boolean;
 }
 
 /**
@@ -130,7 +137,12 @@ export async function fetchDeployment(
     );
   }
   try {
-    return accepted(simUrl, (await promise).deployment, overrides);
+    const loaded = await promise;
+    const result = accepted(simUrl, loaded.deployment, overrides);
+    if (!loaded.kept && !loaded.stored) {
+      loaded.stored = keepLastKnown(storage, KEPT_NAME, simUrl, loaded.deployment);
+    }
+    return result;
   } catch (error) {
     if (cache.get(simUrl) === promise) cache.delete(simUrl);
     throw error;
@@ -147,6 +159,9 @@ function accepted(
   if (refusal) throw new Error(`${simUrl}/v1/deployment refused: ${refusal}`);
   return {
     ...parsed,
+    markets: pins
+      ? parsed.markets.filter((market) => pins.marketIds.includes(market.marketId))
+      : parsed.markets,
     rollupRpcUrl: pins?.rollupRpcUrl ?? overrides.rollupRpcUrl ?? parsed.rollupRpcUrl,
     rollupWsUrl: pins?.rollupWsUrl ?? overrides.rollupWsUrl ?? parsed.rollupWsUrl,
   };
@@ -176,7 +191,7 @@ async function loadOnce(simUrl: string, fetchFn: typeof fetch): Promise<PublicDe
   return deploymentSchema.parse(await response.json());
 }
 
-/** The live description (kept for next time), or, when the service stays unreachable or busy, the one kept from an earlier visit. A refusal or a malformed answer is never covered over. */
+/** The live description (kept for next time once this build accepts it), or, when the service stays unreachable or busy, the one kept from an earlier visit. A refusal or a malformed answer is never covered over. */
 async function loadOrKept(
   simUrl: string,
   fetchFn: typeof fetch,
@@ -185,7 +200,6 @@ async function loadOrKept(
 ): Promise<Loaded> {
   try {
     const deployment = await load(simUrl, fetchFn, sleep);
-    keepLastKnown(storage, KEPT_NAME, simUrl, deployment);
     return { deployment, kept: false };
   } catch (error) {
     if (!(error instanceof TransientLoadError)) throw error;

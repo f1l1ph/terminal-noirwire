@@ -110,6 +110,7 @@ function clientShowing(
   views: View[],
   markets: Record<string, MarketInfo> | ((id: string) => MarketInfo | undefined),
   now: () => number = () => NOW,
+  limits?: RollupSession["limits"],
 ) {
   let next = 0;
   const unused = async () => {
@@ -132,6 +133,7 @@ function clientShowing(
     tokenIndexBySymbol: new Map([["nUSD", 0]]),
     collateralToken: { mint: Keypair.generate().publicKey, custodyNonce: 0n },
     gate: Keypair.generate().publicKey,
+    limits,
     tokenExpiresAtMs: Number.MAX_SAFE_INTEGER,
     saveKeyCheckpoint: () => {},
     close: () => {},
@@ -161,6 +163,60 @@ describe("RollupTradingClient: margin-aware collateral", () => {
       available: "850.000000",
     });
     expect(state.collateral?.availableUnknown).toBeUndefined();
+  });
+
+  it("makes margin unknown when the seat holds exposure in a market outside the deployment", async () => {
+    const seen = view(1000n * USDC, [{ base: 10_000n, quote: -1000n * USDC }, {}]);
+    // Slot 2 is a market this terminal does not trade (the deployment lists 0 and 1).
+    (seen.snapshot.seat.perp as unknown[]).push({ ...noSlot, base: 5_000n, quote: -500n * USDC });
+    const state = await clientShowing([seen], marks).fetchState(WALLET);
+    expect(state.exposureUnreadable).toBe(true);
+    expect(state.equity).toBeNull();
+    expect(state.collateral?.availableUnknown).toBe(true);
+    expect(Number(state.collateral?.available)).toBe(0);
+    expect(Object.keys(state.positions)).toEqual(["NSOL-PERP"]);
+  });
+
+  it("flags nothing when every occupied slot is a market the deployment lists", async () => {
+    const state = await clientShowing(
+      [view(500n * USDC, [{ base: 10_000n, quote: -1000n * USDC }, {}])],
+      marks,
+    ).fetchState(WALLET);
+    expect(state.exposureUnreadable).toBeUndefined();
+    expect(state.collateral?.availableUnknown).toBeUndefined();
+  });
+
+  it("reserves at the market account's own initial margin ratio when the session read it", async () => {
+    const limits = new Map([
+      [
+        0,
+        {
+          imBps: 2000,
+          mmBps: 500,
+          takerFeeBps: 5,
+          bandBps: 400,
+          minSize: 2n,
+          minNotional: 5n * USDC,
+        },
+      ],
+    ]);
+    const rollup = clientShowing(
+      [view(500n * USDC, [{ base: 10_000n, quote: -1000n * USDC }, {}])],
+      marks,
+      () => NOW,
+      limits,
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.collateral).toMatchObject({ reserved: "300.000000", available: "700.000000" });
+    const read = await rollup.marketLimits(WALLET);
+    expect(read.get("NSOL-PERP")).toEqual({
+      imBps: 2000,
+      mmBps: 500,
+      takerFeeBps: 5,
+      bandBps: 400,
+      minSize: "0.002000",
+      minNotional: "5.000000",
+    });
   });
 
   it("subtracts a short's loss from equity and available", async () => {

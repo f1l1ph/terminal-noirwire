@@ -50,11 +50,13 @@ export async function checkDepositStorage(env: BrowserStorageEnv): Promise<Depos
   } catch {
     return { ok: false, reason: UNAVAILABLE };
   }
+  const granted = await attempt(() => env.storage?.persist?.());
+  const persisted = (await attempt(() => env.storage?.persisted?.())) ?? granted ?? false;
+  // A private window never keeps data, so a browser that promises to is not one, however small its quota.
+  if (persisted) return { ok: true, persisted };
   const estimate = await attempt(() => env.storage?.estimate?.());
   if (estimate?.quota !== undefined && estimate.quota < PRIVATE_WINDOW_QUOTA_BYTES) {
     return { ok: false, reason: PRIVATE_WINDOW };
   }
-  const granted = await attempt(() => env.storage?.persist?.());
-  const persisted = await attempt(() => env.storage?.persisted?.());
-  return { ok: true, persisted: persisted ?? granted ?? false };
+  return { ok: true, persisted };
 }

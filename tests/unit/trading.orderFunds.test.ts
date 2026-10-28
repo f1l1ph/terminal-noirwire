@@ -342,3 +342,27 @@ describe("orderFunds against an open position", () => {
     expect(funds.shortfall).toEqual({ asset: "quote", needed: "200.100000", available: "200" });
   });
 });
+
+describe("orderFunds with the market account's ratios", () => {
+  const order = {
+    ...PERP,
+    side: "buy",
+    quantity: "1",
+    availableQuote: "1000",
+  } as const;
+
+  it("takes margin at the chain's initial ratio and the fee at its taker fee", () => {
+    const assumed = orderFunds(order);
+    const chain = orderFunds({ ...order, imBps: 2000, takerFeeBps: 20 });
+    expect(assumed.marginQuote).toBe(toFixedPoint("10"));
+    expect(chain.marginQuote).toBe(toFixedPoint("20"));
+    expect(chain.requiredQuote - chain.marginQuote).toBe(toFixedPoint("0.2"));
+    expect(assumed.requiredQuote - assumed.marginQuote).toBe(toFixedPoint("0.05"));
+  });
+
+  it("turns away an order the assumed ratio would have let through", () => {
+    const tight = { ...order, availableQuote: "15" };
+    expect(orderFunds(tight).shortfall).toBeNull();
+    expect(orderFunds({ ...tight, imBps: 2000 }).shortfall).not.toBeNull();
+  });
+});

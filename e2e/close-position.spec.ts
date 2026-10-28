@@ -96,9 +96,11 @@ test.describe("Closing and reducing a position", () => {
     await expect(page.getByLabel("Reduce only")).toBeChecked();
     await expect(page.getByLabel("Order type")).toHaveValue("market");
     // The row prints the size at the lot's decimals ("1.330"); the field holds
-    // the same quantity without padding zeros ("1.33"). Same size, so compare
-    // the field against the row's value written the way the field writes it.
-    await expect(page.locator("#order-size")).toHaveValue(String(Number(size)));
+    // the position's size as the account reports it, with its padding zeros.
+    // Same size, so compare the two as numbers.
+    await expect
+      .poll(async () => Number(await page.locator("#order-size").inputValue()))
+      .toBe(Number(size));
     await expect(page.getByRole("dialog", { name: "Confirm order" })).toHaveCount(0);
     await shot(page, "03-reduce-prefilled");
 

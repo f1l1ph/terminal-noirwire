@@ -14,6 +14,8 @@ export interface PerpExposure {
   /** Decimal string; null when no fresh mark is available. */
   mark: string | null;
   maxLeverage: number;
+  /** The market account's own initial margin ratio, in basis points; the ratio implied by `maxLeverage` stands in until it is known. */
+  imBps?: number;
 }
 
 export type MarginSummary =
@@ -48,8 +50,8 @@ function markAsFixedPoint(mark: string | null): bigint | null {
  * Equity is collateral plus unrealised P&L at the mark; reserved is the
  * initial margin on the worst position the resting orders could build;
  * available is what is left, never below zero. Every figure rounds against
- * the trader. The initial margin ratio is implied by each market's
- * advertised max leverage, so the figures are estimates. A mark that is
+ * the trader. The initial margin ratio is the market account's own once
+ * known, and implied by its advertised max leverage until then. A mark that is
  * missing for any exposed market makes the whole summary unknown, because
  * collateral alone would overstate the headroom.
  */
@@ -61,7 +63,7 @@ export function summarizeMargin(collateral: bigint, exposures: PerpExposure[]): 
       exposure.baseLots !== 0n || exposure.openBidLots !== 0n || exposure.openAskLots !== 0n;
     if (!hasExposure) continue;
     const mark = markAsFixedPoint(exposure.mark);
-    const imBps = impliedInitialMarginBps(exposure.maxLeverage);
+    const imBps = exposure.imBps ?? impliedInitialMarginBps(exposure.maxLeverage);
     if (mark === null || imBps === null) return { kind: "unknown" };
 
     // Signed base value plus the signed net quote cash flow, counted only

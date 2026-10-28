@@ -100,3 +100,21 @@ describe("estimateOrderCost", () => {
     expect(estimate.liquidationPrice).toBeNull();
   });
 });
+
+describe("estimateOrderCost with the market account's ratios", () => {
+  it("uses the chain's taker fee and maintenance margin", () => {
+    const order = {
+      side: "buy",
+      quantity: "1",
+      price: "100",
+      leverage: 5,
+      maxLeverage: 5,
+    } as const;
+    const assumed = estimateOrderCost(order);
+    const chain = estimateOrderCost({ ...order, takerFeeBps: 20, maintenanceBps: 1000 });
+    expect(displayOrderCost(assumed, 2).fee).toBe("0.05");
+    expect(displayOrderCost(chain, 2).fee).toBe("0.20");
+    expect(displayOrderCost(assumed, 2).liquidationPrice).toBe("85.00");
+    expect(displayOrderCost(chain, 2).liquidationPrice).toBe("90.00");
+  });
+});

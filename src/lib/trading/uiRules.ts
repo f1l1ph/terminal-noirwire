@@ -49,8 +49,37 @@ export function sideWord(isPerp: boolean, side: Side): "Long" | "Short" | "Buy" 
   return side === "buy" ? "Buy" : "Sell";
 }
 
+/** Whether the selected market's chain limits are still being read, were read, or could not be. */
+export type LimitsState = "loading" | "ready" | "failed";
+
+/**
+ * Why a mainnet order cannot be reviewed or sent for want of the market
+ * account's own limits (its price band, minimums and ratios), or null when
+ * they have been read and this market has an entry, or the build is not
+ * mainnet. Limits held over from an earlier read never count: anything but a
+ * finished read pauses orders. Without them the form could pass an order the
+ * program refuses.
+ */
+export function limitsGate(
+  mainnet: boolean,
+  limits: unknown,
+  state: LimitsState,
+): "loading" | "failed" | null {
+  if (!mainnet) return null;
+  if (state === "ready" && limits) return null;
+  return state === "failed" ? "failed" : "loading";
+}
+
+export const limitsGateText = (gate: "loading" | "failed"): string =>
+  gate === "failed"
+    ? "Market settings could not be read. Orders are paused until they load."
+    : "Loading this market's settings. Orders are paused until they load.";
+
+export const UNREADABLE_EXPOSURE_ORDERS_NOTICE =
+  "This account holds exposure in a market this terminal cannot read, so orders that could add risk are off. You can still close positions here.";
+
 export type TradeGate =
-  "needsAccount" | "accountUnknown" | "keysNotReady" | "keysFailed" | "otherTab";
+  "needsAccount" | "accountUnknown" | "keysNotReady" | "keysFailed" | "otherTab" | "signInStopped";
 
 /**
  * Why an order cannot be placed yet on a mainnet build. Fails closed: null
@@ -76,6 +105,7 @@ const GATE_LABELS: Record<TradeGate, string> = {
   accountUnknown: "Checking your account…",
   keysNotReady: "Setting up trading keys…",
   otherTab: "Trading is open in another tab",
+  signInStopped: "Sign in again to trade",
 };
 
 export const tradeGateLabel = (gate: TradeGate): string => GATE_LABELS[gate];

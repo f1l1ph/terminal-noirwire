@@ -3,6 +3,7 @@ import {
   depositHelp,
   describeOpenOutcome,
   feeSolText,
+  gateAsksForInvite,
   keysMayNotPersist,
   keysNotice,
   keysSettleFraction,
@@ -292,5 +293,50 @@ describe("depositHelp", () => {
     const text = depositHelp(false);
     expect(text).toBe("Deposits open soon. You can explore the market until then.");
     expect(text).not.toMatch(/add usdc|funds section/i);
+  });
+});
+
+describe("a declined sign-in", () => {
+  it("offers a check again and does not count the wallet as verified", () => {
+    expect(recheckOffer("declined", null)).toBe("check");
+    const { steps } = setupSteps({ connected: true, status: "declined", keys: null, funded: null });
+    expect(steps.find((step) => step.id === "verify")?.state).toBe("current");
+  });
+});
+
+describe("the invite code", () => {
+  it("has its own sentence when the address is invited with a code", () => {
+    expect(describeOpenOutcome(refused({ kind: "inviteCodeNeeded" }), "absent")).toMatchObject({
+      tone: "error",
+      nothingSent: true,
+      text: "Nothing was sent. This address was invited with a code. Enter the invite code you were given, then try again.",
+    });
+  });
+
+  it("says a code that does not match is wrong, not that the address is unlisted", () => {
+    expect(describeOpenOutcome(refused({ kind: "inviteCodeWrong" }), "absent").text).toBe(
+      "Nothing was sent. That invite code does not match this address. Check it and try again.",
+    );
+  });
+
+  it("asks for a code only after the gate showed it admits by invite", () => {
+    expect(gateAsksForInvite(null)).toBe(false);
+    expect(gateAsksForInvite({ kind: "notSent", reason: "x" })).toBe(false);
+    expect(gateAsksForInvite(refused({ kind: "tryLater" }))).toBe(false);
+    for (const kind of [
+      "notInvited",
+      "inviteCodeNeeded",
+      "inviteCodeWrong",
+      "inviteUsed",
+    ] as const) {
+      expect(gateAsksForInvite(refused({ kind }))).toBe(true);
+    }
+  });
+});
+
+describe("the deposit step on both layouts", () => {
+  it("names the Funds section of the account panel, not a place below the chart", () => {
+    expect(depositHelp(true)).toContain("in the Funds section of your account panel");
+    expect(depositHelp(true)).not.toContain("below the chart");
   });
 });

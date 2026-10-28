@@ -104,6 +104,82 @@ describe("userMessage", () => {
   });
 });
 
+describe("userMessage wallet declines", () => {
+  const DECLINED = "You declined the request in your wallet.";
+
+  it.each([
+    ["a 4001 code", Object.assign(new Error("x"), { code: 4001 })],
+    ["a plain code object", { code: 4001 }],
+    ["the wallet's wording", new Error("User rejected the request.")],
+    [
+      "a wallet adapter class with a rejection",
+      named("WalletSignTransactionError", "User rejected the request."),
+    ],
+    ["a window the owner closed", named("WalletWindowClosedError", "x")],
+    [
+      "a decline wrapped as a cause",
+      Object.assign(new Error("sign-in failed"), { cause: { code: 4001 } }),
+    ],
+  ])("reads %s as a decline", (_label, error) => {
+    expect(userMessage(error).text).toBe(DECLINED);
+  });
+
+  it.each([
+    ["no wallet to cancel", new Error("No wallet to cancel for")],
+    ["a cancel that is not available", new Error("Per-order cancel is not available")],
+    ["a refusing signature", new Error("Refusing to sign: the message is not the expected one")],
+    [
+      "a deployment check",
+      new Error("https://book.example/v1/deployment refused: the pins do not match"),
+    ],
+    ["a wallet signing failure", named("WalletSignTransactionError", "Unexpected error")],
+    ["a refused network check", named("NetworkRefused", "the network was refused")],
+    ["a refused signed transaction", named("SignedTransactionRefused", "refused to sign")],
+  ])("does not read %s as a decline", (_label, error) => {
+    expect(userMessage(error).text).not.toBe(DECLINED);
+  });
+
+  it("gives an account switched mid-signing its own sentence", () => {
+    expect(
+      userMessage(named("StaleSigner", "the wallet account changed while it was signing")),
+    ).toEqual({
+      text: "Your wallet account changed while it was signing. Nothing was sent with the old account.",
+      detail: null,
+      known: true,
+    });
+  });
+});
+
+describe("userMessage busy network and unreadable exchange", () => {
+  it("maps a 429 and a rate limit to the busy sentence", () => {
+    const busy = "The network is busy. Nothing was sent. Try again in a moment.";
+    expect(userMessage(new Error("failed to get genesis hash: 429 Too Many Requests")).text).toBe(
+      busy,
+    );
+    expect(userMessage(new Error("Rate limit exceeded")).text).toBe(busy);
+    expect(
+      userMessage(new Error('{"jsonrpc":"2.0","error":{"code":429,"message":"slow down"},"id":1}'))
+        .text,
+    ).toBe(busy);
+  });
+
+  it("maps an unreadable exchange account to the cannot-be-reached sentence", () => {
+    expect(
+      userMessage(new Error("the exchange account is not readable here"), { nothingSent: true })
+        .text,
+    ).toBe("The exchange cannot be reached right now. Nothing was sent. Try again in a moment.");
+  });
+
+  it("keeps raw JSON out of the support detail and keeps a short code", () => {
+    const body = '{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"},"id":7}';
+    const { detail, known } = userMessage(new Error(`RPC failed: ${body}`));
+    expect(known).toBe(false);
+    expect(detail).toBe("RPC failed: (code -32602)");
+    expect(detail).not.toMatch(/[{}"]/);
+    expect(userMessage(new Error(`{\n  "foo": 1\n}`)).detail).toBe("(error body)");
+  });
+});
+
 describe("userMessageLine", () => {
   it("adds the support detail after the catch-all and nothing after a known sentence", () => {
     expect(userMessageLine(new Error("odd failure"))).toBe(

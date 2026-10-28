@@ -32,6 +32,10 @@ const errorResponseSchema = z.object({ error: z.string() });
 export type OpenRefusal =
   /** No invite for this address, or the code is wrong or missing. */
   | { kind: "notInvited" }
+  /** The address is invited with a code, and none was sent. */
+  | { kind: "inviteCodeNeeded" }
+  /** A code was sent that does not match the address, or is not shaped like a code. */
+  | { kind: "inviteCodeWrong" }
   | { kind: "inviteUsed" }
   | { kind: "accountOpen" }
   /** The desk is busy, the service is starting, or a short request throttle applies. */
@@ -48,11 +52,23 @@ export type OpenRefusal =
   | { kind: "badAnswer" }
   | { kind: "rejected"; status: number };
 
+/** The service answered for the other way of opening accounts than the one this page expected: the deployment changed after the page loaded. */
+export type OtherMode = { kind: "otherMode" };
+
 export type PrepareOpenOutcome =
-  { kind: "prepared"; transaction: Transaction; expiresAtMs: number } | OpenRefusal;
+  { kind: "prepared"; transaction: Transaction; expiresAtMs: number } | OpenRefusal | OtherMode;
 
 export type PrepareOpenMessageOutcome =
-  { kind: "prepared"; expiresAt: bigint; expiresAtMs: number } | OpenRefusal;
+  { kind: "prepared"; expiresAt: bigint; expiresAtMs: number } | OpenRefusal | OtherMode;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/** An answer with no transaction but an expiry is a message-mode answer; one with a transaction and no expiry is a transaction-mode answer. */
+const answersInMessageMode = (body: unknown): boolean =>
+  isRecord(body) && !("transaction" in body) && "expiresAt" in body;
+const answersInTransactionMode = (body: unknown): boolean =>
+  isRecord(body) && typeof body.transaction === "string" && !("expiresAt" in body);
 
 export type SubmitOpenOutcome = { kind: "submitted"; reference: string } | OpenRefusal;
 
@@ -189,7 +205,10 @@ async function errorReasonOf(response: Response): Promise<string> {
  */
 export function openRefusalOf(status: number, reason: string, step: Step): OpenRefusal {
   if (status === 403) {
-    return /cannot be read/i.test(reason) ? { kind: "tryLater" } : { kind: "notInvited" };
+    if (/cannot be read/i.test(reason)) return { kind: "tryLater" };
+    if (/invited with a code/i.test(reason)) return { kind: "inviteCodeNeeded" };
+    if (/invite code does not match/i.test(reason)) return { kind: "inviteCodeWrong" };
+    return { kind: "notInvited" };
   }
   if (status === 409) {
     if (/invite has been used/i.test(reason)) return { kind: "inviteUsed" };
@@ -241,7 +260,7 @@ export async function prepareOpen(
   }: { simUrl: string; owner: string; orderKeys: string[]; invite?: string },
   fetchFn: typeof fetch = fetch,
 ): Promise<PrepareOpenOutcome> {
-  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "notInvited" };
+  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "inviteCodeWrong" };
   const response = await post(
     simUrl,
     "/v1/open/prepare",
@@ -252,8 +271,10 @@ export async function prepareOpen(
   if (!response.ok) {
     return openRefusalOf(response.status, await errorReasonOf(response), "prepare");
   }
-  const parsed = prepareResponseSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) return { kind: "badAnswer" };
+  const body = await response.json().catch(() => null);
+  const parsed = prepareResponseSchema.safeParse(body);
+  if (!parsed.success)
+    return answersInMessageMode(body) ? { kind: "otherMode" } : { kind: "badAnswer" };
   try {
     return {
       kind: "prepared",
@@ -280,7 +301,7 @@ export async function prepareOpenMessage(
   }: { simUrl: string; owner: string; orderKeys: string[]; invite?: string },
   fetchFn: typeof fetch = fetch,
 ): Promise<PrepareOpenMessageOutcome> {
-  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "notInvited" };
+  if (invite !== undefined && !INVITE_PATTERN.test(invite)) return { kind: "inviteCodeWrong" };
   const response = await post(
     simUrl,
     "/v1/open/prepare",
@@ -291,8 +312,11 @@ export async function prepareOpenMessage(
   if (!response.ok) {
     return openRefusalOf(response.status, await errorReasonOf(response), "prepare");
   }
-  const parsed = messagePrepareResponseSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) return { kind: "badAnswer" };
+  const body = await response.json().catch(() => null);
+  const parsed = messagePrepareResponseSchema.safeParse(body);
+  if (!parsed.success) {
+    return answersInTransactionMode(body) ? { kind: "otherMode" } : { kind: "badAnswer" };
+  }
   return {
     kind: "prepared",
     expiresAt: BigInt(parsed.data.expiresAt),

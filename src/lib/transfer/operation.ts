@@ -18,11 +18,18 @@ import { signableRefusal, validatedPins, type TransferPins, type TransferShape }
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 import type { OwnerLock } from "./lock";
 import { judgeSend, recordThenBroadcast, signatureOf } from "./send";
+import { MISSING_RECHECK_MS } from "./verdicts";
+import {
+  computeUnitsAfterSimulation,
+  microLamportsFromFees,
+  withComputeBudget,
+} from "./computeBudget";
 import {
   confirmSignature,
   freshBlockhash,
   readTokenBalance,
-  simulationError,
+  recentPrioritizationFees,
+  simulation,
   type Clock,
   type SolanaRpc,
 } from "./solanaRpc";
@@ -70,7 +77,11 @@ export interface TransferEnv {
    * message: the seat's withdrawal is then signed by an order key through the
    * trading client, and the wallet signs no rollup transaction at all.
    */
-  withdrawByKey?(atoms: bigint): Promise<KeyWithdrawal>;
+  withdrawByKey?(
+    atoms: bigint,
+    /** Called with the order key's signed bytes before they are dispatched; the call must send nothing if it fails. */
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal>;
   journal: Journal;
   lock(owner: string): Promise<OwnerLock | null>;
   /** The only way the owner signs: the transaction must be exactly the one `shape` names before the app's own checks run. `chain` is "solana:mainnet" for a send to Solana, and absent for a rollup send. */
@@ -140,6 +151,7 @@ export type Refusal =
   | "sealed-balance-missing"
   | "delegated-elsewhere"
   | "simulation-failed"
+  | "simulation-unavailable"
   | "stale-price"
   | "rollup-refused"
   | "rollup-unreadable"
@@ -158,6 +170,8 @@ export interface Refused {
   status: "refused";
   reason: Refusal;
   message: string;
+  /** Set when the collateral already left the account and the stop was in the step that takes it to the wallet, so the USDC is in the rollup balance and not where it started. */
+  inRollup?: true;
 }
 
 /** Why a transfer stopped without finishing or moving anything new: another tab holds the lock, a refusal, a send that may still land, or one that cannot be told. */
@@ -418,6 +432,7 @@ export async function sendJournaled(
     step: string;
     atoms: bigint;
     rollupBefore?: bigint;
+    /** The transaction's own instructions; the compute budget is put in front here, its unit limit from the simulation. */
     instructions: TransactionInstruction[];
     /** The exact transaction these instructions must make. */
     shape: TransferShape;
@@ -429,28 +444,38 @@ export async function sendJournaled(
   },
 ): Promise<Refused | { signature: string; broadcastError: string | null }> {
   const { blockhash, lastValidBlockHeight } = await freshBlockhash(env.solana);
-  const transaction = new Transaction({
-    feePayer: env.owner,
-    blockhash,
-    lastValidBlockHeight,
-  }).add(...plan.instructions);
-  const unsafe = await shapeRefusal(env, transaction, plan.shape);
+  const built = (units?: number, microLamports?: number) =>
+    new Transaction({ feePayer: env.owner, blockhash, lastValidBlockHeight }).add(
+      ...withComputeBudget(plan.instructions, units, microLamports),
+    );
+  const probe = built();
+  const unsafe = await shapeRefusal(env, probe, plan.shape);
   if (unsafe) return notAllowed(unsafe);
-  let failure: string | null;
+  let simulated: Awaited<ReturnType<typeof simulation>>;
   try {
-    failure = await simulationError(env.solana, transaction);
+    simulated = await simulation(env.solana, probe);
   } catch (error) {
     return refuse(
-      "simulation-failed",
-      `Solana would not simulate the transaction (${(error as Error).message.split("\n")[0]}), so it is not sent. Nothing was sent.`,
+      "simulation-unavailable",
+      `Solana could not be asked to simulate the transaction (${(error as Error).message.split("\n")[0]}), so it is not sent. Nothing was sent.`,
     );
   }
-  if (failure !== null) {
+  if (simulated.error !== null) {
     return refuse(
       "simulation-failed",
-      `Solana would refuse the transaction with ${failure}. Nothing was sent.`,
+      `Solana would refuse the transaction with ${simulated.error}. Nothing was sent.`,
     );
   }
+  const written = new Map<string, PublicKey>();
+  for (const instruction of plan.instructions) {
+    for (const key of instruction.keys) {
+      if (key.isWritable) written.set(key.pubkey.toBase58(), key.pubkey);
+    }
+  }
+  const transaction = built(
+    computeUnitsAfterSimulation(plan.instructions.length, simulated.unitsConsumed),
+    microLamportsFromFees(await recentPrioritizationFees(env.solana, [...written.values()])),
+  );
   const signed = await env.signChecked(transaction, plan.shape, "solana:mainnet");
   if (plan.cosigner) signed.partialSign(plan.cosigner);
   let raw: Uint8Array;
@@ -515,8 +540,8 @@ export const withBroadcastError = (message: string, error: string | null | undef
 /**
  * Judges each send an earlier run wrote down before another is built: a send
  * that landed is returned, one that failed or can never land is dropped, and
- * one that may still land stops the run (asking, when it was seen as
- * processed and only the operator's word can release it).
+ * one that may still land stops the run until its blockhash has expired and
+ * the finalized chain has passed it.
  */
 export async function reconciled(
   env: TransferEnv,
@@ -534,22 +559,16 @@ export async function reconciled(
       connection: env.solana,
       send,
       answer,
+      clock: env.clock,
     });
     if (verdict === "landed") landed = send;
     if (verdict === "wait") {
-      const seen = send.status !== undefined;
-      return seen
-        ? {
-            status: "unknown",
-            id,
-            subject: "solana-send",
-            message: `The transaction ${send.signature} was seen as processed, not confirmed, so it may still confirm even once its blockhash has expired. Look at the signature and the balances; nothing more is sent until it is answered.`,
-            answers: [`landed:${send.signature}`],
-          }
-        : waiting(
-            id,
-            `The transaction ${send.signature} is not on Solana yet and can still land until block height ${send.lastValidBlockHeight}. Nothing more is sent until that has passed.`,
-          );
+      return waiting(
+        id,
+        send.status !== undefined
+          ? `The transaction ${send.signature} has been seen on Solana but is not confirmed yet. It can still land until the network has finalized past block height ${send.lastValidBlockHeight}, and it is judged again then. Nothing more is sent until that has passed.`
+          : `The transaction ${send.signature} is not on Solana yet and can still land until block height ${send.lastValidBlockHeight}. Nothing more is sent until that has passed.`,
+      );
     }
   }
   return { landed };
@@ -657,48 +676,148 @@ export type RollupSendState =
   /** Its status shows an error at finalized commitment, so it moved nothing and cannot be replayed. */
   | { kind: "failed"; error: string }
   | { kind: "pending" }
-  /** Past its blockhash's last valid height and the status was read successfully as absent. */
+  /** Never seen at processed or better, its blockhash expired, and the status was read as absent twice, apart. */
   | { kind: "not-seen" }
-  /** The status could not be read, or the send was not written down with its signature. Never taken as absent. */
+  /** Seen at processed or better once, and the status is missing now: a lagging node may not show it, so it is never taken as unable to land. Reading again settles it. */
+  | { kind: "vanished" }
+  /** The status could not be read just now. Never taken as absent; reading again settles it. */
+  | { kind: "unreadable" }
+  /** The send was not written down with its signature, so there is nothing to look it up by. */
   | { kind: "unknown" };
 
-/**
- * Where a recorded rollup send stands, from its signature's status alone: a
- * success is `landed` (final once finalized), an error is `failed` only once
- * finalized (a confirmed error may still be rolled back, so it waits), no
- * status within its blockhash's life is `pending`, and none past it, read
- * successfully, is `not-seen`. A balance never decides: trading can move it by
- * the same amount. A status read that fails is `unknown`, never absent.
- */
-export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise<RollupSendState> {
-  const recordedLanded = seat.state === "landed";
-  if (seat.signer === "order-key") {
-    return recordedLanded ? { kind: "landed", finalized: true } : { kind: "unknown" };
+/** One signed rollup transaction of a seat send, as it is looked up. */
+interface Attempt {
+  signature: string;
+  /** Judged by whether this exact blockhash is still valid, for an order key's withdrawal. */
+  blockhash?: string;
+  /** Judged by the block height, for a send whose blockhash was read when it was signed. */
+  lastValidBlockHeight?: number;
+  seen: boolean;
+}
+
+const attemptsOf = (seat: SeatSend): Attempt[] =>
+  seat.attempts
+    ? seat.attempts.map((attempt) => ({ ...attempt, seen: attempt.seen === true }))
+    : seat.signature && seat.lastValidBlockHeight !== undefined
+      ? [
+          {
+            signature: seat.signature,
+            lastValidBlockHeight: seat.lastValidBlockHeight,
+            seen: seat.seen === true,
+          },
+        ]
+      : [];
+
+type Look =
+  | { kind: "success"; finalized: boolean }
+  | { kind: "failed"; error: string }
+  /** Seen at processed, or with an error that is not final: in flight or not yet settled. */
+  | { kind: "processed" }
+  | { kind: "absent"; expired: boolean };
+
+/** One look at an attempt. Whether it can still land is read before its status, so an attempt that lands between the two reads is seen and never taken as absent. */
+async function lookAt(rollup: SolanaRpc, attempt: Attempt): Promise<Look> {
+  const expired =
+    attempt.blockhash !== undefined
+      ? !(await rollup.isBlockhashValid(attempt.blockhash, { commitment: "confirmed" })).value
+      : (await rollup.getBlockHeight("confirmed")) > (attempt.lastValidBlockHeight ?? Infinity);
+  const { value } = await rollup.getSignatureStatus(attempt.signature, {
+    searchTransactionHistory: true,
+  });
+  if (!value) return { kind: "absent", expired };
+  if (value.confirmationStatus === "processed") return { kind: "processed" };
+  if (value.err) {
+    return value.confirmationStatus === "finalized"
+      ? { kind: "failed", error: JSON.stringify(value.err) }
+      : { kind: "processed" };
   }
-  if (!seat.signature || seat.lastValidBlockHeight === undefined) {
+  return { kind: "success", finalized: value.confirmationStatus === "finalized" };
+}
+
+/**
+ * What a set of looks at every attempt of a send comes to. It landed if any
+ * attempt did; it is in flight if any attempt is, or may still be, valid; a
+ * missing status after any sighting is `vanished`, never unable to land; it
+ * failed if every attempt was refused at finalized; and only attempts that
+ * were never seen, are expired and are absent make `not-seen`, which the
+ * caller confirms with a second look.
+ */
+function combined(attempts: Attempt[], looks: Look[]): RollupSendState | { kind: "candidate" } {
+  const success = looks.find((look) => look.kind === "success");
+  if (success) {
+    const finalized = looks.some((look) => look.kind === "success" && look.finalized);
+    return { kind: "landed", finalized };
+  }
+  if (looks.some((look) => look.kind === "processed")) return { kind: "pending" };
+  const absent = looks.flatMap((look, at) => (look.kind === "absent" ? [{ look, at }] : []));
+  if (absent.some(({ look }) => !look.expired)) return { kind: "pending" };
+  if (absent.some(({ at }) => attempts[at].seen)) return { kind: "vanished" };
+  const refused = looks.flatMap((look) => (look.kind === "failed" ? [look.error] : []));
+  if (absent.length === 0 && refused.length > 0) return { kind: "failed", error: refused[0] };
+  return { kind: "candidate" };
+}
+
+/**
+ * Where a recorded rollup send stands, from the status of every signed attempt
+ * of it. It is `landed` if any attempt succeeded (final once finalized), and
+ * `failed` only once every attempt is refused at finalized (a confirmed error
+ * may still be rolled back, so it waits). An attempt whose blockhash is still
+ * valid is `pending`. Any sighting at processed or better is written to the
+ * journal, and a status missing after one is `vanished`, never `not-seen`: only
+ * a send that was never seen, whose blockhash has expired, and whose status was
+ * read as absent twice, apart, is `not-seen`. Whether an attempt can still
+ * land is read before its status, so one that lands between the reads is seen.
+ * A balance never decides: the seat and the owner's token account can both be
+ * moved by something else. A status read that fails is `unreadable`, never
+ * absent. An order key's withdrawal the client proved from the account's own
+ * view (`proven`) is final as recorded; otherwise it is judged by the attempts
+ * written down just before they were dispatched, even once a status showed it
+ * landed, and is final only at a finalized success. One with no attempts has
+ * nothing to look up and is `unknown`, or as recorded if it was recorded landed
+ * before attempts were kept. `id` is the operation's, and lets sightings be
+ * written down.
+ */
+export async function rollupSendState(
+  env: TransferEnv,
+  seat: SeatSend,
+  id?: string,
+): Promise<RollupSendState> {
+  const recordedLanded = seat.state === "landed";
+  if (
+    seat.signer === "order-key" &&
+    recordedLanded &&
+    (seat.proven === true || seat.attempts === undefined)
+  ) {
+    return { kind: "landed", finalized: true };
+  }
+  const attempts = attemptsOf(seat);
+  if (attempts.length === 0) {
     return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
   }
+  const owner = env.owner.toBase58();
+  const settle = (state: RollupSendState): RollupSendState =>
+    recordedLanded && (state.kind === "pending" || state.kind === "vanished")
+      ? { kind: "landed", finalized: false }
+      : state;
+  const lookAll = async (rollup: SolanaRpc) => {
+    const looks = await Promise.all(attempts.map((attempt) => lookAt(rollup, attempt)));
+    for (const [at, look] of looks.entries()) {
+      if (look.kind === "absent" || attempts[at].seen) continue;
+      if (id !== undefined) await env.journal.markSeatSighted(owner, id, attempts[at].signature);
+      attempts[at] = { ...attempts[at], seen: true };
+    }
+    return combined(attempts, looks);
+  };
   try {
     const rollup = seat.signer === "deposit-key" ? await env.depositRollup() : env.rollup;
-    const { value } = await rollup.getSignatureStatus(seat.signature, {
-      searchTransactionHistory: true,
-    });
-    if (value) {
-      if (value.confirmationStatus === "processed") {
-        return recordedLanded ? { kind: "landed", finalized: false } : { kind: "pending" };
-      }
-      if (value.err) {
-        return value.confirmationStatus === "finalized"
-          ? { kind: "failed", error: JSON.stringify(value.err) }
-          : { kind: "pending" };
-      }
-      return { kind: "landed", finalized: value.confirmationStatus === "finalized" };
-    }
-    if (recordedLanded) return { kind: "landed", finalized: false };
-    const height = await rollup.getBlockHeight("confirmed");
-    return height > seat.lastValidBlockHeight ? { kind: "not-seen" } : { kind: "pending" };
+    const first = await lookAll(rollup);
+    if (first.kind !== "candidate") return settle(first);
+    await env.clock.sleep(MISSING_RECHECK_MS);
+    const second = await lookAll(rollup);
+    if (second.kind !== "candidate") return settle(second);
+    return recordedLanded ? { kind: "landed", finalized: false } : { kind: "not-seen" };
   } catch {
-    return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unknown" };
+    return recordedLanded ? { kind: "landed", finalized: false } : { kind: "unreadable" };
   }
 }
 
@@ -710,17 +829,18 @@ export async function rollupSendState(env: TransferEnv, seat: SeatSend): Promise
  */
 export async function operationFinal(env: TransferEnv, record: OperationRecord): Promise<boolean> {
   if (record.seat) {
-    const state = await rollupSendState(env, record.seat);
+    const state = await rollupSendState(env, record.seat, record.id);
     if (state.kind !== "landed" || !state.finalized) return false;
   }
   try {
     for (const send of record.sends) {
+      const height = await env.solana.getBlockHeight("confirmed");
       const { value } = await env.solana.getSignatureStatus(send.signature, {
         searchTransactionHistory: true,
       });
       if (value) {
         if (value.confirmationStatus !== "finalized") return false;
-      } else if ((await env.solana.getBlockHeight("confirmed")) <= send.lastValidBlockHeight) {
+      } else if (height <= send.lastValidBlockHeight) {
         return false;
       } else if (send.status !== undefined) {
         return false;
@@ -742,6 +862,34 @@ export async function finishWhenFinalized(env: TransferEnv, id: string): Promise
   return true;
 }
 
+/** Closes the records `ids` name once every send of all of them is final, and not before; false while any is not. */
+export async function finishAllWhenFinal(env: TransferEnv, ids: string[]): Promise<boolean> {
+  const owner = env.owner.toBase58();
+  const closing = (await env.journal.unfinished(owner)).filter((record) => ids.includes(record.id));
+  for (const record of closing) {
+    if (!(await operationFinal(env, record))) return false;
+  }
+  for (const record of closing) await env.journal.finish(owner, record.id);
+  return true;
+}
+
+/** The sends of an operation that move the tokens on Solana, as opposed to a token account's setup, which moves none. */
+export const movingSends = (record: Pick<OperationRecord, "sends" | "atoms"> | undefined) =>
+  (record?.sends ?? []).filter((send) => send.moved === record?.atoms);
+
+/**
+ * Drops the record of a withdrawal that stopped having sent nothing that
+ * could have moved money: no seat withdrawal on record, no send that moves the
+ * tokens, and every token account setup on record settled for good. Anything
+ * else stays, and a record that is not there is nothing to do.
+ */
+export async function finishIfNothingSent(env: TransferEnv, id: string): Promise<void> {
+  const owner = env.owner.toBase58();
+  const record = (await env.journal.unfinished(owner)).find((candidate) => candidate.id === id);
+  if (!record || record.seat || movingSends(record).length > 0) return;
+  if (await operationFinal(env, record)) await env.journal.finish(owner, id);
+}
+
 /**
  * Settles a recorded rollup send before anything else is done about it. Never
  * resends: `none` when there is no send on record, `landed` once its status
@@ -757,7 +905,7 @@ export async function settledRollupSend(
 ): Promise<"none" | "landed" | { failed: string } | Stopped> {
   if (!seat) return "none";
   const owner = env.owner.toBase58();
-  const state = await rollupSendState(env, seat);
+  const state = await rollupSendState(env, seat, id);
   if (state.kind === "landed") {
     if (seat.state === "pending") await env.journal.markSeatLanded(owner, id);
     if (requireFinal && !state.finalized) {
@@ -775,7 +923,23 @@ export async function settledRollupSend(
   if (state.kind === "pending") {
     return waiting(
       id,
-      `The rollup transaction ${seat.signature} may still land until the rollup passes block height ${seat.lastValidBlockHeight}. Nothing is sent again.`,
+      `The rollup transaction ${seat.signature} may still land until ${
+        seat.lastValidBlockHeight === undefined
+          ? "its blockhash expires"
+          : `the rollup passes block height ${seat.lastValidBlockHeight}`
+      }. Nothing is sent again.`,
+    );
+  }
+  if (state.kind === "vanished") {
+    return waiting(
+      id,
+      `The rollup transaction ${seat.signature} was seen, and its status is missing now. A node may be behind, so it may still be on the chain. It is read again next time; nothing is sent again.`,
+    );
+  }
+  if (state.kind === "unreadable") {
+    return waiting(
+      id,
+      `The status of the rollup transaction${seat.signature ? ` ${seat.signature}` : ""} could not be read just now. It is read again next time; nothing is sent again.`,
     );
   }
   if (state.kind === "not-seen") {
@@ -791,7 +955,8 @@ export async function settledRollupSend(
       status: "unknown",
       id,
       subject: "rollup-send",
-      message: ORDER_KEY_WITHDRAWAL_UNPROVEN,
+      message:
+        "We cannot tell whether this withdrawal went through, and it was not written down with a signature to look up. Check your wallet's token account in the rollup, or contact support with the transfer id. Nothing is sent again.",
       answers: [],
     };
   }
@@ -800,7 +965,7 @@ export async function settledRollupSend(
     id,
     subject: "rollup-send",
     signature: seat.signature,
-    message: `A rollup transaction${seat.signature ? ` ${seat.signature}` : ""} cannot be placed${seat.signature ? ": its status could not be read" : ": it was not written down with its signature"}. It cannot be dismissed. It is looked at again next time; wait, or contact support with the signature. Nothing is sent again.`,
+    message: `A rollup transaction cannot be placed: it was not written down with its signature. It cannot be dismissed. Wait, or contact support with the transfer id. Nothing is sent again.`,
     answers: [],
   };
 }
@@ -814,6 +979,8 @@ export async function sentOnRollup(
   env: TransferEnv,
   sent: { raw: Uint8Array; signature: string },
   rollup: SolanaRpc = env.rollup,
+  /** The operation's id: any sighting of the transaction is written to its record. */
+  recordId?: string,
 ): Promise<
   | { state: "confirmed" }
   | { state: "failed"; error: string }
@@ -828,6 +995,9 @@ export async function sentOnRollup(
     clock: env.clock,
     timeoutMs: ROLLUP_CONFIRMS_WITHIN_MS,
   });
+  if (recordId !== undefined && result.seen !== undefined) {
+    await env.journal.markSeatSighted(env.owner.toBase58(), recordId, sent.signature);
+  }
   if (result.state === "confirmed") return { state: "confirmed" };
   if (result.state === "failed" && result.seen === "finalized") {
     return { state: "failed", error: result.error };

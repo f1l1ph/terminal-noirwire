@@ -76,6 +76,7 @@ export function ConfirmOrderDialog({
   baseName,
   quoteUnit,
   reviewInvalid,
+  note = null,
   blocker,
   canSubmit,
   submitLabel,
@@ -91,6 +92,8 @@ export function ConfirmOrderDialog({
   quoteUnit: string;
   /** Why the review no longer stands; swaps the confirm button for "Close and review again". */
   reviewInvalid: string | null;
+  /** A plain line above any error: what changed since the owner last looked. */
+  note?: string | null;
   /** Why the order cannot be placed right now, shown when the review itself still stands. */
   blocker: string | null;
   canSubmit: boolean;
@@ -120,6 +123,11 @@ export function ConfirmOrderDialog({
         )}
         <p className="text-faint mt-1 mb-3 text-[12px]">Worst case: {order.worstCost}</p>
         <OrderSummary rows={order.summaryRows} />
+        {note && (
+          <p role="status" className="text-warning mt-3 text-[12px]">
+            {note}
+          </p>
+        )}
         {error && (
           <p role="alert" className="text-danger mt-3 text-[12px]">
             {error}

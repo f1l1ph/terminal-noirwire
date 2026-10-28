@@ -2,7 +2,14 @@ import {
   DELEGATION_PROGRAM_ID,
   delegationRecordPdaFromDelegatedAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { Keypair, PublicKey, Transaction, type AccountInfo } from "@solana/web3.js";
+import { discriminator } from "@noirwire/orderbook";
+import {
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  type AccountInfo,
+} from "@solana/web3.js";
 import { programAddresses } from "@/lib/rollup/sdk";
 import type { KeyWithdrawal } from "@/lib/trading/types";
 import { depositKeyAccount, depositKeyBalance } from "@/lib/transfer/depositKey";
@@ -18,6 +25,29 @@ import { signatureOf } from "@/lib/transfer/send";
 import type { SolanaRpc } from "@/lib/transfer/solanaRpc";
 
 export const USDC = 1_000_000n;
+
+/**
+ * The signed bytes of one attempt of an order key's withdrawal: a real
+ * transaction, so its signature and blockhash can be read from it. `call`
+ * picks the signing key and `blockhashOf` the blockhash (by default its own),
+ * so two attempts can share a blockhash or not.
+ */
+export function signedAttempt(call: number, programId = PublicKey.default, blockhashOf = call) {
+  const key = Keypair.fromSeed(new Uint8Array(32).fill(call));
+  const transaction = new Transaction({
+    feePayer: key.publicKey,
+    blockhash: new PublicKey(new Uint8Array(32).fill(blockhashOf)).toBase58(),
+    lastValidBlockHeight: 1,
+  }).add(
+    new TransactionInstruction({
+      programId,
+      keys: [{ pubkey: key.publicKey, isSigner: true, isWritable: false }],
+      data: Buffer.concat([Buffer.from(discriminator("withdraw_by_key")), Buffer.alloc(8)]),
+    }),
+  );
+  transaction.sign(key);
+  return transaction.serialize();
+}
 
 const tokenAccount = (amount: bigint): AccountInfo<Buffer> => {
   const data = Buffer.alloc(165);
@@ -63,6 +93,11 @@ export class FakeRpc implements SolanaRpc {
     this.plans.push(...plans);
   }
 
+  /** The node takes every transaction it is sent from now on, rebroadcasts included, and never includes any. */
+  swallowAll() {
+    this.plans.push(...Array.from({ length: 200 }, () => ({ fate: "swallow" as const })));
+  }
+
   setToken(address: PublicKey, amount: bigint) {
     this.accounts.set(address.toBase58(), tokenAccount(amount));
   }
@@ -72,8 +107,31 @@ export class FakeRpc implements SolanaRpc {
     return info ? info.data.readBigUInt64LE(64) : 0n;
   }
 
+  /** The slot the node's status replies are current to; its height unless a test sets it. */
+  statusSlot: number | undefined;
+
   async getSignatureStatus(signature: string) {
-    return { value: this.statuses.get(signature) ?? null };
+    return {
+      context: { slot: this.statusSlot ?? this.height },
+      value: this.statuses.get(signature) ?? null,
+    };
+  }
+
+  async getSlot() {
+    return this.height;
+  }
+
+  /** Blockhashes the node no longer accepts. */
+  expiredBlockhashes = new Set<string>();
+  private everyBlockhashExpired = false;
+
+  /** Every blockhash a transaction was signed with so far has expired. */
+  expireAllBlockhashes() {
+    this.everyBlockhashExpired = true;
+  }
+
+  async isBlockhashValid(blockhash: string) {
+    return { value: !this.everyBlockhashExpired && !this.expiredBlockhashes.has(blockhash) };
   }
 
   async getSignatureStatuses(signatures: string[]) {
@@ -96,7 +154,10 @@ export class FakeRpc implements SolanaRpc {
     return this.lamports;
   }
 
-  async sendRawTransaction(raw: Uint8Array) {
+  async sendRawTransaction(
+    raw: Uint8Array,
+    _options?: { skipPreflight?: boolean; preflightCommitment?: "confirmed" },
+  ) {
     const signature = signatureOf(raw);
     this.events.push(`broadcast:${this.name}`);
     this.sent.push(signature);
@@ -118,10 +179,26 @@ export class FakeRpc implements SolanaRpc {
     return signature;
   }
 
-  async simulateTransaction() {
+  /** What the node says the transaction consumed; absent unless a test sets it. */
+  unitsConsumed: number | undefined;
+  /** The recent fees the node reports; an Error makes the read fail. */
+  recentFees: number[] | Error = [];
+  /** The accounts the last fee read asked about. */
+  feeAccounts: PublicKey[] = [];
+  /** The transactions simulated, to read the budget they carried. */
+  simulated: Transaction[] = [];
+
+  async simulateTransaction(transaction: Transaction) {
     this.simulations += 1;
+    this.simulated.push(transaction);
     const err = this.simulateAnswers.shift() ?? null;
-    return { value: { err, logs: null } };
+    return { value: { err, logs: null, unitsConsumed: this.unitsConsumed } };
+  }
+
+  async getRecentPrioritizationFees(config?: { lockedWritableAccounts?: PublicKey[] }) {
+    this.feeAccounts = config?.lockedWritableAccounts ?? [];
+    if (this.recentFees instanceof Error) throw this.recentFees;
+    return this.recentFees.map((prioritizationFee, slot) => ({ slot, prioritizationFee }));
   }
 }
 
@@ -160,7 +237,12 @@ export function browserLocks(): LockManagerLike {
 }
 
 export function makeWorld(
-  options: { withdrawByKey?: (atoms: bigint) => Promise<KeyWithdrawal> } = {},
+  options: {
+    withdrawByKey?: (
+      atoms: bigint,
+      onSigned?: (raw: Uint8Array) => Promise<void>,
+    ) => Promise<KeyWithdrawal>;
+  } = {},
 ) {
   const events: string[] = [];
   const keyed = options.withdrawByKey;
@@ -225,9 +307,9 @@ export function makeWorld(
       },
     },
     withdrawByKey: keyed
-      ? async (atoms) => {
+      ? async (atoms, onSigned) => {
           events.push("key-withdraw");
-          return keyed(atoms);
+          return keyed(atoms, onSigned);
         }
       : undefined,
     journal,

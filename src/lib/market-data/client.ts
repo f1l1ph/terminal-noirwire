@@ -28,18 +28,29 @@ export function isServiceUnreachable(error: unknown): boolean {
   return status === undefined || status >= 500 || status === 429;
 }
 
+/** How long the service has to answer before it counts as unreachable. */
+export const REQUEST_TIMEOUT_MS = 8_000;
+
 async function getJson(baseUrl: string, path: string): Promise<unknown> {
   const url = `${baseUrl}${path}`;
+  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(url, { headers: { accept: "application/json" } });
+    response = await fetch(url, { headers: { accept: "application/json" }, signal });
   } catch {
     throw new MarketDataRequestError(`Could not reach the simulation service at ${url}`, url);
   }
   if (!response.ok) {
     throw new MarketDataRequestError(`${url} answered ${response.status}`, url, response.status);
   }
-  return response.json();
+  try {
+    return await response.json();
+  } catch (error) {
+    if (signal.aborted) {
+      throw new MarketDataRequestError(`Could not reach the simulation service at ${url}`, url);
+    }
+    throw error;
+  }
 }
 
 export async function fetchMarkets(baseUrl: string): Promise<MarketInfo[]> {

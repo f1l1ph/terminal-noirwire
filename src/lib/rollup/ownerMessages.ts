@@ -1,4 +1,5 @@
 import { Keypair, type Connection, type PublicKey } from "@solana/web3.js";
+import { isWalletDecline } from "../wallet/declined";
 import type { OwnerSigner } from "../wallet/ownerSigner";
 import { sendRawAndConfirm, SentTransactionFailed, type SendTiming } from "./ownerSend";
 import { PROGRAM_ERROR, WIRE_ERROR_OFFSET } from "./refusals";
@@ -18,7 +19,6 @@ import {
 const SIGNATURE_BYTES = 64;
 const VIEW_SHOWS_KEYS_WITHIN_MS = 15_000;
 const VIEW_POLL_MS = 500;
-const REFUSED = /reject|declin|denied|cancel|refus/i;
 
 const OTHER_DEVICE = "Your account changed on another device. Reload and try again.";
 
@@ -54,9 +54,8 @@ export class OwnerActionFailed extends Error {
 
 /** Whether the wallet's error is the owner turning the request down. */
 export const messageDeclined = (error: unknown): boolean =>
-  error instanceof Error &&
   !(error instanceof OwnerActionRefused || error instanceof OwnerActionFailed) &&
-  REFUSED.test(`${error.name} ${error.message}`);
+  isWalletDecline(error);
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) =>
   a.length === b.length && a.every((byte, at) => byte === b[at]);
@@ -88,7 +87,7 @@ export async function signOwnerAction(
   if (signature.length !== SIGNATURE_BYTES) {
     throw new OwnerActionRefused("your wallet did not return a signature");
   }
-  const form = ownerSignatureForm(message, signature, owner.publicKey);
+  const form = ownerSignatureForm(message, signature, owner.publicKey, expected.programId);
   if (!form) throw new OwnerActionRefused("your wallet's signature does not match the message");
   return { signature, form };
 }

@@ -22,6 +22,11 @@ export function toFixedPoint(decimalString: string): bigint {
   return negative ? -combined : combined;
 }
 
+/** A decimal string without its sign, kept as typed: a tiny size never passes through a floating-point number, so it never turns into "1e-7". */
+export function withoutSign(decimalString: string): string {
+  return decimalString.trim().replace(/^[-+]/, "");
+}
+
 export function fromFixedPoint(value: bigint, displayDecimals: number): string {
   const negative = value < 0n;
   const magnitude = negative ? -value : value;

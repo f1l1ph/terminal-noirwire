@@ -215,3 +215,31 @@ describe("helpers", () => {
     expect(maxSpotSellAmount("0", "100")).toBe("0.00");
   });
 });
+
+describe("ticket sizing with the market account's ratios", () => {
+  it("sizes the most an account can commit from the chain's margin and fee", () => {
+    const common = {
+      available: "100",
+      leverage: 10,
+      maxLeverage: 10,
+      boundPrice: "100",
+      refPrice: "100",
+    };
+    expect(maxAmount(common)).toBe("99.50");
+    expect(maxAmount({ ...common, imBps: 2000, takerFeeBps: 20 })).toBe("49.50");
+  });
+
+  it("puts the estimated liquidation where the chain's maintenance ratio says", () => {
+    const base = {
+      side: "buy",
+      quantity: "1",
+      entryPrice: "100",
+      collateral: "20",
+      priceDecimals: 2,
+    } as const;
+    const assumed = estimateLiquidation(base);
+    const chain = estimateLiquidation({ ...base, maintenanceBps: 1000 });
+    expect(assumed).toEqual({ kind: "price", price: "84.26" });
+    expect(chain).toEqual({ kind: "price", price: "88.94" });
+  });
+});

@@ -1,6 +1,7 @@
 import type { Connection } from "@solana/web3.js";
 import type { MarketInfo } from "../market-data/types";
 import type { UnknownHold } from "../rollup/accountMemory";
+import type { PublicDeployment } from "../rollup/deployment";
 import type { OpenRefusal } from "../rollup/openClient";
 import type { OrderKeyStatus as SetupStatus } from "../rollup/orderKeySetup";
 import type { OwnerSigner } from "../wallet/ownerSigner";
@@ -25,8 +26,27 @@ export interface WalletIdentity {
   secretKeyHex?: string;
 }
 
-/** Whether an owner's account exists on the rollup: read from its view, so `unknown` is a read that failed, never "absent". */
-export type AccountStatus = "unknown" | "absent" | "open";
+/**
+ * Whether an owner's account exists on the rollup: read from its view, so
+ * `unknown` is a read that failed, never "absent". `declined` is a sign-in
+ * the owner turned down in the wallet, so the account was never read.
+ */
+export type AccountStatus = "unknown" | "absent" | "open" | "declined";
+
+/** What a market's account states about trading in it, in the units the form uses. */
+export interface MarketLimits {
+  /** Initial margin ratio, in basis points. */
+  imBps: number;
+  /** Maintenance margin ratio, in basis points. */
+  mmBps: number;
+  takerFeeBps: number;
+  /** How far a crossing price may sit from the mark: a bid above it or an ask below it is refused. */
+  bandBps: number;
+  /** The smallest order size, in base units. */
+  minSize: string;
+  /** The smallest order value (price times size), in quote units. */
+  minNotional: string;
+}
 
 /** What opening an account came to; the UI renders each kind and never a bare success. */
 export type OpenAccountOutcome =
@@ -182,6 +202,13 @@ export interface TraderState {
    * market's own base and quote names.
    */
   spotAssets?: Record<string, SpotAssets>;
+  /**
+   * Rollup mode: the account holds a position or resting order in a market
+   * this terminal does not trade (or cannot bind to trustworthy settings). Its
+   * size, margin and liquidation price cannot be known here, so the margin
+   * figures are unknown and orders that could grow risk are blocked.
+   */
+  exposureUnreadable?: boolean;
 }
 
 export interface SpotAssets {
@@ -257,16 +284,38 @@ export interface TradingClient {
    * funding, and this answers `notAvailable`.
    */
   openAccount(wallet: WalletIdentity, invite?: string): Promise<OpenAccountOutcome>;
-  /** Whether the owner's account exists, read from its view. Optional: dev mode opens accounts lazily. */
-  accountStatus?(wallet: WalletIdentity): Promise<AccountStatus>;
+  /**
+   * Whether the owner's account exists, read from its view. `fresh` reads it
+   * through a new session, which sees an account opened after the current one
+   * was built. Optional: dev mode opens accounts lazily.
+   */
+  accountStatus?(wallet: WalletIdentity, options?: { fresh?: boolean }): Promise<AccountStatus>;
   /** The rollup connection signed in as the owner, which deposits and withdrawals read the rollup through. Optional: dev mode has no rollup. */
   rollupReader?(wallet: WalletIdentity): Promise<Connection>;
   /** How the owner consents to account actions here, as the deployment says; "transaction" when it does not. Needs no wallet. Optional: dev mode has no such choice. */
   ownerAuth?(): Promise<OwnerAuth>;
   /** Withdraws `atoms` of the seat's free collateral to the owner's own token account, signed by an order key and never by the wallet. Optional: dev mode has no rollup. */
-  withdrawByKey?(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal>;
+  withdrawByKey?(
+    wallet: WalletIdentity,
+    atoms: bigint,
+    /** Called with each signed withdrawal before it is dispatched; if it fails the withdrawal is not sent. When given, a call that fails having dispatched nothing throws `NotDispatched`. */
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal>;
   /** The symbols of the markets that currently let only listed makers rest orders, read from each market's account. Optional: dev mode has no such list. */
   makersListedMarkets?(wallet: WalletIdentity): Promise<ReadonlySet<string>>;
+  /** Each market's trading limits as its account states them, by market symbol. Optional: dev mode has no market accounts. */
+  marketLimits?(wallet: WalletIdentity): Promise<ReadonlyMap<string, MarketLimits>>;
+  /** Tells the listener whether automatic sign-in has stopped because the exchange refused a freshly signed token, now and at every change. Optional: dev mode has no sign-in. */
+  subscribeSessionStopped?(
+    wallet: WalletIdentity,
+    listener: (stopped: boolean) => void,
+  ): () => void;
+  /** Tells the listener each time this wallet's session is replaced (a token refused and replaced, a refresh, the owner signing in again), as soon as the new one is in place. Optional: dev mode has no session. */
+  subscribeSessionGeneration?(wallet: WalletIdentity, listener: () => void): () => void;
+  /** The owner's own action after automatic sign-in stopped: signs in once more. Optional: dev mode has no sign-in. */
+  signInAgain?(wallet: WalletIdentity): Promise<void>;
+  /** The deployment the wallet's session was built against. Optional: dev mode has no session. */
+  sessionDeployment?(wallet: WalletIdentity): Promise<PublicDeployment>;
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */
   subscribeOrderKeys?(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void;
   fund(wallet: WalletIdentity): Promise<FundOutcome>;

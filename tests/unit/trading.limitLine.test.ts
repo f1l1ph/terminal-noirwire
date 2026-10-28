@@ -67,3 +67,27 @@ describe("sliderPosition and priceAtTick", () => {
     expect(priceAtTick(180, 0.5, 2)).toBe("90.00");
   });
 });
+
+describe("the crossing band on the slider and the line", () => {
+  it("stops a bid's slider at the band and leaves its lower end alone", () => {
+    expect(tickSlider(100, 1, { side: "buy", bandBps: 400 })).toEqual({ min: 90, max: 104 });
+  });
+
+  it("stops an ask's slider at the band and leaves its upper end alone", () => {
+    expect(tickSlider(100, 1, { side: "sell", bandBps: 400 })).toEqual({ min: 96, max: 110 });
+  });
+
+  it("keeps the 10 percent span when the band is wider", () => {
+    expect(tickSlider(100, 1, { side: "buy", bandBps: 5000 })).toEqual({ min: 90, max: 110 });
+  });
+
+  it("draws no line for a bid above the band or an ask below it", () => {
+    const line = (side: "buy" | "sell", priceText: string) =>
+      limitLineFor({ orderType: "limit", priceText, side, mark: 100, bandBps: 400 });
+    expect(line("buy", "104")).toEqual({ price: 104, side: "buy" });
+    expect(line("buy", "104.5")).toBeNull();
+    expect(line("sell", "96")).toEqual({ price: 96, side: "sell" });
+    expect(line("sell", "95.5")).toBeNull();
+    expect(line("buy", "95")).toEqual({ price: 95, side: "buy" });
+  });
+});

@@ -9,22 +9,20 @@ import type { Side } from "./types";
 
 /**
  * `GET /v1/markets` does not expose a taker fee, a maintenance margin ratio,
- * or an initial margin ratio (only `maxLeverage`): see
- * sim-noirwire/src/http/routes/markets.ts. These two constants are this
- * terminal's estimate, read from the same repository's engine source
- * (`src/engine/markets.ts`) rather than from the wire contract, so every
- * figure built from them is labelled an estimate, never an authoritative
- * venue number. docs/BUILD-NOTES.md asks sim-noirwire to publish both.
+ * or an initial margin ratio (only `maxLeverage`). The market account on
+ * chain does, and those values (`MarketLimits`) are passed to every estimate
+ * once the session has read them. These two constants stand in only until
+ * then, so any figure built from them is labelled an estimate.
  */
 export const ASSUMED_TAKER_FEE_BPS = 5;
 
-/** A market's implied initial margin ratio from its advertised `maxLeverage` (10000 / maxLeverage). Null for a market with no leverage (spot). */
+/** A market's initial margin ratio implied by its advertised `maxLeverage` (10000 / maxLeverage), used until the market account's own is known. Null for a market with no leverage (spot). */
 export function impliedInitialMarginBps(maxLeverage: number): number | null {
   if (maxLeverage <= 0) return null;
   return Math.round(10_000 / maxLeverage);
 }
 
-/** Maintenance margin ratio of every launched market (5%), in basis points: the one figure all liquidation estimates use. */
+/** Maintenance margin ratio assumed (5%), in basis points, until the market account's own is known. */
 export const MAINTENANCE_MARGIN_BPS = 500;
 
 export interface OrderCostEstimate {
@@ -55,6 +53,7 @@ export function estimateOrderCost(params: {
   leverage: number;
   maxLeverage: number;
   takerFeeBps?: number;
+  maintenanceBps?: number;
 }): OrderCostEstimate {
   const quantityFp = toFixedPoint(params.quantity);
   const priceFp = toFixedPoint(params.price);
@@ -67,7 +66,10 @@ export function estimateOrderCost(params: {
   let liquidationPrice: bigint | null = null;
   if (isPerp && priceFp > 0n) {
     const leverageInverse = divFixedPoint(toFixedPoint("1"), leverageFp);
-    const maintenanceRate = bpsOfFixedPoint(toFixedPoint("1"), MAINTENANCE_MARGIN_BPS);
+    const maintenanceRate = bpsOfFixedPoint(
+      toFixedPoint("1"),
+      params.maintenanceBps ?? MAINTENANCE_MARGIN_BPS,
+    );
     const buffer = leverageInverse - maintenanceRate;
     const delta = mulFixedPoint(priceFp, buffer);
     liquidationPrice = params.side === "buy" ? priceFp - delta : priceFp + delta;

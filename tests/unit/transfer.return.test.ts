@@ -63,7 +63,7 @@ describe("resuming a return", () => {
   it("is bound to the return record's own id and never repeats the send", async () => {
     const world = await strandedDeposit();
     const [deposited] = recordsOf(world);
-    world.solana.script({ fate: "swallow" });
+    world.solana.swallowAll();
     const first = await returnToWallet(world.env, {
       intent: { id: deposited.id, atoms: deposited.atoms },
     });

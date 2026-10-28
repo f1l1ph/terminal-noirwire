@@ -37,7 +37,7 @@ describe("returnToWallet", () => {
 
   it("does not send a second return while the first may still land", async () => {
     const world = await depositThatStopped("fail");
-    world.solana.script({ fate: "swallow" });
+    world.solana.swallowAll();
     const first = await returnToWallet(world.env);
     expect(first).toMatchObject({ status: "waiting" });
     const sent = world.solana.sent.length;
@@ -47,7 +47,7 @@ describe("returnToWallet", () => {
 
   it("does not let a new deposit start while a return is unfinished", async () => {
     const world = await depositThatStopped("fail");
-    world.solana.script({ fate: "swallow" });
+    world.solana.swallowAll();
     await returnToWallet(world.env);
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "refused", reason: "unfinished-operation" });

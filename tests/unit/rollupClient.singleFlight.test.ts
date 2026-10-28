@@ -38,14 +38,19 @@ const DEPLOYMENT = {
 
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 
-function harness(failures: unknown[]) {
+function harness(failures: unknown[], viewFailures: unknown[] = []) {
   let builds = 0;
   let closed = 0;
+  const removed: string[] = [];
   const unused = async () => {
     throw new Error("unused");
   };
   const client = {
-    view: async () => VIEW,
+    view: async () => {
+      const failure = viewFailures.shift();
+      if (failure) throw failure;
+      return VIEW;
+    },
     subscribeView: () => async () => {},
     placeOrder: unused,
     cancelOrder: unused,
@@ -56,7 +61,11 @@ function harness(failures: unknown[]) {
   const rollup = new RollupTradingClient({
     simUrl: "http://sim.test",
     marketSettingsLookup: () => undefined,
-    storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    storage: {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: (key: string) => void removed.push(key),
+    },
     buildSession: async () => {
       builds += 1;
       await Promise.resolve();
@@ -79,7 +88,7 @@ function harness(failures: unknown[]) {
       return session;
     },
   });
-  return { rollup, builds: () => builds, closed: () => closed };
+  return { rollup, builds: () => builds, closed: () => closed, removed };
 }
 
 describe("one sign-in at a time per owner", () => {
@@ -98,10 +107,88 @@ describe("one sign-in at a time per owner", () => {
     const refusal = () => new SessionAuthError(new Error("User rejected the request"));
     const { rollup, builds } = harness([refusal()]);
     const first = await Promise.all([rollup.accountStatus(WALLET), rollup.accountStatus(WALLET)]);
-    expect(first).toEqual(["unknown", "unknown"]);
+    expect(first).toEqual(["declined", "declined"]);
     expect(builds()).toBe(1);
     expect(await rollup.accountStatus(WALLET)).toBe("open");
     expect(builds()).toBe(2);
+  });
+
+  it("reports a failed sign-in that was not a decline as unknown, not declined", async () => {
+    const failing = harness([
+      new SessionAuthError(new Error("boom")),
+      new SessionAuthError(new Error("boom")),
+    ]);
+    expect(await failing.rollup.accountStatus(WALLET)).toBe("unknown");
+  });
+
+  it("clears the sign-in token and starts a new session when the rollup refuses it mid-session", async () => {
+    // The first view read belongs to the session's own background watch.
+    const { rollup, builds, removed } = harness(
+      [],
+      [null, new Error("401 Missing token query param")],
+    );
+    expect(await rollup.accountStatus(WALLET)).toBe("unknown");
+    expect(removed.some((key) => key.includes("owner-address"))).toBe(true);
+    expect(builds()).toBe(2);
+    expect(await rollup.accountStatus(WALLET)).toBe("open");
+    expect(builds()).toBe(2);
+  });
+
+  it("signs in on its own at most once when every token it gets is refused, then waits for the owner", async () => {
+    const refusals = Array.from({ length: 20 }, () => new Error("401 Missing token query param"));
+    const { rollup, builds } = harness([], [null, ...refusals]);
+    const stopped: boolean[] = [];
+    rollup.subscribeSessionStopped(WALLET, (value) => stopped.push(value));
+    // The stale-margin timer reads the account every few seconds.
+    const errors: unknown[] = [];
+    for (let tick = 0; tick < 6; tick += 1) {
+      await rollup.fetchState(WALLET).catch((error: unknown) => errors.push(error));
+    }
+    expect(builds()).toBe(2);
+    expect(stopped).toEqual([false, true]);
+    const last = errors.at(-1);
+    expect(last).toBeInstanceOf(Error);
+    expect((last as Error).name).toBe("SessionRefused");
+    expect((last as Error).message).toBe(
+      "The exchange stopped accepting your sign-in. Sign in again to continue.",
+    );
+
+    // A later subscription (a remount) must not start a session or prompt the wallet.
+    const subscribeErrors: Error[] = [];
+    const unsubscribe = rollup.subscribe(
+      WALLET,
+      () => {},
+      (error) => subscribeErrors.push(error),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(builds()).toBe(2);
+    expect(subscribeErrors.map((error) => error.name)).toEqual(["SessionRefused"]);
+    unsubscribe();
+
+    await rollup.signInAgain(WALLET);
+    expect(stopped).toEqual([false, true, false]);
+    expect(builds()).toBe(3);
+  });
+
+  it("tells the hook the moment an automatic 401 replacement puts a new session in place", async () => {
+    const { rollup, builds } = harness([], [null, new Error("401 Missing token query param")]);
+    const seenBuilds: number[] = [];
+    rollup.subscribeSessionGeneration(WALLET, () => seenBuilds.push(builds()));
+    expect(await rollup.accountStatus(WALLET)).toBe("unknown");
+    // One signal, sent when the second session already existed to read from.
+    expect(seenBuilds).toEqual([2]);
+  });
+
+  it("tells the hook when the owner signs in again after the stop", async () => {
+    const refusals = Array.from({ length: 20 }, () => new Error("401 Missing token query param"));
+    const { rollup } = harness([], [null, ...refusals]);
+    for (let tick = 0; tick < 4; tick += 1) await rollup.fetchState(WALLET).catch(() => {});
+    let signals = 0;
+    rollup.subscribeSessionGeneration(WALLET, () => {
+      signals += 1;
+    });
+    await rollup.signInAgain(WALLET);
+    expect(signals).toBe(1);
   });
 
   it("does not retry a network refusal or a stale signer", async () => {
@@ -114,7 +201,7 @@ describe("one sign-in at a time per owner", () => {
 
   it("moves an unread account to open when the check is run again", async () => {
     const { rollup } = harness([new SessionAuthError(new Error("User rejected the request"))]);
-    expect(await rollup.accountStatus(WALLET)).toBe("unknown");
+    expect(await rollup.accountStatus(WALLET)).toBe("declined");
     expect(await rollup.accountStatus(WALLET)).toBe("open");
   });
 

@@ -5,6 +5,7 @@ import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
 import {
   actionsOf,
   attentionOf,
+  awaitsFinality,
   shortSignature,
   type Attention,
   type SeatJudgement,
@@ -28,6 +29,8 @@ export interface RecordsEngine {
   leftover(): Promise<bigint | null>;
   /** Puts what the deposit key holds into the account and says in plain words how it ended. */
   recover(report: (line: string) => void): Promise<string>;
+  /** Closes the records that are complete and only waiting for finality, sending nothing. */
+  settle(): Promise<void>;
 }
 
 const RELOAD_MS = 20_000;
@@ -38,14 +41,23 @@ const OPERATION_LABEL: Record<Attention["operation"], string> = {
   return: "Return to wallet",
 };
 
-const KIND_COPY: Record<Attention["kind"], string> = {
+const KIND_COPY: Record<Exclude<Attention["kind"], "not-landed">, string> = {
   waiting:
     "Not finished. It is still settling on the network. Do not start another transfer until it has.",
-  "not-landed":
-    "It did not go through, and nothing moved by it. You can dismiss this and start again.",
   unknown:
     "We cannot tell what happened to it. Wait, or contact support with the transfer id and the signature. It cannot be dismissed.",
 };
+
+/** What a row says about its state; a deposit that did not go through already took the USDC out of the wallet, so it is not "nothing moved". */
+function kindCopy(item: Attention): string {
+  if (item.stranded && item.kind === "waiting") {
+    return "The exchange did not accept the last step of this deposit. Your USDC left your wallet and is safe, held by this browser's deposit key. The move into the rollup is still settling; do not start another transfer until it has.";
+  }
+  if (item.kind !== "not-landed") return KIND_COPY[item.kind];
+  return item.operation === "deposit"
+    ? "The last step did not go through. Your USDC already left your wallet and is safe in the rollup. Dismiss this, then use the button that appears to finish the deposit."
+    : "It did not go through, and nothing moved by it. You can dismiss this and start again.";
+}
 
 /**
  * The transfers on record in this browser that are not finished, each with
@@ -60,12 +72,18 @@ export function TransferRecords({
   engine,
   refreshKey = 0,
   onBlocked,
+  running = false,
+  accountKnown = true,
 }: {
   owner: string | null;
   engine: RecordsEngine | null;
   refreshKey?: number;
   /** Told whether a new transfer must wait: a record is open, or the records cannot be read. */
   onBlocked?: (blocked: boolean) => void;
+  /** Whether a transfer started from this tab is running now, so its own record offers nothing to press. */
+  running?: boolean;
+  /** Whether it is known if the wallet has an open account: leftover USDC is not put in the account before that. */
+  accountKnown?: boolean;
 }) {
   const [items, setItems] = useState<Attention[]>([]);
   const [unreadable, setUnreadable] = useState(false);
@@ -75,13 +93,22 @@ export function TransferRecords({
   const [waiting, setWaiting] = useState<bigint | null>(null);
   const autoTried = useRef<string | null>(null);
   const autoRecover = useRef<() => void>(() => {});
+  const runningNow = useRef(running);
+  useEffect(() => {
+    runningNow.current = running;
+  }, [running]);
 
   useEffect(() => {
     if (!owner) return;
     let active = true;
     const load = async (lookForLeftover: boolean) => {
       try {
-        const records = await createJournal(indexedDbStorage()).unfinished(owner);
+        const journal = createJournal(indexedDbStorage());
+        let records = await journal.unfinished(owner);
+        if (engine && !runningNow.current && records.some(awaitsFinality)) {
+          await engine.settle().catch(() => {});
+          records = await journal.unfinished(owner);
+        }
         const judged =
           engine && records.some((record) => record.seat?.state === "pending")
             ? await engine.judge(records).catch(() => ({}) as Record<string, SeatJudgement>)
@@ -94,7 +121,7 @@ export function TransferRecords({
         setItems(records.map((record) => attentionOf(record, judged[record.id] ?? null, records)));
         if (records.length > 0) setWaiting(null);
         else if (lookForLeftover) setWaiting(leftover);
-        if (leftover !== null && autoTried.current !== owner) {
+        if (leftover !== null && accountKnown && autoTried.current !== owner) {
           autoTried.current = owner;
           autoRecover.current();
         }
@@ -112,7 +139,7 @@ export function TransferRecords({
       active = false;
       clearInterval(timer);
     };
-  }, [owner, engine, refreshKey, reload, onBlocked]);
+  }, [owner, engine, refreshKey, reload, onBlocked, accountKnown]);
 
   const dismiss = useCallback(async () => {
     if (!engine) return;
@@ -203,7 +230,7 @@ export function TransferRecords({
             <button
               type="button"
               className={`${btnGhost} px-2 text-[11px]`}
-              disabled={busy}
+              disabled={busy || !accountKnown}
               onClick={() => void recover()}
             >
               {busy ? "Working..." : "Put it in my account"}
@@ -217,7 +244,7 @@ export function TransferRecords({
             {OPERATION_LABEL[item.operation]} of {atomsText(BigInt(item.atoms), QUOTE_DECIMALS)}{" "}
             USDC
           </p>
-          <p className="text-dim mt-1 text-[12px]">{KIND_COPY[item.kind]}</p>
+          <p className="text-dim mt-1 text-[12px]">{kindCopy(item)}</p>
           {engine && item.returnable && (
             <p className="text-dim mt-1 text-[12px]">
               If your USDC already moved into the rollup, &quot;Try the deposit again&quot; puts it
@@ -243,8 +270,13 @@ export function TransferRecords({
               Signature <span title={item.signature}>{shortSignature(item.signature)}</span>
             </p>
           )}
+          {running && (
+            <p role="status" className="text-dim mt-1 text-[12px]">
+              This transfer is running in this tab now. Wait for it to finish.
+            </p>
+          )}
           <div className="mt-2 flex flex-wrap gap-2">
-            {actionsOf(item).map((action) =>
+            {actionsOf(item, running).map((action) =>
               action === "copy-signature" ? (
                 <button
                   key={action}

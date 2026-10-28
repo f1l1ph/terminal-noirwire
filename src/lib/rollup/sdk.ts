@@ -132,13 +132,14 @@ export function ownerActionExpiry(rollupClockSeconds: number): bigint {
   return sdkOwnerExpiry(rollupClockSeconds);
 }
 
-/** Which form of `message` the owner signed (raw or off-chain envelope), or null when `signature` is neither. */
+/** Which form of `message` the owner signed (raw, off-chain envelope or the specification's header naming `programId`), or null when `signature` is none of them. */
 export function ownerSignatureForm(
   message: Uint8Array,
   signature: Uint8Array,
   owner: PublicKey,
+  programId: PublicKey,
 ): OwnerMessageForm | null {
-  return sdkVerifyOwnerSignature(message, signature, owner);
+  return sdkVerifyOwnerSignature(message, signature, owner, programId);
 }
 
 /** The rollup's clock in unix seconds, as `connection` serves it. */

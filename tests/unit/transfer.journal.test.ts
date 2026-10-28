@@ -81,24 +81,29 @@ describe("journal", () => {
     await expect(journal.record("me", op({ step: "withdraw" }))).rejects.toThrow("different");
   });
 
-  it("is not safe to rebuild a send journaled as processed after a crash, once the blockhash expired", async () => {
+  it("is not safe to rebuild a send journaled as processed after a crash until the finalized chain is past its blockhash", async () => {
     const { storage } = memoryStorage();
     const journal = createJournal(storage, clock());
     await journal.record("me", op());
     await journal.markSeen("me", "op1", "sigA", "processed");
     const [record] = await journal.unfinished("me");
-    const lagging = {
-      getSignatureStatus: async () => ({ value: null }),
-      getBlockHeight: async () => 1_001,
-    };
-    const verdict = await judgeSend({
-      journal,
-      owner: "me",
-      id: "op1",
-      connection: lagging,
-      send: record.sends[0],
+    const node = (finalized: number) => ({
+      getSignatureStatus: async () => ({ context: { slot: 2_000 }, value: null }),
+      getBlockHeight: async (commitment: "confirmed" | "finalized") =>
+        commitment === "finalized" ? finalized : 1_001,
+      getSlot: async () => 1_500,
     });
-    expect(verdict).toBe("wait");
+    const judged = (finalized: number) =>
+      judgeSend({
+        journal,
+        owner: "me",
+        id: "op1",
+        connection: node(finalized),
+        send: record.sends[0],
+        clock: { sleep: async () => {} },
+      });
+    expect(await judged(1_000)).toBe("wait");
+    expect(await judged(1_001)).toBe("safe");
   });
 
   it("writes a fresh processed sighting back before returning the verdict", async () => {
@@ -111,14 +116,15 @@ describe("journal", () => {
         value: processed ? { err: null, confirmationStatus: "processed" } : null,
       }),
       getBlockHeight: async () => height,
+      getSlot: async () => height,
     });
     const args = { journal, owner: "me", id: "op1", send: record.sends[0] };
     expect(await judgeSend({ ...args, connection: node(500, true) })).toBe("wait");
     const [stored] = await journal.unfinished("me");
     expect(stored.sends[0].status).toBe("processed");
-    expect(
-      await judgeSend({ ...args, send: stored.sends[0], connection: node(1_001, false) }),
-    ).toBe("wait");
+    expect(await judgeSend({ ...args, send: stored.sends[0], connection: node(900, false) })).toBe(
+      "wait",
+    );
   });
 
   it("does not return a verdict when the sighting cannot be written back", async () => {
@@ -138,6 +144,7 @@ describe("journal", () => {
             value: { err: null, confirmationStatus: "processed" },
           }),
           getBlockHeight: async () => 500,
+          getSlot: async () => 500,
         },
       }),
     ).rejects.toThrow("quota exceeded");

@@ -10,7 +10,14 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { PublicKey, type Transaction, type TransactionInstruction } from "@solana/web3.js";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
-import { withComputeBudget } from "./computeBudget";
+import {
+  MAX_MICRO_LAMPORTS_PER_UNIT,
+  MICRO_LAMPORTS_PER_UNIT,
+  MIN_COMPUTE_UNITS,
+  computeUnitLimitOf,
+  computeUnitPriceOf,
+  withComputeBudget,
+} from "./computeBudget";
 import { depositKeyAccount, fundKeyInstructions, moveKeyInstructions } from "./depositKey";
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 
@@ -88,6 +95,29 @@ const sameInstruction = (a: TransactionInstruction, b: TransactionInstruction) =
 
 const sameList = (actual: TransactionInstruction[], expected: TransactionInstruction[]) =>
   actual.length === expected.length && actual.every((ix, at) => sameInstruction(ix, expected[at]));
+
+/**
+ * Whether `actual` is `expected`. The shapes sent to Solana lead with a unit
+ * limit and a unit price that the flow sets from the simulation and the recent
+ * fees, so there the limit may be any figure from the floor up to the expected
+ * allowance and the price any figure from the fixed price up to the cap; every
+ * other instruction must match exactly.
+ */
+function sameBudgeted(actual: TransactionInstruction[], expected: TransactionInstruction[]) {
+  const allowance = computeUnitLimitOf(expected[0]);
+  if (allowance === null) return sameList(actual, expected);
+  const units = computeUnitLimitOf(actual[0]);
+  const price = computeUnitPriceOf(actual[1]);
+  return (
+    units !== null &&
+    units >= MIN_COMPUTE_UNITS &&
+    units <= allowance &&
+    price !== null &&
+    price >= MICRO_LAMPORTS_PER_UNIT &&
+    price <= MAX_MICRO_LAMPORTS_PER_UNIT &&
+    sameList(actual.slice(2), expected.slice(2))
+  );
+}
 
 /** Every transaction the shape can be, built fresh from the pins, the owner and the amount. */
 async function expectedTransactions(
@@ -206,8 +236,8 @@ async function expectedTransactions(
  * before the owner is asked to sign: the owner pays, and the instructions are
  * exactly the ordered list the flow means to send, rebuilt here from the pins,
  * the owner and the requested amount (the shapes sent to Solana lead with
- * exactly the compute unit limit and price of `withComputeBudget`, the rollup
- * ones carry none), down to every account's signer and
+ * a compute unit limit within the allowance of `withComputeBudget` and a unit
+ * price between its fixed price and the cap, the rollup ones carry none), down to every account's signer and
  * writable flags and every byte of data. An extra, missing, reordered or
  * differently flagged instruction, a foreign program, mint or validator, and a
  * different amount all differ from it.
@@ -224,7 +254,7 @@ export async function signableRefusal(
       : "the owner is not the fee payer";
   }
   const candidates = await expectedTransactions(context, shape, shuttleIdOf(transaction));
-  return candidates.some((expected) => sameList(transaction.instructions, expected))
+  return candidates.some((expected) => sameBudgeted(transaction.instructions, expected))
     ? null
     : `the instructions are not the expected ${shape.kind} transaction`;
 }

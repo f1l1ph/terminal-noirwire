@@ -17,6 +17,10 @@ import {
 } from "@/lib/trading/limitLine";
 import { needsAcknowledgement, recordAcknowledgement } from "@/lib/trading/realMoneyAck";
 import {
+  limitsGate,
+  limitsGateText,
+  UNREADABLE_EXPOSURE_ORDERS_NOTICE,
+  type LimitsState,
   offersTestFunds,
   placeLabel,
   sideWord,
@@ -25,7 +29,8 @@ import {
   walletlessAction,
   type TradeGate,
 } from "@/lib/trading/uiRules";
-import { fromFixedPoint, toFixedPoint } from "@/lib/trading/decimal";
+import { fromFixedPoint, toFixedPoint, withoutSign } from "@/lib/trading/decimal";
+import { marketOrderBound } from "@/lib/trading/marketBound";
 import { displayOrderCost, estimateOrderCost } from "@/lib/trading/risk";
 import {
   orderFunds,
@@ -49,7 +54,12 @@ import type { PlacedOrderOutcome } from "@/lib/trading/useTrading";
 import type { UnknownHold } from "@/lib/rollup/accountMemory";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
 import { userMessageLine } from "@/lib/userMessage";
-import { describeFieldError, markMovedMaterially, validateOrder } from "@/lib/trading/validation";
+import {
+  describeFieldError,
+  markMovedMaterially,
+  priceOutsideBand,
+  validateOrder,
+} from "@/lib/trading/validation";
 import { needsSpotTransfer } from "@/lib/trading/spotTransfer";
 import {
   availableLabel,
@@ -59,6 +69,7 @@ import {
 import type {
   Balance,
   FundOutcome,
+  MarketLimits,
   NewOrderInput,
   OpenOrder,
   Position,
@@ -78,6 +89,9 @@ import {
   input,
   rangeBrand,
 } from "@/components/ui/styles";
+
+export const BOUND_MOVED_NOTE =
+  "The market moved, so the worst price changed. Check the new price before you confirm.";
 
 export const CLOSING_ONLY_NOTICE =
   "Price service unreachable. Only orders that close a position can be placed until it is back.";
@@ -154,6 +168,9 @@ export function OrderEntry({
   setup,
   gate,
   makersListed,
+  limits,
+  limitsState = "ready",
+  exposureUnreadable = false,
   onLimitLineChange,
 }: {
   /** Told the draft limit price and side while the form is a limit order with a valid price, null otherwise; the chart draws it. */
@@ -223,6 +240,12 @@ export function OrderEntry({
   gate: TradeGate | null;
   /** This market lets only listed makers rest orders: a Limit is sent as immediate-or-cancel. */
   makersListed: boolean;
+  /** This market's ratios, price band and minimums as its account states them; undefined until the session has read them, when the estimates assume defaults and the band and minimum checks wait for the program. */
+  limits?: MarketLimits;
+  /** Whether the read of those limits is still running or has failed. On mainnet no order is reviewed or sent without them. */
+  limitsState?: LimitsState;
+  /** The account holds exposure in a market this terminal cannot read: orders that could add risk are off. */
+  exposureUnreadable?: boolean;
 }) {
   const mainnet = isMainnetBuild();
   const testCopy = mainnet ? null : TEST_ONLY_COPY;
@@ -253,6 +276,7 @@ export function OrderEntry({
   const [openAfterPrefill, setOpenAfterPrefill] = useState(false);
   const [showAck, setShowAck] = useState(false);
   const [ackedBy, setAckedBy] = useState<string | null>(null);
+  const [boundNote, setBoundNote] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const amountInputRef = useRef<HTMLInputElement>(null);
   const priceInputRef = useRef<HTMLInputElement>(null);
@@ -288,8 +312,18 @@ export function OrderEntry({
     const base = Number(mark.price);
     if (!Number.isFinite(base)) return "";
     if (orderType === "market") {
-      const slippage = side === "buy" ? 1.01 : 0.99;
-      return (base * slippage).toFixed(priceDecimals);
+      try {
+        return marketOrderBound({
+          markPrice: mark.price,
+          side,
+          tick: market.tickSize,
+          priceDecimals,
+          bandBps: limits?.bandBps,
+          reduceOnly: isPerp && reduceOnly,
+        });
+      } catch {
+        return "";
+      }
     }
     // Limit: default to a plausible resting price on the passive side of
     // the mark (a buy below it, a sell above it), tick-aligned, so the
@@ -300,12 +334,19 @@ export function OrderEntry({
     const tick = Number(market.tickSize);
     const aligned = tick > 0 ? Math.round(passive / tick) * tick : passive;
     return aligned.toFixed(priceDecimals);
-  }, [orderType, mark, side, market, priceDecimals]);
+  }, [orderType, mark, side, market, priceDecimals, limits, isPerp, reduceOnly]);
   const priceText = priceOverride ?? defaultBoundPrice;
   const tickSize = market ? Number(market.tickSize) : NaN;
   const markNumber = mark ? Number(mark.price) : NaN;
-  const slider = tickSlider(markNumber, tickSize);
-  const limitLine = limitLineFor({ orderType, priceText, side });
+  const crossingBand = limits ? { side, bandBps: limits.bandBps } : undefined;
+  const slider = tickSlider(markNumber, tickSize, crossingBand);
+  const limitLine = limitLineFor({
+    orderType,
+    priceText,
+    side,
+    mark: markNumber,
+    bandBps: limits?.bandBps,
+  });
   const linePrice = limitLine?.price ?? null;
   const lineSide = limitLine?.side ?? null;
   useEffect(() => {
@@ -380,6 +421,8 @@ export function OrderEntry({
       maxLeverage: market.maxLeverage,
       boundPrice: priceText || referencePrice,
       refPrice: referencePrice,
+      takerFeeBps: limits?.takerFeeBps,
+      imBps: limits?.imBps,
     });
   }, [
     market,
@@ -389,6 +432,7 @@ export function OrderEntry({
     availableQuote,
     effectiveLeverage,
     priceText,
+    limits,
   ]);
 
   const sentAsIoc = limitSentAsIoc(orderType, makersListed, isPerp && reduceOnly);
@@ -413,11 +457,13 @@ export function OrderEntry({
         price: referencePrice,
         leverage: isPerp ? market.maxLeverage : 1,
         maxLeverage: market.maxLeverage,
+        takerFeeBps: limits?.takerFeeBps,
+        maintenanceBps: limits?.mmBps,
       });
     } catch {
       return null;
     }
-  }, [market, referencePrice, quantityText, side, isPerp]);
+  }, [market, referencePrice, quantityText, side, isPerp, limits]);
 
   const estimateDisplay = market && estimate ? displayOrderCost(estimate, priceDecimals) : null;
 
@@ -449,6 +495,8 @@ export function OrderEntry({
         availableBase,
         exposure,
         reduceOnly: isPerp && reduceOnly,
+        imBps: limits?.imBps,
+        takerFeeBps: limits?.takerFeeBps,
       });
     } catch {
       return null;
@@ -464,6 +512,7 @@ export function OrderEntry({
     exposure,
     isPerp,
     reduceOnly,
+    limits,
   ]);
 
   const staleBlock = staleMarkBlocks({
@@ -480,7 +529,11 @@ export function OrderEntry({
     reduceOnlyGrows: funds?.reduceOnlyGrows,
   });
   const validation =
-    market && draft ? validateOrder(draft, market, mark, now, staleMarkAllowed) : null;
+    market && draft ? validateOrder(draft, market, mark, now, staleMarkAllowed, limits) : null;
+  // The names a field message uses: the balance names this ticket shows, not the market list's.
+  const fieldMarket = market
+    ? { ...market, base: baseName, quote: quoteUnit || market.quote }
+    : undefined;
 
   const leftAvailable =
     funds && !funds.shortfall && !isSpotSell
@@ -527,6 +580,8 @@ export function OrderEntry({
           entryPrice: referencePrice,
           collateral: availableQuote,
           priceDecimals,
+          takerFeeBps: limits?.takerFeeBps,
+          maintenanceBps: limits?.mmBps,
         })
       : null;
 
@@ -546,10 +601,15 @@ export function OrderEntry({
     amountValue > (isSpotSell ? fixedPointOrZero(maxAmountText) : fixedPointOrZero(availableQuote));
   const amountTooSmall =
     quantityOverride === null && amountValue !== null && derivedQuantity === "";
+  const minimumSizeText =
+    limits && fixedPointOrZero(limits.minSize) > fixedPointOrZero(market?.lotSize ?? "0")
+      ? limits.minSize.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")
+      : (market?.lotSize ?? "");
 
   const openSize = Number(position?.size ?? 0);
   const closesOpenPosition =
     isPerp && ((side === "sell" && openSize > 0) || (side === "buy" && openSize < 0));
+  const limitsBlock = limitsGate(mainnet, limits, limitsState);
   const availableBlocks = unknownCollateralBlocks({
     availableUnknown,
     isPerp,
@@ -588,6 +648,7 @@ export function OrderEntry({
     !gate &&
     !accountUnknown &&
     !availableBlocks &&
+    !limitsBlock &&
     !noFunds &&
     !!market &&
     !!validation?.valid &&
@@ -604,11 +665,18 @@ export function OrderEntry({
     if (gate) return tradeGateLabel(gate);
     if (unknownHold) return "An earlier order may have reached the venue. Check it first.";
     if (accountUnknown) return "Your account could not be read, so this order cannot be placed.";
-    if (availableBlocks) return "Available collateral is unavailable until the price updates.";
-    if (validation?.errors.quantity) {
-      return describeFieldError(validation.errors.quantity, { ...market, base: baseName });
+    if (limitsBlock) return limitsGateText(limitsBlock);
+    if (availableBlocks) {
+      return exposureUnreadable
+        ? UNREADABLE_EXPOSURE_ORDERS_NOTICE
+        : "Available collateral is unavailable until the price updates.";
     }
-    if (validation?.errors.price) return describeFieldError(validation.errors.price, market);
+    if (validation?.errors.quantity) {
+      return describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits);
+    }
+    if (validation?.errors.price) {
+      return describeFieldError(validation.errors.price, fieldMarket ?? market, limits);
+    }
     if (staleBlock) return "Market data is too old. Wait for a fresh mark.";
     if (closingOnlyBlock) return CLOSING_ONLY_NOTICE;
     if (amountOverAvailable) return "Your amount is more than your available balance.";
@@ -620,7 +688,18 @@ export function OrderEntry({
   /** The one line that says why the order button is off, only while the form itself is what is missing. */
   const reason: { text: string; tone: ReasonTone } | null = (() => {
     if (!market || !validation) return null;
-    if (!hasWallet || gate || accountUnknown || availableBlocks) return null;
+    if (!hasWallet || gate || accountUnknown) return null;
+    if (limitsBlock) {
+      return {
+        text: limitsGateText(limitsBlock),
+        tone: limitsBlock === "failed" ? "error" : "neutral",
+      };
+    }
+    if (availableBlocks) {
+      return exposureUnreadable
+        ? { text: UNREADABLE_EXPOSURE_ORDERS_NOTICE, tone: "warning" }
+        : null;
+    }
     if (unknownHold || placeOrderPending || needsTransfer) return null;
     if (noFunds) {
       if (!testCopy) return { text: `Deposit ${quoteUnit || "funds"} to trade`, tone: "neutral" };
@@ -639,7 +718,7 @@ export function OrderEntry({
     if (quantityOverride !== null) {
       if (validation.errors.quantity) {
         return {
-          text: describeFieldError(validation.errors.quantity, { ...market, base: baseName }),
+          text: describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits),
           tone: "error",
         };
       }
@@ -656,12 +735,20 @@ export function OrderEntry({
       };
     } else if (amountTooSmall) {
       return {
-        text: `Too small to trade. The minimum is ${market.lotSize} ${baseName}`,
+        text: `Too small to trade. The minimum is ${minimumSizeText} ${baseName}`,
+        tone: "error",
+      };
+    } else if (validation.errors.quantity) {
+      return {
+        text: describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits),
         tone: "error",
       };
     }
     if (validation.errors.price) {
-      return { text: describeFieldError(validation.errors.price, market), tone: "error" };
+      return {
+        text: describeFieldError(validation.errors.price, fieldMarket ?? market, limits),
+        tone: "error",
+      };
     }
     if (shortfall) {
       return {
@@ -760,10 +847,46 @@ export function OrderEntry({
     return null;
   })();
 
+  // A close's worst price sits at the edge of the crossing band around the
+  // mark it was built from. It is never changed under the owner: the reviewed
+  // price is the one that is sent. If the mark has moved so that price is now
+  // outside the band, nothing is sent and the review opens again with the
+  // price built from the mark as it is now.
+  const boundLeftBand =
+    showConfirm &&
+    frozen !== null &&
+    limits !== undefined &&
+    mark !== null &&
+    frozen.draft.type === "market" &&
+    frozen.draft.reduceOnly === true &&
+    priceOutsideBand(frozen.draft.side, frozen.draft.price, mark.price, limits.bandBps);
+  useEffect(() => {
+    if (!boundLeftBand) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setShowConfirm(false);
+    setPriceOverride(null);
+    setBoundNote(BOUND_MOVED_NOTE);
+    setOpenAfterPrefill(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [boundLeftBand]);
+
+  // The market limits were dropped (a new session is being read): a review
+  // built on the old ones no longer stands, so it closes at once.
+  const reviewLostLimits = showConfirm && limitsBlock !== null;
+  useEffect(() => {
+    if (!reviewLostLimits) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setShowConfirm(false);
+    setBoundNote(null);
+    if (frozen && !frozen.priceTyped) setPriceOverride(null);
+    setSubmitError("The market settings changed. Review the order again once they load.");
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [reviewLostLimits, frozen]);
+
   async function runSubmit(order: FrozenOrder) {
     if (!market || submittingRef.current) return;
     // The full check again, on the frozen order and the mark as it is now.
-    const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed);
+    const recheck = validateOrder(order.draft, market, mark, now, staleMarkAllowed, limits);
     const marginExpired = unknownCollateralBlocks({
       availableUnknown: isPerp && isAvailableUnknown(collateral, Math.max(now, Date.now())),
       isPerp,
@@ -861,6 +984,7 @@ export function OrderEntry({
 
   function closeReview() {
     setShowConfirm(false);
+    setBoundNote(null);
     if (frozen && !frozen.priceTyped) setPriceOverride(null);
   }
 
@@ -878,7 +1002,7 @@ export function OrderEntry({
     }
     const open = Number(position?.size ?? 0);
     const closes = (side === "buy" && open < 0) || (side === "sell" && open > 0);
-    setQuantityOverride(closes ? String(Math.abs(open)) : "");
+    setQuantityOverride(closes && position ? withoutSign(position.size) : "");
   }
 
   if (!market) {
@@ -918,8 +1042,13 @@ export function OrderEntry({
     primaryLabel = accountError ? "Account unavailable" : "Loading account…";
     primaryClass = btnGhost;
     primaryDisabled = true;
+  } else if (limitsBlock) {
+    primaryLabel =
+      limitsBlock === "failed" ? "Market settings unavailable" : "Loading market settings…";
+    primaryClass = btnGhost;
+    primaryDisabled = true;
   } else if (availableBlocks) {
-    primaryLabel = "Waiting for price";
+    primaryLabel = exposureUnreadable ? "Orders paused" : "Waiting for price";
     primaryClass = btnGhost;
     primaryDisabled = true;
   } else if (unknownHold) {
@@ -1285,6 +1414,7 @@ export function OrderEntry({
           baseName={baseName}
           quoteUnit={quoteUnit}
           reviewInvalid={reviewInvalid}
+          note={boundNote}
           blocker={confirmBlocker}
           canSubmit={canSubmit}
           submitLabel={submitLabel}

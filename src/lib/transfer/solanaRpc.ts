@@ -23,7 +23,14 @@ export interface SolanaRpc extends SolanaReader {
   ): Promise<string>;
   simulateTransaction(
     transaction: Transaction,
-  ): Promise<{ value: { err: unknown; logs: string[] | null } }>;
+  ): Promise<{ value: { err: unknown; logs: string[] | null; unitsConsumed?: number } }>;
+  isBlockhashValid(
+    blockhash: string,
+    config?: { commitment?: "confirmed" },
+  ): Promise<{ value: boolean }>;
+  getRecentPrioritizationFees(config?: {
+    lockedWritableAccounts?: PublicKey[];
+  }): Promise<Array<{ slot: number; prioritizationFee: number }>>;
 }
 
 export interface Clock {
@@ -67,8 +74,36 @@ export async function simulationError(
   rpc: Pick<SolanaRpc, "simulateTransaction">,
   transaction: Transaction,
 ): Promise<string | null> {
+  return (await simulation(rpc, transaction)).error;
+}
+
+/** `simulationError` with the compute units the run consumed, when the node says. */
+export async function simulation(
+  rpc: Pick<SolanaRpc, "simulateTransaction">,
+  transaction: Transaction,
+): Promise<{ error: string | null; unitsConsumed: number | undefined }> {
   const { value } = await rpc.simulateTransaction(transaction);
-  return value.err === null || value.err === undefined ? null : JSON.stringify(value.err);
+  return {
+    error: value.err === null || value.err === undefined ? null : JSON.stringify(value.err),
+    unitsConsumed: value.unitsConsumed,
+  };
+}
+
+/**
+ * The priority fees, in micro-lamports per unit, that recent slots charged
+ * transactions writing `accounts`; undefined when the node cannot say, which
+ * the caller takes as no information, never as a free network.
+ */
+export async function recentPrioritizationFees(
+  rpc: Pick<SolanaRpc, "getRecentPrioritizationFees">,
+  accounts: PublicKey[],
+): Promise<number[] | undefined> {
+  try {
+    const recent = await rpc.getRecentPrioritizationFees({ lockedWritableAccounts: accounts });
+    return recent.map((entry) => entry.prioritizationFee);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The program's error number in a failed transaction's error text, or null. */
@@ -135,6 +170,10 @@ export async function confirmSignature(
   let lastSent = started;
   let seen: SeenStatus | undefined;
   while (clock.now() - started < timeoutMs) {
+    // The height is read before the status: a transaction that lands between the
+    // two reads is then seen by the status read, never judged expired.
+    const height =
+      lastValidBlockHeight === undefined ? 0 : await rpc.getBlockHeight("confirmed").catch(() => 0);
     const status = await rpc
       .getSignatureStatuses([signature], { searchTransactionHistory: false })
       .then((reply) => reply.value[0] ?? null)
@@ -147,11 +186,12 @@ export async function confirmSignature(
           : { state: "confirmed", seen };
       }
     } else if (status === null && lastValidBlockHeight !== undefined) {
-      const height = await rpc.getBlockHeight("confirmed").catch(() => 0);
       if (height > lastValidBlockHeight) return { state: "expired", seen };
     }
     if (rebroadcast && !seen && clock.now() - lastSent >= REBROADCAST_MS) {
-      await rpc.sendRawTransaction(rebroadcast, { skipPreflight: true }).catch(() => null);
+      await rpc
+        .sendRawTransaction(rebroadcast, { skipPreflight: true, preflightCommitment: "confirmed" })
+        .catch(() => null);
       lastSent = clock.now();
     }
     await clock.sleep(STATUS_POLL_MS);

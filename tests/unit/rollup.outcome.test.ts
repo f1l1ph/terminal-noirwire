@@ -108,6 +108,21 @@ describe("placedToResult: outcome status mapping", () => {
     );
   });
 
+  it("says the price moved, not that the maker is refreshing, when a close fills nothing", () => {
+    const placed = placedResult({
+      cancelled: 1_000n,
+      status: RESULT_STATUS_CODE.remainderCancelled,
+    });
+    const mapped = placedToResult(placed, UNITS, 6, undefined, {
+      side: "sell",
+      reduceOnly: true,
+    });
+    expect(mapped.reason).toBe(
+      "The price moved away from your limit before the order reached the exchange, so nothing filled and nothing was charged. Close again at the current price.",
+    );
+    expect(mapped.reason).not.toMatch(/market maker/);
+  });
+
   it("names the missing sellers when a buy fills nothing", () => {
     const placed = placedResult({
       cancelled: 1_000n,
@@ -163,7 +178,10 @@ describe("placedToResult: outcome status mapping", () => {
 
   it.each([
     [77, /too far from the market, so trading is paused for safety/],
-    [37, /too far from the market price\. Try again in a moment, or set a price nearer the market/],
+    [
+      37,
+      /too far from the mark price when it reached the exchange\. Set a price nearer the market/,
+    ],
     [24, /fall below the margin/],
     [43, /only shrink your position/],
     [48, /position limit/],
@@ -250,7 +268,7 @@ describe("thrownToResult: OrderInvalid and TransactionFailed map to the rejected
     [6077, /paused for safety/],
     [6048, /position limit/],
     [6043, /only shrink your position/],
-    [6037, /too far from the market price/],
+    [6037, /too far from the mark price/],
     [6024, /fall below the margin/],
     [6090, /blocked/],
     [6091, /listed makers/],

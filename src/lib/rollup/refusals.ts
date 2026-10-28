@@ -8,6 +8,8 @@ export interface RefusalContext {
   isPerp?: boolean;
   /** The order's own side, which names who was missing when nothing matched. */
   side?: Side;
+  /** Whether the order only closes or reduces a position, so nothing filling means the price moved, not that the book was empty. */
+  reduceOnly?: boolean;
 }
 
 /**
@@ -153,7 +155,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.notionalTooSmall]:
     "This order is worth less than the market's minimum. Raise the size or the price. No fill occurred.",
   [PROGRAM_ERROR.priceOutsideBand]:
-    "This price is too far from the market price. Try again in a moment, or set a price nearer the market. To close a position, use a market order. No fill occurred.",
+    "This price was too far from the mark price when it reached the exchange. Set a price nearer the market and try again. No fill occurred.",
   [PROGRAM_ERROR.stalePrice]: stalePriceReason,
   [PROGRAM_ERROR.priceUnavailable]:
     "This market has no price yet, so it takes no orders. Try again in a minute. No fill occurred.",

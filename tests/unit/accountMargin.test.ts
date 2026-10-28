@@ -68,3 +68,14 @@ describe("summarizeMargin: unrealised P&L from the signed net quote", () => {
     });
   });
 });
+
+describe("summarizeMargin: the market account's own initial margin", () => {
+  it("reserves at the chain's ratio instead of the one implied by max leverage", () => {
+    const resting = { ...exposure(0n, 0n, "100"), openBidLots: 10n };
+    const implied = summarizeMargin(1000n * USDC, [resting]);
+    const chain = summarizeMargin(1000n * USDC, [{ ...resting, imBps: 2500 }]);
+    if (implied.kind !== "known" || chain.kind !== "known") throw new Error("expected known");
+    expect(implied.reserved).toBe(100n * USDC);
+    expect(chain.reserved).toBe(250n * USDC);
+  });
+});

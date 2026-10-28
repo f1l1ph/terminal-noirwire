@@ -191,6 +191,7 @@ describe("no path offers a resend", () => {
         resumable: true,
         returnable: true,
         keyed: false,
+        stranded: false,
       });
       for (const action of actions) {
         expect(["copy-signature", "dismiss", "resume", "return"]).toContain(action);
@@ -221,6 +222,7 @@ describe("no path offers a resend", () => {
         "depositKeyStore",
         "dismiss",
         "journal",
+        "keyedWithdrawal",
         "leftover",
         "mainnetEnv",
         "operation",

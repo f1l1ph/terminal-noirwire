@@ -11,12 +11,15 @@ import {
   type OpenRefusal,
 } from "../rollup/openClient";
 import { messageDeclined, OwnerActionRefused, signOwnerAction } from "../rollup/ownerMessages";
+import { isWalletDecline } from "../wallet/declined";
+import { userMessage } from "../userMessage";
 import { orderSeedPersisted } from "../rollup/orderSeedStore";
 import type { OrderKeyStatus } from "../rollup/orderKeySetup";
 import { redactToken, scrubError } from "../rollup/redact";
-import { TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
+import { clearSignInToken, TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
 import {
   fetchDeployment,
+  forgetDeployment,
   quoteSymbolOf,
   usesOwnerMessages,
   type DeploymentOverrides,
@@ -48,6 +51,7 @@ import {
 import { trackSecret, untrackSecret } from "../rollup/secretStore";
 import {
   buildRealSession,
+  looksUnauthorized,
   retriesSignIn,
   SessionAuthError,
   trustedProgramId,
@@ -81,6 +85,7 @@ import { priceDecimalsOf, sizeDecimalsOf } from "../market-data/precision";
 import { isStale, STALE_MARK_MS } from "../market-data/selectors";
 import { summarizeMargin, type PerpExposure } from "./accountMargin";
 import { wireOrderType } from "./orderType";
+import { priceOutsideBand } from "./validation";
 import type {
   AccountReadOutcome,
   AccountStatus,
@@ -91,6 +96,7 @@ import type {
   MarketSettingsLookup,
   NewOrderInput,
   OpenAccountOutcome,
+  MarketLimits,
   OpenOrder,
   OrderKeyState,
   OwnerAuth,
@@ -104,6 +110,11 @@ import type {
   WalletIdentity,
 } from "./types";
 import { OrderOutcomeUnknownError } from "./unknownOutcome";
+import {
+  NotDispatched,
+  hookKeyedWithdrawals,
+  type DispatchCount,
+} from "../transfer/keyedWithdrawal";
 
 /**
  * One unsigned read, with a real three-way outcome: a thrown request
@@ -151,8 +162,22 @@ const DEFAULT_EXPIRY_SECONDS = 5;
  * a pushed result while a read is in flight, a full round trip on devnet.
  */
 const RESULT_PUSH_WAIT_MS = 1_500;
+/** Returned when the session picked for a send carries chain limits the reviewed order no longer meets. */
+const SETTINGS_CHANGED_RESULT: PlaceOrderResult = {
+  orderId: "",
+  tag: "",
+  status: "rejected",
+  filledSize: "0",
+  remainingSize: "0",
+  reason: "The market settings changed. Review the order again.",
+};
 /** Shown when the package gave up before it sent anything: no hold, the form is free to try again. */
 const NOT_SENT_REASON = "Nothing was sent. The order could not be prepared just now. Try again.";
+const OPEN_MODE_CHANGED_REASON =
+  "Opening accounts changed while this page was open. Reload the page and try again.";
+const OPEN_MODE_RETRY_REASON =
+  "Opening accounts changed while this page was open. Nothing was opened. Try again.";
+const BAD_REQUEST = 400;
 
 export interface RollupTradingClientOptions {
   simUrl: string;
@@ -291,6 +316,12 @@ export class RollupTradingClient implements TradingClient {
     deps: RollupSessionDeps,
   ) => Promise<RollupSession>;
   private sessions = new Map<string, OpenSession>();
+  /** Sessions started in place of one whose token the rollup refused; a refusal of their own token stops automatic sign-in. */
+  private replacements = new WeakSet<OpenSession>();
+  /** Wallets whose automatic sign-in has stopped until the owner signs in again. */
+  private refused = new Set<string>();
+  private generationListeners = new Map<string, Set<() => void>>();
+  private refusedListeners = new Map<string, Set<(stopped: boolean) => void>>();
   private orderKeyListeners = new Map<string, Set<(state: OrderKeyState) => void>>();
   private lastOrderKeys = new Map<string, OrderKeyState>();
   private listeners = new Map<string, Set<StateListener>>();
@@ -344,6 +375,7 @@ export class RollupTradingClient implements TradingClient {
 
   /** The wallet's session, or a new one when the signer it was built for is no longer the wallet's. */
   private ensureOpen(wallet: WalletIdentity): OpenSession {
+    if (this.refused.has(wallet.address)) throw new SessionRefusedError();
     const existing = this.sessions.get(wallet.address);
     if (existing && existing.signer !== wallet.signer) return this.replaceSession(wallet, existing);
     if (existing) {
@@ -353,7 +385,7 @@ export class RollupTradingClient implements TradingClient {
     return this.openSession(wallet);
   }
 
-  private ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
+  private async ensureSession(wallet: WalletIdentity): Promise<RollupSession> {
     return this.ensureOpen(wallet).session;
   }
 
@@ -368,7 +400,20 @@ export class RollupTradingClient implements TradingClient {
     if (current && current !== stale) return current;
     const next = this.openSession(wallet);
     if (stale) closeSession(stale);
+    // The new session is already the wallet's current one, so anything read
+    // because of this signal comes from it.
+    for (const listener of this.generationListeners.get(wallet.address) ?? []) listener();
     return next;
+  }
+
+  /** Tells `listener` each time this wallet's session is replaced by a new one. */
+  subscribeSessionGeneration(wallet: WalletIdentity, listener: () => void): () => void {
+    const listeners = this.generationListeners.get(wallet.address) ?? new Set();
+    this.generationListeners.set(wallet.address, listeners);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   private refreshSession(wallet: WalletIdentity): Promise<RollupSession> {
@@ -499,6 +544,7 @@ export class RollupTradingClient implements TradingClient {
     wallet: WalletIdentity,
     fn: (session: RollupSession) => Promise<T>,
   ): Promise<T> {
+    if (this.refused.has(wallet.address)) throw new SessionRefusedError();
     let open = this.ensureOpen(wallet);
     let session: RollupSession;
     try {
@@ -512,7 +558,64 @@ export class RollupTradingClient implements TradingClient {
       open = this.replaceSession(wallet, open);
       session = await open.session;
     }
-    return fn(session);
+    try {
+      const result = await fn(session);
+      this.replacements.delete(open);
+      return result;
+    } catch (error) {
+      if (looksUnauthorized(error)) this.recoverRefusedToken(wallet, open);
+      throw error;
+    }
+  }
+
+  /**
+   * The rollup no longer accepts this session's token. The first time, forget
+   * the token and start a new session, so the next call signs in again instead
+   * of failing until a reload. If that new session's freshly signed token is
+   * refused too, signing in again on its own would only prompt the owner again
+   * and again: stop, and leave it to the owner (`signInAgain`).
+   */
+  private recoverRefusedToken(wallet: WalletIdentity, failed: OpenSession): void {
+    const address = wallet.address;
+    if (this.sessions.get(address) !== failed) return;
+    clearSignInToken(this.storage, address);
+    if (this.replacements.has(failed)) {
+      this.sessions.delete(address);
+      closeSession(failed);
+      this.refused.add(address);
+      this.emitRefused(address);
+      return;
+    }
+    this.replacements.add(this.replaceSession(wallet, failed));
+  }
+
+  private emitRefused(address: string): void {
+    const stopped = this.refused.has(address);
+    for (const listener of this.refusedListeners.get(address) ?? []) listener(stopped);
+  }
+
+  /** Tells `listener` whether automatic sign-in has stopped for this wallet, now and at every change. */
+  subscribeSessionStopped(
+    wallet: WalletIdentity,
+    listener: (stopped: boolean) => void,
+  ): () => void {
+    const listeners = this.refusedListeners.get(wallet.address) ?? new Set();
+    this.refusedListeners.set(wallet.address, listeners);
+    listeners.add(listener);
+    listener(this.refused.has(wallet.address));
+    return () => {
+      listeners.delete(listener);
+    };
+  }
+
+  /** The owner's own action after automatic sign-in stopped: signs in once more, and stops again if that token is refused too. */
+  async signInAgain(wallet: WalletIdentity): Promise<void> {
+    this.refused.delete(wallet.address);
+    clearSignInToken(this.storage, wallet.address);
+    this.emitRefused(wallet.address);
+    const open = this.replaceSession(wallet, this.sessions.get(wallet.address));
+    this.replacements.add(open);
+    await open.session.catch(() => {});
   }
 
   private bindings(session: RollupSession): Map<string, MarketBinding> {
@@ -525,6 +628,7 @@ export class RollupTradingClient implements TradingClient {
       const view = await session.client.view();
       return view ? "open" : "absent";
     } catch (error) {
+      if (looksUnauthorized(error)) throw error;
       const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
       return notReadable ? "absent" : "unknown";
     }
@@ -553,8 +657,48 @@ export class RollupTradingClient implements TradingClient {
    * the client stopped waiting for is settled by the view, and one that an
    * owner key replacement made unprovable is reported as such, never as done.
    */
-  async withdrawByKey(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal> {
-    return this.withSession(wallet, async (session): Promise<KeyWithdrawal> => {
+  async withdrawByKey(
+    wallet: WalletIdentity,
+    atoms: bigint,
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal> {
+    const count: DispatchCount = { dispatched: 0 };
+    try {
+      return await this.withSession(wallet, (session) =>
+        this.withdrawByKeyIn(session, atoms, onSigned, count),
+      );
+    } catch (error) {
+      throw onSigned && count.dispatched === 0 ? new NotDispatched(error) : error;
+    }
+  }
+
+  /**
+   * The withdrawal in this one session. With `onSigned`, the session's own
+   * sending connection (the one its trading client was built on, so the SDK
+   * sends through nothing else) hands each signed withdrawal over before it is
+   * dispatched, for as long as the call runs and no longer; the session cannot
+   * change in between, and the connection is given back in a `finally` that
+   * awaits nothing. A connection that cannot be hooked is not used.
+   */
+  private async withdrawByKeyIn(
+    session: RollupSession,
+    atoms: bigint,
+    onSigned: ((raw: Uint8Array) => Promise<void>) | undefined,
+    count: DispatchCount,
+  ): Promise<KeyWithdrawal> {
+    let restore = () => {};
+    if (onSigned) {
+      if (typeof session.reader?.sendRawTransaction !== "function") {
+        throw new Error("This session's connection cannot be watched, so it cannot withdraw");
+      }
+      restore = hookKeyedWithdrawals(
+        session.reader,
+        new PublicKey(session.deployment.programId),
+        onSigned,
+        count,
+      );
+    }
+    try {
       try {
         if (!session.client.withdrawByKey) {
           throw new Error("This session cannot withdraw by order key");
@@ -564,6 +708,7 @@ export class RollupTradingClient implements TradingClient {
         if (error instanceof TransactionFailed) return { kind: "refused", code: error.code };
         if (error instanceof WithdrawalUnknown) {
           const settled = await error.settled;
+          if (onSigned && count.dispatched === 0) throw new NotDispatched(error);
           if (settled === null) return { kind: "didNotRun" };
           if ("undetermined" in settled) return { kind: "undetermined" };
         } else if (error instanceof Error && /transaction too large/i.test(error.message)) {
@@ -572,16 +717,22 @@ export class RollupTradingClient implements TradingClient {
           throw error;
         }
       }
-      session.saveKeyCheckpoint();
-      return { kind: "withdrawn" };
-    });
+    } finally {
+      restore();
+    }
+    session.saveKeyCheckpoint();
+    return { kind: "withdrawn" };
   }
 
-  async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
+  async accountStatus(
+    wallet: WalletIdentity,
+    options: { fresh?: boolean } = {},
+  ): Promise<AccountStatus> {
+    if (options.fresh) return this.settledStatus(wallet);
     try {
       return await this.withSession(wallet, (session) => this.viewStatus(session));
-    } catch {
-      return "unknown";
+    } catch (error) {
+      return signInDeclined(error) ? "declined" : "unknown";
     }
   }
 
@@ -611,12 +762,36 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
+  async marketLimits(wallet: WalletIdentity): Promise<ReadonlyMap<string, MarketLimits>> {
+    return this.withSession(wallet, async (session) => {
+      const limits = new Map<string, MarketLimits>();
+      for (const [symbol, binding] of this.bindings(session)) {
+        const chain = session.limits?.get(binding.numericId);
+        if (!chain) continue;
+        limits.set(symbol, {
+          imBps: chain.imBps,
+          mmBps: chain.mmBps,
+          takerFeeBps: chain.takerFeeBps,
+          bandBps: chain.bandBps,
+          minSize: lotsToSize(binding.units, chain.minSize),
+          minNotional: quoteAtomsToAmount(chain.minNotional),
+        });
+      }
+      return limits;
+    });
+  }
+
+  async sessionDeployment(wallet: WalletIdentity): Promise<PublicDeployment> {
+    return this.withSession(wallet, async (session) => session.deployment);
+  }
+
   /** The view as a fresh session reads it, which sees an account opened after the earlier session was built. */
   private async settledStatus(wallet: WalletIdentity): Promise<AccountStatus> {
+    if (this.refused.has(wallet.address)) return "unknown";
     try {
       return await this.viewStatus(await this.refreshSession(wallet));
-    } catch {
-      return "unknown";
+    } catch (error) {
+      return signInDeclined(error) ? "declined" : "unknown";
     }
   }
 
@@ -639,9 +814,7 @@ export class RollupTradingClient implements TradingClient {
       const reason =
         error instanceof SignedTransactionRefused || error instanceof OwnerActionRefused
           ? error.reason
-          : error instanceof Error
-            ? error.message
-            : "the account could not be opened";
+          : userMessage(error, { nothingSent: true }).text;
       return { kind: "notSent", reason: redactToken(reason) };
     }
   }
@@ -656,17 +829,20 @@ export class RollupTradingClient implements TradingClient {
   private async openThroughGate(
     wallet: WalletIdentity,
     invite?: string,
+    refreshed = false,
   ): Promise<OpenAccountOutcome> {
     const session = await this.withSession(wallet, (built) => Promise.resolve(built));
-    const before = await this.viewStatus(session);
+    const before = await this.withSession(wallet, (current) => this.viewStatus(current));
     if (before === "open") {
       markAccountOpened(this.storage, wallet.address);
       return { kind: "alreadyOpen" };
     }
     if (before === "unknown") {
-      throw new Error("Your account could not be read, so it was not opened. Try again shortly.");
+      throw new Error("Your account could not be read, so it was not opened. Nothing was sent.");
     }
-    if (usesOwnerMessages(session.deployment)) return this.openByMessage(wallet, session, invite);
+    if (usesOwnerMessages(session.deployment)) {
+      return this.openByMessage(wallet, session, invite, refreshed);
+    }
     const owner = session.owner.publicKey;
     const orderKeys = session.orderKeyPublicKeys.map((key) => new PublicKey(key));
     const prepared = await prepareOpen(
@@ -678,6 +854,8 @@ export class RollupTradingClient implements TradingClient {
       },
       this.fetchFn,
     );
+    if (prepared.kind === "otherMode")
+      return this.openAgainOnCurrentMode(wallet, invite, refreshed);
     if (prepared.kind !== "prepared") return this.afterRefusal(wallet, prepared);
     const refusal = isExpectedOpen(prepared.transaction, {
       programId: trustedProgramId(this.options.overrides),
@@ -693,10 +871,56 @@ export class RollupTradingClient implements TradingClient {
       { simUrl: this.options.simUrl, owner: owner.toBase58(), signedTx: signed },
       this.fetchFn,
     );
+    if (submitted.kind === "rejected" && submitted.status === BAD_REQUEST) {
+      return this.afterRejectedSubmit(wallet, submitted);
+    }
     if (submitted.kind !== "submitted") return this.afterRefusal(wallet, submitted);
     markAccountOpened(this.storage, wallet.address);
     await this.settledStatus(wallet);
     return { kind: "opened", reference: submitted.reference };
+  }
+
+  /**
+   * The deployment was switched between the two ways of opening accounts
+   * since this page read it, and the service answered the other way. Nothing
+   * was signed yet: the description is read again, the session is rebuilt on
+   * it and the open runs once more. A second disagreement asks for a reload.
+   */
+  private async openAgainOnCurrentMode(
+    wallet: WalletIdentity,
+    invite: string | undefined,
+    refreshed: boolean,
+  ): Promise<OpenAccountOutcome> {
+    if (refreshed) return { kind: "notSent", reason: OPEN_MODE_CHANGED_REASON };
+    forgetDeployment(this.options.simUrl);
+    await this.refreshSession(wallet);
+    return this.openThroughGate(wallet, invite, true);
+  }
+
+  /**
+   * A 400 on a transaction-mode submit. When the deployment now opens
+   * accounts by message, the request opened nothing: the mode and the account
+   * status are read again and the trader starts the open over, the old signed
+   * bytes never resent. Any other 400 stays the refusal it was.
+   */
+  private async afterRejectedSubmit(
+    wallet: WalletIdentity,
+    refusal: OpenRefusal,
+  ): Promise<OpenAccountOutcome> {
+    forgetDeployment(this.options.simUrl);
+    let fresh: RollupSession;
+    try {
+      fresh = await this.refreshSession(wallet);
+    } catch {
+      return this.afterRefusal(wallet, refusal);
+    }
+    if (!usesOwnerMessages(fresh.deployment)) return this.afterRefusal(wallet, refusal);
+    const status = await this.viewStatus(fresh).catch(() => "unknown");
+    if (status === "open") {
+      markAccountOpened(this.storage, wallet.address);
+      return { kind: "alreadyOpen" };
+    }
+    return { kind: "notSent", reason: OPEN_MODE_RETRY_REASON };
   }
 
   /**
@@ -709,7 +933,8 @@ export class RollupTradingClient implements TradingClient {
   private async openByMessage(
     wallet: WalletIdentity,
     session: RollupSession,
-    invite?: string,
+    invite: string | undefined,
+    refreshed: boolean,
   ): Promise<OpenAccountOutcome> {
     const owner = session.owner.publicKey;
     const orderKeys = session.orderKeyPublicKeys.map((key) => new PublicKey(key));
@@ -722,6 +947,8 @@ export class RollupTradingClient implements TradingClient {
       },
       this.fetchFn,
     );
+    if (prepared.kind === "otherMode")
+      return this.openAgainOnCurrentMode(wallet, invite, refreshed);
     if (prepared.kind !== "prepared") return this.afterRefusal(wallet, prepared);
     const refusal = isExpectedOpenWindow(prepared.expiresAtMs, this.now());
     if (refusal) return { kind: "notSent", reason: refusal };
@@ -909,6 +1136,21 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
+  /** Whether the order is outside this session's crossing band (from the current mark), under its minimum size, or under its minimum value. */
+  private breaksSessionLimits(
+    session: RollupSession,
+    binding: MarketBinding,
+    order: NewOrderInput,
+    price: bigint,
+    size: bigint,
+  ): boolean {
+    const chain = session.limits?.get(binding.numericId);
+    if (!chain) return false;
+    if (size < chain.minSize || price * size < chain.minNotional) return true;
+    const mark = this.options.marketSettingsLookup(binding.marketId)?.markPrice;
+    return mark != null && priceOutsideBand(order.side, order.price, mark, chain.bandBps);
+  }
+
   private async placeOnce(
     wallet: WalletIdentity,
     session: RollupSession,
@@ -918,6 +1160,12 @@ export class RollupTradingClient implements TradingClient {
     if (!binding) throw new Error(`${order.market} was not found on chain`);
     const price = priceToChainAtoms(binding.units, order.price);
     const size = sizeToLots(binding.units, order.size);
+    // The session picked for this send may be a newer one than the form
+    // validated against (a token refresh during the submit): check the order
+    // against its limits, and send nothing if they no longer allow it.
+    if (this.breaksSessionLimits(session, binding, order, price, size)) {
+      return { value: SETTINGS_CHANGED_RESULT, refusal: null };
+    }
     const makersListedNow = await this.makersListedNow(session, binding.numericId);
     const secret = randomSecret();
     const expiry = expiryFor(order.goodFor, this.now);
@@ -926,6 +1174,7 @@ export class RollupTradingClient implements TradingClient {
       maxPriceAgeSeconds: session.maxPriceAgeSeconds?.get(binding.numericId),
       isPerp: binding.isPerp,
       side: order.side,
+      reduceOnly: !!order.reduceOnly,
     };
     // Tracked before the send, so an order that lands after this call
     // gave up on it still has its fills recognised as this trader's own.
@@ -1268,6 +1517,7 @@ export class RollupTradingClient implements TradingClient {
     const exposures: PerpExposure[] = [];
     const now = this.now();
     let marksFreshUntilMs: number | null = null;
+    let exposureUnreadable = false;
     for (const market of session.deployment.markets) {
       if (market.kind !== "perp") continue;
       const slot = seat.perp[market.marketId];
@@ -1280,15 +1530,8 @@ export class RollupTradingClient implements TradingClient {
         // A slot that cannot be bound cannot be priced: with a position or
         // resting orders in it, the margin is unknown rather than guessed.
         if (hasExposure) {
-          exposures.push({
-            baseLots: slot.base,
-            quoteAtoms: slot.quote,
-            openBidLots,
-            openAskLots,
-            sizePerLot: 0n,
-            mark: null,
-            maxLeverage: 0,
-          });
+          exposures.push(unreadableExposure(slot.base, slot.quote, openBidLots, openAskLots));
+          exposureUnreadable = true;
         }
         continue;
       }
@@ -1310,6 +1553,7 @@ export class RollupTradingClient implements TradingClient {
         sizePerLot: binding.units.sizePerLot,
         mark: freshMark,
         maxLeverage: settings?.maxLeverage ?? 0,
+        imBps: session.limits?.get(market.marketId)?.imBps,
       });
       if (slot.base === 0n) continue;
       const entryPrice =
@@ -1328,6 +1572,18 @@ export class RollupTradingClient implements TradingClient {
         maintenanceMarginBps: session.maintenanceMarginBps?.get(binding.numericId),
       };
     }
+
+    // Every slot the account can carry exposure in counts, not only the markets
+    // this terminal trades: one outside them leaves the margin unknown.
+    const listedMarketIds = new Set(session.deployment.markets.map((market) => market.marketId));
+    seat.perp.forEach((slot, marketId) => {
+      if (!slot || listedMarketIds.has(marketId)) return;
+      const openBidLots = slot.openBidLots ?? 0n;
+      const openAskLots = slot.openAskLots ?? 0n;
+      if (slot.base === 0n && openBidLots === 0n && openAskLots === 0n) return;
+      exposures.push(unreadableExposure(slot.base, slot.quote, openBidLots, openAskLots));
+      exposureUnreadable = true;
+    });
 
     const margin = summarizeMargin(seat.collateral, exposures);
     const collateral: Balance = {
@@ -1358,6 +1614,7 @@ export class RollupTradingClient implements TradingClient {
       positions,
       openOrders,
       spotAssets: spotAssetsOf(session.deployment),
+      ...(exposureUnreadable ? { exposureUnreadable: true } : {}),
     };
   }
 
@@ -1421,6 +1678,37 @@ export class RollupTradingClient implements TradingClient {
     if (snapshotBinding && !snapshotBinding.isPerp) listed.push(...mapOrders(snapshotBinding));
     return listed;
   }
+}
+
+/** Automatic sign-in has stopped because the exchange refused a freshly signed token; only the owner's "Sign in again" starts it. */
+export class SessionRefusedError extends Error {
+  constructor() {
+    super("The exchange stopped accepting your sign-in. Sign in again to continue.");
+    this.name = "SessionRefused";
+  }
+}
+
+/** A slot with exposure that cannot be priced: no mark, so the account's margin is unknown rather than guessed. */
+function unreadableExposure(
+  baseLots: bigint,
+  quoteAtoms: bigint,
+  openBidLots: bigint,
+  openAskLots: bigint,
+): PerpExposure {
+  return {
+    baseLots,
+    quoteAtoms,
+    openBidLots,
+    openAskLots,
+    sizePerLot: 0n,
+    mark: null,
+    maxLeverage: 0,
+  };
+}
+
+/** Whether the session could not be built because the owner turned down the sign-in message. */
+function signInDeclined(error: unknown): boolean {
+  return error instanceof SessionAuthError && isWalletDecline(error.cause);
 }
 
 function expiryFor(goodFor: NewOrderInput["goodFor"], now: () => number): bigint | undefined {

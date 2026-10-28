@@ -27,7 +27,6 @@ import {
   type Stopped,
   type TransferEnv,
 } from "./operation";
-import { withComputeBudget } from "./computeBudget";
 import {
   depositKeyAccount,
   depositKeyBalance,
@@ -51,10 +50,12 @@ export type DepositOutcome =
       next: "syncView";
     }
   | {
-      /** The move into the rollup landed and the deposit was refused: the tokens sit in the deposit key's rollup balance. Retry the deposit. */
+      /** The move into the rollup landed and the deposit was refused: the tokens sit in the deposit key's rollup balance, from where "Put it in my account" credits them. */
       status: "stranded";
       id: string;
       message: string;
+      /** Whether the record stays on the list because the move into the rollup is not final yet; then "Try the deposit again" is the button, else "Put it in my account". */
+      recordKept: boolean;
     };
 
 export interface DepositInput {
@@ -158,7 +159,7 @@ async function moveToDepositKey(
     step: "deposit",
     atoms,
     rollupBefore,
-    instructions: withComputeBudget(instructions),
+    instructions,
     shape: { kind: "key-move", atoms, sealed: env.sealed, key, decimals: env.decimals },
     cosigner: env.depositKey,
     before: wallet,
@@ -209,20 +210,22 @@ async function carryOn(
   const keyRollup = await env.depositRollup();
   const account = depositKeyAccount(env.depositKey.publicKey, env.mint);
   const expected = BigInt(record.rollupBefore) + atoms;
-  const shown = await pollUntil(
-    async () => {
-      const held = await readTokenBalance(keyRollup, account);
-      return held !== null && held >= expected ? held : null;
-    },
-    env.clock,
-    DELEGATION_SHOWN_WITHIN_MS,
-    POLL_MS,
-  );
-  if (shown === null && !record.seat) {
-    return waiting(
-      id,
-      `The move landed on Solana; the rollup does not yet show ${expected} atoms.`,
+  if (!record.seat) {
+    const shown = await pollUntil(
+      async () => {
+        const held = await readTokenBalance(keyRollup, account);
+        return held !== null && held >= expected ? held : null;
+      },
+      env.clock,
+      DELEGATION_SHOWN_WITHIN_MS,
+      POLL_MS,
     );
+    if (shown === null) {
+      return waiting(
+        id,
+        `The move landed on Solana; the rollup does not yet show ${expected} atoms.`,
+      );
+    }
   }
 
   const settled = await settledRollupSend(env, id, record.seat);
@@ -250,7 +253,7 @@ async function sendAndSettle(
   keyRollup: SolanaRpc,
 ): Promise<DepositOutcome> {
   const owner = env.owner.toBase58();
-  const result = await sentOnRollup(env, sent, keyRollup);
+  const result = await sentOnRollup(env, sent, keyRollup, id);
   if (result.state === "failed") {
     return strand(env, id, result.error);
   }
@@ -269,20 +272,24 @@ async function sendAndSettle(
 }
 
 /**
- * Closes out a deposit the program refused. The seat send is cleared so the
- * deposit can be tried again; a recovery, which has no Solana send to keep,
- * is finished instead, since it is made again from what the key holds.
+ * Closes out a deposit the program refused. The refusal is final (the seat
+ * send failed at finalized) and the tokens wait in the deposit key's rollup
+ * balance, which "Put it in my account" credits, so the record is marked
+ * stranded and finished as soon as every send of it is final, and no later than
+ * the next look. While the move into the rollup is only confirmed its record
+ * stays, with its signature and expiry, so a new deposit cannot start before
+ * that move has settled; "Try the deposit again" credits the key's balance from
+ * that state.
  */
 async function strand(env: TransferEnv, id: string, error: string): Promise<DepositOutcome> {
   const owner = env.owner.toBase58();
-  const record = (await env.journal.unfinished(owner)).find((candidate) => candidate.id === id);
-  if (record && record.sends.length === 0) await env.journal.finish(owner, id);
-  else await env.journal.clearSeatSend(owner, id);
-  return strandedBy(id, error);
+  await env.journal.clearSeatSend(owner, id);
+  await env.journal.markStranded(owner, id);
+  return strandedBy(id, error, !(await finishWhenFinalized(env, id)));
 }
 
 /** The move into the rollup landed and the deposit was refused: nothing was sent again, and the tokens wait in the deposit key's rollup balance. */
-function strandedBy(id: string, error: string): DepositOutcome {
+function strandedBy(id: string, error: string, recordKept: boolean): DepositOutcome {
   const code = errorCode(error);
   const why =
     code === CUSTODY_CAP_REACHED
@@ -293,6 +300,7 @@ function strandedBy(id: string, error: string): DepositOutcome {
   return {
     status: "stranded",
     id,
+    recordKept,
     message: `${why} Your USDC left your wallet and is safe: it is held by this browser's deposit key. You do not need to send more.`,
   };
 }

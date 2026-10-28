@@ -1,17 +1,20 @@
 import type { MarketInfo } from "../market-data/types";
 import { marketDisplayName } from "../market-data/displayName";
 import { isStale, STALE_MARK_MS } from "../market-data/selectors";
-import { toFixedPoint } from "./decimal";
-import type { NewOrderInput } from "./types";
+import { mulFixedPoint, toFixedPoint } from "./decimal";
+import type { MarketLimits, NewOrderInput, Side } from "./types";
 
 export type OrderFieldError =
   | "quantityRequired"
   | "quantityNotMultipleOfLot"
   | "quantityBelowMinimum"
+  | "notionalBelowMinimum"
   | "priceRequired"
   | "priceNotMultipleOfTick"
   | "priceNotPositive"
   | "priceTooFarFromMark"
+  | "bidAboveBand"
+  | "askBelowBand"
   | "markUnavailable"
   | "markStale";
 
@@ -54,6 +57,8 @@ function priceDeviationError(
   mark: OrderMark | null | undefined,
   now: number,
   allowStaleMark: boolean,
+  side: Side | undefined,
+  bandBps: number | undefined,
 ): OrderFieldError | null {
   let markPrice: bigint;
   try {
@@ -63,7 +68,40 @@ function priceDeviationError(
   }
   if (markPrice <= 0n) return "markUnavailable";
   if (!allowStaleMark && isStale(mark?.time, now, STALE_MARK_MS)) return "markStale";
-  return distanceError(price, markPrice);
+  return distanceError(price, markPrice) ?? crossingBandError(price, markPrice, side, bandBps);
+}
+
+/**
+ * Whether `priceText` is outside the crossing band around `markText` for
+ * this side: a price the program would refuse. False when either price
+ * cannot be read, which other checks catch.
+ */
+export function priceOutsideBand(
+  side: Side,
+  priceText: string,
+  markText: string,
+  bandBps: number,
+): boolean {
+  try {
+    return (
+      crossingBandError(toFixedPoint(priceText), toFixedPoint(markText), side, bandBps) !== null
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The program refuses a bid more than `bandBps` above the mark and an ask more than `bandBps` below it. */
+function crossingBandError(
+  price: bigint,
+  mark: bigint,
+  side: Side | undefined,
+  bandBps: number | undefined,
+): OrderFieldError | null {
+  if (side === undefined || bandBps === undefined) return null;
+  const band = BigInt(bandBps);
+  if (side === "buy") return price * 10_000n > mark * (10_000n + band) ? "bidAboveBand" : null;
+  return price * 10_000n < mark * (10_000n - band) ? "askBelowBand" : null;
 }
 
 function distanceError(price: bigint, mark: bigint): OrderFieldError | null {
@@ -83,13 +121,17 @@ function distanceError(price: bigint, mark: bigint): OrderFieldError | null {
  * STALE_MARK_MS) there is nothing to check it against, so the order is
  * refused. `allowStaleMark` lets a stale mark through (the distance check
  * still runs against it) for an order the venue accepts without a fresh price.
+ * Once the market account's own `limits` are known, the order must also meet
+ * its minimum size and value, and a bid or ask (when `side` is given) must
+ * sit inside its crossing band.
  */
 export function validateOrder(
-  input: Pick<NewOrderInput, "price" | "size">,
+  input: Pick<NewOrderInput, "price" | "size"> & { side?: Side },
   market: MarketInfo,
   mark: OrderMark | null | undefined,
   now: number,
   allowStaleMark = false,
+  limits?: Pick<MarketLimits, "bandBps" | "minSize" | "minNotional">,
 ): OrderValidationResult {
   const errors: OrderValidationResult["errors"] = {};
 
@@ -104,12 +146,16 @@ export function validateOrder(
       quantity = -1n;
     }
     const lot = toFixedPoint(market.lotSize);
+    const chainMinimum = limits ? toFixedPoint(limits.minSize) : 0n;
+    const minimum = chainMinimum > lot ? chainMinimum : lot;
     if (quantity <= 0n) {
       errors.quantity = "quantityRequired";
     } else if (!isMultipleOf(quantity, lot)) {
       errors.quantity = "quantityNotMultipleOfLot";
-    } else if (quantity < lot) {
+    } else if (quantity < minimum) {
       errors.quantity = "quantityBelowMinimum";
+    } else if (limits && orderValueBelowMinimum(quantity, input.price, limits.minNotional)) {
+      errors.quantity = "notionalBelowMinimum";
     }
   }
 
@@ -125,7 +171,14 @@ export function validateOrder(
       } else if (!isMultipleOf(price, tick)) {
         errors.price = "priceNotMultipleOfTick";
       } else {
-        const deviation = priceDeviationError(price, mark, now, allowStaleMark);
+        const deviation = priceDeviationError(
+          price,
+          mark,
+          now,
+          allowStaleMark,
+          input.side,
+          limits?.bandBps,
+        );
         if (deviation) errors.price = deviation;
       }
     } catch {
@@ -136,15 +189,47 @@ export function validateOrder(
   return { valid: Object.keys(errors).length === 0, errors };
 }
 
-/** Plain-language text for a field error, per the design review: never a raw validation code. */
-export function describeFieldError(error: OrderFieldError, market: MarketInfo): string {
+/** Whether price times size falls under the market's minimum order value; an unreadable price is left to the price check. */
+function orderValueBelowMinimum(
+  quantity: bigint,
+  priceText: string | undefined,
+  minNotional: string,
+) {
+  try {
+    const value = mulFixedPoint(quantity, toFixedPoint(priceText ?? ""));
+    return value < toFixedPoint(minNotional);
+  } catch {
+    return false;
+  }
+}
+
+function plainNumber(text: string): string {
+  return text.includes(".") ? text.replace(/0+$/, "").replace(/\.$/, "") : text;
+}
+
+/**
+ * Plain-language text for a field error, per the design review: never a raw
+ * validation code. `limits` supplies the numbers the market account states.
+ */
+export function describeFieldError(
+  error: OrderFieldError,
+  market: MarketInfo,
+  limits?: Pick<MarketLimits, "bandBps" | "minSize" | "minNotional">,
+): string {
+  const bandPercent = limits ? `${limits.bandBps / 100}%` : "the allowed distance";
   switch (error) {
     case "quantityRequired":
       return `Enter a quantity in ${market.base}.`;
     case "quantityNotMultipleOfLot":
       return `Use increments of ${market.lotSize} ${market.base}.`;
     case "quantityBelowMinimum":
-      return `Minimum order is ${market.lotSize} ${market.base}.`;
+      return `Minimum order is ${plainNumber(limits ? limits.minSize : market.lotSize)} ${market.base}.`;
+    case "notionalBelowMinimum":
+      return `Minimum order value is ${plainNumber(limits?.minNotional ?? "0")} ${market.quote}. Raise the size or the price.`;
+    case "bidAboveBand":
+      return `A buy can be at most ${bandPercent} above the mark price.`;
+    case "askBelowBand":
+      return `A sell can be at most ${bandPercent} below the mark price.`;
     case "priceRequired":
       return `Enter a price in ${market.quote}.`;
     case "priceNotPositive":

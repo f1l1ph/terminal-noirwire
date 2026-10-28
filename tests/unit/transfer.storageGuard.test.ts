@@ -81,13 +81,26 @@ describe("checkDepositStorage", () => {
       browser({
         storage: {
           estimate: async () => ({ quota: 100 * 1024 * 1024 }),
-          persist: async () => true,
-          persisted: async () => true,
+          persist: async () => false,
+          persisted: async () => false,
         },
       }),
     );
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toMatch(/private window/);
+  });
+
+  it("does not take a small quota for a private window when the browser promises to keep the data", async () => {
+    const result = await checkDepositStorage(
+      browser({
+        storage: {
+          estimate: async () => ({ quota: 100 * 1024 * 1024 }),
+          persist: async () => true,
+          persisted: async () => true,
+        },
+      }),
+    );
+    expect(result).toEqual({ ok: true, persisted: true });
   });
 
   it("does not refuse for a browser that cannot report its quota or be asked to persist", async () => {
@@ -157,13 +170,15 @@ describe("deposit copy", () => {
       {
         status: "stranded",
         id: "tx-1",
+        recordKept: false,
         message:
           "The exchange did not accept the last step. Your USDC left your wallet and is safe.",
       },
       6,
       35_000_000,
     );
-    expect(line.text).toContain("Try the deposit again");
+    expect(line.text).toContain('"Put it in my account"');
+    expect(line.text).not.toContain("Try the deposit again");
     expect(line.text).not.toMatch(/deposit again by hand/);
   });
 });

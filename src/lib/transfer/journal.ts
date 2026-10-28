@@ -29,6 +29,8 @@ export interface OperationRecord {
   rollupBefore?: string;
   /** A deposit's deposit key, as a public key: the tokens went into the rollup as that key's balance, and the same key credits them to the account. */
   depositKey?: string;
+  /** A deposit whose last step the program refused for good: its tokens wait in the deposit key's rollup balance, and the record is kept only until every earlier send is final. */
+  stranded?: true;
   createdAt: number;
   updatedAt: number;
 }
@@ -69,8 +71,26 @@ export interface Journal {
    * seat send, since a second withdrawal could pay out twice.
    */
   recordSeatSend(owner: string, id: string, seat: SeatSend): Promise<void>;
-  /** Marks the recorded seat send as landed. */
+  /**
+   * Adds the signature and blockhash of the signed bytes an order key's
+   * withdrawal is about to be dispatched with to its pending seat record.
+   * Resolves only once durable; the bytes are dispatched after, never before.
+   * Every distinct signature is kept, since a client that re-signs may have
+   * had either one run; the same signature again changes nothing.
+   */
+  addSeatAttempt(
+    owner: string,
+    id: string,
+    attempt: { signature: string; blockhash: string },
+  ): Promise<void>;
+  /** Records that a read saw the seat's rollup transaction `signature` at processed or better, so a missing status is never taken as proof afterwards. */
+  markSeatSighted(owner: string, id: string, signature: string): Promise<void>;
+  /** Marks the recorded seat send as landed, as a status showed it: it stays open to a later read until a finalized success. */
   markSeatLanded(owner: string, id: string): Promise<void>;
+  /** Marks an order key's withdrawal as landed and final, because the trading client proved it from the account's own view. No status read decides this, so keep it apart from `markSeatLanded`. */
+  markSeatProven(owner: string, id: string): Promise<void>;
+  /** Marks a deposit as stranded: its seat step was refused for good. */
+  markStranded(owner: string, id: string): Promise<void>;
   /** Drops a seat send the chain refused outright (it moved nothing). */
   clearSeatSend(owner: string, id: string): Promise<void>;
 }
@@ -162,6 +182,63 @@ export function createJournal(storage: JournalStorage, now: () => number = Date.
         if (existing.seat)
           throw new Error(`Operation ${id} already has a seat withdrawal on record`);
         return { ...existing, seat, updatedAt: now() };
+      });
+    },
+
+    async addSeatAttempt(owner, id, attempt) {
+      if (!attempt.signature || !attempt.blockhash) {
+        throw new Error("The send has no signature or blockhash, so it cannot be judged later");
+      }
+      await storage.update(owner, id, (existing) => {
+        const seat = existing?.seat;
+        if (!existing || seat?.signer !== "order-key" || seat.state !== "pending") {
+          throw new Error(`No pending order key withdrawal for operation ${id}`);
+        }
+        const attempts = seat.attempts ?? [];
+        if (attempts.some((known) => known.signature === attempt.signature)) return existing;
+        return {
+          ...existing,
+          seat: { ...seat, signature: attempt.signature, attempts: [...attempts, attempt] },
+          updatedAt: now(),
+        };
+      });
+    },
+
+    async markSeatSighted(owner, id, signature) {
+      await storage.update(owner, id, (existing) => {
+        const seat = existing?.seat;
+        if (!existing || !seat) return existing ?? null;
+        const attempts = seat.attempts?.map((attempt) =>
+          attempt.signature === signature ? { ...attempt, seen: true as const } : attempt,
+        );
+        const sighted =
+          seat.attempts === undefined
+            ? seat.signature === signature
+            : seat.attempts.some((attempt) => attempt.signature === signature);
+        if (!sighted) return existing;
+        return {
+          ...existing,
+          seat: { ...seat, ...(attempts ? { attempts } : { seen: true as const }) },
+          updatedAt: now(),
+        };
+      });
+    },
+
+    async markStranded(owner, id) {
+      await storage.update(owner, id, (existing) => {
+        if (!existing) throw new Error(`No recorded operation ${id}`);
+        return { ...existing, stranded: true, updatedAt: now() };
+      });
+    },
+
+    async markSeatProven(owner, id) {
+      await storage.update(owner, id, (existing) => {
+        if (!existing?.seat) throw new Error(`No recorded seat withdrawal for operation ${id}`);
+        return {
+          ...existing,
+          seat: { ...existing.seat, state: "landed", proven: true },
+          updatedAt: now(),
+        };
       });
     },
 

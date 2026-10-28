@@ -1,11 +1,12 @@
 "use client";
 
-import { fromFixedPoint } from "@/lib/trading/decimal";
+import { fromFixedPoint, withoutSign } from "@/lib/trading/decimal";
 import {
   accountLeverage,
   formatLeverage,
   leverageRatio,
   positionRisks,
+  unknownPositionRisks,
   type PositionRisk,
 } from "@/lib/trading/positionRisk";
 import {
@@ -25,12 +26,43 @@ import {
   MAINTENANCE_MARGIN_BPS,
 } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
-import type { Balance, MarketSettingsLookup, OpenOrder, Position } from "@/lib/trading/types";
+import type {
+  Balance,
+  MarketLimits,
+  MarketSettingsLookup,
+  OpenOrder,
+  Position,
+  Side,
+} from "@/lib/trading/types";
+import type { MarketInfo } from "@/lib/market-data/types";
 import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 import { isMainnetBuild } from "@/lib/network";
 import { walletlessDockText } from "@/lib/trading/uiRules";
+
+const NO_LIMITS: ReadonlyMap<string, MarketLimits> = new Map();
+
+/** An existing position's cost at the market's maximum leverage, from the market account's own ratios once they are known. */
+function positionCost(
+  side: Side,
+  quantity: string,
+  price: string,
+  settings: MarketInfo,
+  limits: MarketLimits | undefined,
+) {
+  return estimateOrderCost({
+    side,
+    quantity,
+    price,
+    leverage: limits ? 10_000 / limits.imBps : settings.maxLeverage,
+    maxLeverage: settings.maxLeverage,
+    takerFeeBps: limits?.takerFeeBps,
+    maintenanceBps: limits?.mmBps,
+  });
+}
+
+const percentOfBps = (bps: number): string => `${bps / 100}%`;
 
 export type Tab = "positions" | "openOrders" | "fills" | "balances" | "margin";
 
@@ -60,7 +92,9 @@ export function AccountDock({
   onClosePosition,
   onReducePosition,
   onCancelOrder,
-  cancellingOrderId,
+  cancellingOrderIds,
+  limits = NO_LIMITS,
+  exposureUnreadable = false,
   transfers = null,
   bordered = true,
 }: {
@@ -87,7 +121,12 @@ export function AccountDock({
   /** Prefills the order form with this position's closing direction and size, without submitting. */
   onReducePosition: (position: Position) => void;
   onCancelOrder: ((market: string, orderId: string) => void) | null;
-  cancellingOrderId: string | null;
+  /** Ids of the orders whose cancel is running; each row's cancel is off by its own id. */
+  cancellingOrderIds: ReadonlySet<string>;
+  /** Each market's ratios as its account states them, by symbol; the estimates assume defaults for a market not listed. */
+  limits?: ReadonlyMap<string, MarketLimits>;
+  /** The account holds exposure in a market this terminal cannot read: margin and liquidation figures are unknown. */
+  exposureUnreadable?: boolean;
   /** Deposits, withdrawals and the transfers that did not finish, shown above the tabs. */
   transfers?: React.ReactNode;
   /** False inside the desktop Account panel frame, which already supplies the border. True (default) on phone, where this renders standalone. */
@@ -132,6 +171,8 @@ export function AccountDock({
             marksByMarket={marksByMarket}
             now={now}
             quoteSymbol={quoteSymbol}
+            limits={limits}
+            exposureUnreadable={exposureUnreadable}
             onClose={onClosePosition}
             onReduce={onReducePosition}
           />
@@ -143,7 +184,7 @@ export function AccountDock({
             firstSeenAtMs={openOrderFirstSeenAtMs}
             now={now}
             onCancel={onCancelOrder}
-            cancellingOrderId={cancellingOrderId}
+            cancellingOrderIds={cancellingOrderIds}
           />
         )}
         {hasWallet && tab === "fills" && (
@@ -166,6 +207,8 @@ export function AccountDock({
             now={now}
             marketSettings={marketSettings}
             quoteSymbol={quoteSymbol}
+            limits={limits}
+            exposureUnreadable={exposureUnreadable}
           />
         )}
       </div>
@@ -234,6 +277,8 @@ function PositionsTable({
   marksByMarket,
   now,
   quoteSymbol,
+  limits,
+  exposureUnreadable,
   onClose,
   onReduce,
 }: {
@@ -243,167 +288,191 @@ function PositionsTable({
   marksByMarket: Record<string, { price: string; time: number } | null>;
   now: number;
   quoteSymbol: string;
+  limits: ReadonlyMap<string, MarketLimits>;
+  exposureUnreadable: boolean;
   onClose: (position: Position) => void;
   onReduce: (position: Position) => void;
 }) {
   const open = positions.filter((position) => Number(position.size) !== 0);
   if (open.length === 0) {
-    return (
+    return exposureUnreadable ? (
+      <UnreadableExposureNote />
+    ) : (
       <EmptyState
         title="No positions yet"
         hint="Your SOL-PERP positions appear here once an order fills."
       />
     );
   }
-  const risks = positionRisks(open, collateral?.total ?? null, freshMarkLookup(marksByMarket, now));
+  const risks = exposureUnreadable
+    ? unknownPositionRisks(open)
+    : positionRisks(open, collateral?.total ?? null, freshMarkLookup(marksByMarket, now));
   return (
-    <ul className="flex flex-col gap-2">
-      {open.map((position) => {
-        const settings = marketSettings(position.market);
-        const size = Number(position.size);
-        const long = size > 0;
-        const priceDecimals = settings ? priceDecimalsOf(settings) : 2;
-        const sizeDecimals = settings ? sizeDecimalsOf(settings) : 4;
-        const mark = marksByMarket[position.market] ?? null;
-        const markUsable = mark && !isStale(mark.time, now, STALE_MARK_MS);
-        const risk = risks?.get(position.market);
-        const unrealised = risks
-          ? risk?.pnlAtoms == null
-            ? null
-            : Number(fromFixedPoint(risk.pnlAtoms * 1_000n, 6))
-          : markUsable
-            ? (Number(mark.price) - Number(position.entryPrice)) * size
-            : null;
+    <>
+      {exposureUnreadable && <UnreadableExposureNote />}
+      <ul className="flex flex-col gap-2">
+        {open.map((position) => {
+          const settings = marketSettings(position.market);
+          const size = Number(position.size);
+          const long = size > 0;
+          const priceDecimals = settings ? priceDecimalsOf(settings) : 2;
+          const sizeDecimals = settings ? sizeDecimalsOf(settings) : 4;
+          const mark = marksByMarket[position.market] ?? null;
+          const markUsable = mark && !isStale(mark.time, now, STALE_MARK_MS);
+          const risk = risks?.get(position.market);
+          const unrealised = risks
+            ? risk?.pnlAtoms == null
+              ? null
+              : Number(fromFixedPoint(risk.pnlAtoms * 1_000n, 6))
+            : markUsable
+              ? (Number(mark.price) - Number(position.entryPrice)) * size
+              : null;
 
-        let marginUsed: string | null = null;
-        let liquidation: string | null = null;
-        if (settings && settings.kind === "perp") {
-          const estimate = estimateOrderCost({
-            side: long ? "buy" : "sell",
-            quantity: String(Math.abs(size)),
-            price: position.entryPrice,
-            leverage: settings.maxLeverage,
-            maxLeverage: settings.maxLeverage,
-          });
-          const display = displayOrderCost(estimate, priceDecimals);
-          marginUsed = display.initialMargin;
-          liquidation = display.liquidationPrice;
-        }
-        const liquidationShown = risks
-          ? liquidationCell(risk, priceDecimals)
-          : {
-              value: liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE,
-              title: `Estimate: a ${MAINTENANCE_MARGIN_BPS / 100}% maintenance margin, computed on this device. Not confirmed by the exchange.`,
-            };
+          let marginUsed: string | null = null;
+          let liquidation: string | null = null;
+          if (settings && settings.kind === "perp") {
+            const estimate = positionCost(
+              long ? "buy" : "sell",
+              withoutSign(position.size),
+              position.entryPrice,
+              settings,
+              limits.get(position.market),
+            );
+            const display = displayOrderCost(estimate, priceDecimals);
+            marginUsed = display.initialMargin;
+            liquidation = display.liquidationPrice;
+          }
+          const liquidationShown = risks
+            ? liquidationCell(risk, priceDecimals)
+            : {
+                value:
+                  liquidation !== null ? formatDecimal(liquidation, priceDecimals) : UNAVAILABLE,
+                title: `Estimate: a ${percentOfBps(limits.get(position.market)?.mmBps ?? MAINTENANCE_MARGIN_BPS)} maintenance margin, computed on this device. Not confirmed by the exchange.`,
+              };
 
-        const leverageShown = leverageCell(
-          risk ? leverageRatio(risk.notionalAtoms, risk.equityAtoms) : null,
-          settings?.kind === "perp" ? settings.maxLeverage : null,
-        );
+          const leverageShown = leverageCell(
+            risk ? leverageRatio(risk.notionalAtoms, risk.equityAtoms) : null,
+            settings?.kind === "perp" ? settings.maxLeverage : null,
+          );
 
-        return (
-          <li
-            key={position.market}
-            className="bg-surface-raised border-line-subtle rounded-tile border p-3"
-          >
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span
-                className={`rounded-tile px-2 py-0.5 text-[12px] font-medium ${
-                  long ? "bg-safe/15 text-safe" : "bg-danger/15 text-danger"
-                }`}
-              >
-                {long ? "Long" : "Short"}
-              </span>
-              <span className="text-ink-strong text-[14px] font-medium">
-                {marketDisplayName(position.market)}
-              </span>
-              <span className="tnum text-dim text-[13px]">
-                {formatDecimal(Math.abs(size), sizeDecimals)}
-                {settings ? ` ${settings.base}` : ""}
-              </span>
-              <span
-                className="ml-auto text-right"
-                title={
-                  risks
-                    ? `What this position adds to your equity at the mark. It includes profit already taken by earlier partial closes and funding already settled, and leaves out fees and funding not yet settled.`
-                    : undefined
-                }
-              >
-                <span className="text-faint block text-[11px]">
-                  {risks ? "Position P&L" : "Unrealised P&L"}
-                </span>
+          return (
+            <li
+              key={position.market}
+              className="bg-surface-raised border-line-subtle rounded-tile border p-3"
+            >
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span
-                  className={`tnum text-[15px] font-medium ${
-                    unrealised === null
-                      ? "text-faint"
-                      : unrealised >= 0
-                        ? "text-safe"
-                        : "text-danger"
+                  className={`rounded-tile px-2 py-0.5 text-[12px] font-medium ${
+                    long ? "bg-safe/15 text-safe" : "bg-danger/15 text-danger"
                   }`}
                 >
-                  {unrealised !== null
-                    ? `${unrealised > 0 ? "+" : ""}${formatMoney(unrealised, quoteSymbol)}`
-                    : "Price unavailable"}
+                  {long ? "Long" : "Short"}
                 </span>
-              </span>
-            </div>
-            <dl className="tnum mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-4">
-              <PositionStat
-                label={risks ? "Break-even" : "Entry"}
-                title={
-                  risks
-                    ? "The price at which this position's own cash flow nets to zero. It equals your average entry only while the position has never been reduced and no funding has been settled."
-                    : undefined
-                }
-                value={
-                  risks
-                    ? risk?.breakEven != null
-                      ? formatDecimal(fromFixedPoint(risk.breakEven, priceDecimals), priceDecimals)
-                      : UNAVAILABLE
-                    : formatDecimal(position.entryPrice, priceDecimals)
-                }
-              />
-              <PositionStat
-                label="Mark"
-                value={markUsable ? formatDecimal(mark!.price, priceDecimals) : UNAVAILABLE}
-              />
-              <PositionStat
-                label="Margin used (est.)"
-                value={marginUsed !== null ? formatMoney(marginUsed, quoteSymbol) : UNAVAILABLE}
-              />
-              <PositionStat
-                label="Liquidation (est.)"
-                title={liquidationShown.title}
-                value={liquidationShown.value}
-              />
-              {risk && (
+                <span className="text-ink-strong text-[14px] font-medium">
+                  {marketDisplayName(position.market)}
+                </span>
+                <span className="tnum text-dim text-[13px]">
+                  {formatDecimal(Math.abs(size), sizeDecimals)}
+                  {settings ? ` ${settings.base}` : ""}
+                </span>
+                <span
+                  className="ml-auto text-right"
+                  title={
+                    risks
+                      ? `What this position adds to your equity at the mark. It includes profit already taken by earlier partial closes and funding already settled, and leaves out fees and funding not yet settled.`
+                      : undefined
+                  }
+                >
+                  <span className="text-faint block text-[11px]">
+                    {risks ? "Position P&L" : "Unrealised P&L"}
+                  </span>
+                  <span
+                    className={`tnum text-[15px] font-medium ${
+                      unrealised === null
+                        ? "text-faint"
+                        : unrealised >= 0
+                          ? "text-safe"
+                          : "text-danger"
+                    }`}
+                  >
+                    {unrealised !== null
+                      ? `${unrealised > 0 ? "+" : ""}${formatMoney(unrealised, quoteSymbol)}`
+                      : "Price unavailable"}
+                  </span>
+                </span>
+              </div>
+              <dl className="tnum mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-4">
                 <PositionStat
-                  label="Leverage"
-                  title={leverageShown.title}
-                  value={leverageShown.value}
+                  label={risks ? "Break-even" : "Entry"}
+                  title={
+                    risks
+                      ? "The price at which this position's own cash flow nets to zero. It equals your average entry only while the position has never been reduced and no funding has been settled."
+                      : undefined
+                  }
+                  value={
+                    risks
+                      ? risk?.breakEven != null
+                        ? formatDecimal(
+                            fromFixedPoint(risk.breakEven, priceDecimals),
+                            priceDecimals,
+                          )
+                        : UNAVAILABLE
+                      : formatDecimal(position.entryPrice, priceDecimals)
+                  }
                 />
-              )}
-            </dl>
-            <div className="mt-3 flex gap-2">
-              <button
-                type="button"
-                className={`${btnGhost} flex-1 text-[12px]`}
-                onClick={() => onReduce(position)}
-              >
-                Reduce
-              </button>
-              <button
-                type="button"
-                className={`${btnGhost} flex-1 text-[12px]`}
-                onClick={() => onClose(position)}
-              >
-                Close position
-              </button>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
+                <PositionStat
+                  label="Mark"
+                  value={markUsable ? formatDecimal(mark!.price, priceDecimals) : UNAVAILABLE}
+                />
+                <PositionStat
+                  label="Margin used (est.)"
+                  value={marginUsed !== null ? formatMoney(marginUsed, quoteSymbol) : UNAVAILABLE}
+                />
+                <PositionStat
+                  label="Liquidation (est.)"
+                  title={liquidationShown.title}
+                  value={liquidationShown.value}
+                />
+                {risk && (
+                  <PositionStat
+                    label="Leverage"
+                    title={leverageShown.title}
+                    value={leverageShown.value}
+                  />
+                )}
+              </dl>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  className={`${btnGhost} flex-1 text-[12px]`}
+                  onClick={() => onReduce(position)}
+                >
+                  Reduce
+                </button>
+                <button
+                  type="button"
+                  className={`${btnGhost} flex-1 text-[12px]`}
+                  onClick={() => onClose(position)}
+                >
+                  Close position
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+export const UNREADABLE_EXPOSURE_NOTE =
+  "This account holds a position or order in a market this terminal does not trade. Its size, margin and liquidation price cannot be shown, so those figures are unknown and orders that could add risk are off. You can still close positions here.";
+
+function UnreadableExposureNote() {
+  return (
+    <p role="alert" className="text-warning mb-2 text-[12px]">
+      {UNREADABLE_EXPOSURE_NOTE}
+    </p>
   );
 }
 
@@ -431,14 +500,14 @@ function OpenOrdersTable({
   firstSeenAtMs,
   now,
   onCancel,
-  cancellingOrderId,
+  cancellingOrderIds,
 }: {
   openOrders: OpenOrder[];
   marketSettings: MarketSettingsLookup;
   firstSeenAtMs: Record<string, number>;
   now: number;
   onCancel: ((market: string, orderId: string) => void) | null;
-  cancellingOrderId: string | null;
+  cancellingOrderIds: ReadonlySet<string>;
 }) {
   if (openOrders.length === 0) {
     return (
@@ -490,10 +559,10 @@ function OpenOrdersTable({
                   <button
                     type="button"
                     className={`${btnGhost} px-2 text-[11px]`}
-                    disabled={cancellingOrderId === order.orderId}
+                    disabled={cancellingOrderIds.has(order.orderId)}
                     onClick={() => onCancel(order.market, order.orderId)}
                   >
-                    {cancellingOrderId === order.orderId
+                    {cancellingOrderIds.has(order.orderId)
                       ? "Cancelling…"
                       : `Cancel #${order.orderId}`}
                   </button>
@@ -637,6 +706,8 @@ function MarginTable({
   now,
   marketSettings,
   quoteSymbol,
+  limits,
+  exposureUnreadable,
 }: {
   positions: Position[];
   collateral: Balance | null;
@@ -644,17 +715,18 @@ function MarginTable({
   now: number;
   marketSettings: MarketSettingsLookup;
   quoteSymbol: string;
+  limits: ReadonlyMap<string, MarketLimits>;
+  exposureUnreadable: boolean;
 }) {
-  const risks = positionRisks(
-    positions,
-    collateral?.total ?? null,
-    freshMarkLookup(marksByMarket, now),
-  );
+  const risks = exposureUnreadable
+    ? unknownPositionRisks(positions)
+    : positionRisks(positions, collateral?.total ?? null, freshMarkLookup(marksByMarket, now));
   const perpPositions = positions.filter((position) => {
     const settings = marketSettings(position.market);
     return Number(position.size) !== 0 && settings?.kind === "perp";
   });
   if (perpPositions.length === 0) {
+    if (exposureUnreadable) return <UnreadableExposureNote />;
     return (
       <EmptyState
         title="No margin in use"
@@ -663,8 +735,12 @@ function MarginTable({
     );
   }
   const accountLeverageShown = leverageCell(risks ? accountLeverage(risks) : null, null);
+  const noted = limits.get(perpPositions[0].market);
+  const noteFee = percentOfBps(noted?.takerFeeBps ?? ASSUMED_TAKER_FEE_BPS);
+  const noteMaintenance = percentOfBps(noted?.mmBps ?? MAINTENANCE_MARGIN_BPS);
   return (
     <>
+      {exposureUnreadable && <UnreadableExposureNote />}
       <table className="tnum w-full text-left text-[13px]">
         <thead className="text-faint text-[11px] uppercase">
           <tr>
@@ -684,13 +760,13 @@ function MarginTable({
             // existing position, only its size and entry price, so the
             // leverage behind it is unknown; this shows the closest
             // (most conservative) estimate, at the market's maximum leverage.
-            const estimate = estimateOrderCost({
-              side: size > 0 ? "buy" : "sell",
-              quantity: String(Math.abs(size)),
-              price: position.entryPrice,
-              leverage: settings.maxLeverage,
-              maxLeverage: settings.maxLeverage,
-            });
+            const estimate = positionCost(
+              size > 0 ? "buy" : "sell",
+              withoutSign(position.size),
+              position.entryPrice,
+              settings,
+              limits.get(position.market),
+            );
             const display = displayOrderCost(estimate, priceDecimalsOf(settings));
             return (
               <tr key={position.market} className="border-line-subtle border-t">
@@ -717,8 +793,8 @@ function MarginTable({
       <p className={`${sectionLabel} mt-2`}>Estimate, not a guarantee</p>
       <p className="text-faint mt-1 text-[11px] leading-relaxed">
         {risks
-          ? `Liquidation prices use your collateral, all your open positions and each market's own maintenance margin, worked out on this device. ${FUNDING_NOTE} Margin at max leverage assumes a ${ASSUMED_TAKER_FEE_BPS / 100}% trading fee. The exchange decides the real threshold.`
-          : `These figures are worked out on this device from your entry price. They assume a ${MAINTENANCE_MARGIN_BPS / 100}% maintenance margin as the liquidation threshold and a ${ASSUMED_TAKER_FEE_BPS / 100}% trading fee. The exchange decides the real threshold.`}
+          ? `Liquidation prices use your collateral, all your open positions and each market's own maintenance margin, worked out on this device. ${FUNDING_NOTE} Margin at max leverage assumes a ${noteFee} trading fee. The exchange decides the real threshold.`
+          : `These figures are worked out on this device from your entry price. They assume a ${noteMaintenance} maintenance margin as the liquidation threshold and a ${noteFee} trading fee. The exchange decides the real threshold.`}
       </p>
     </>
   );

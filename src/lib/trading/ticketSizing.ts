@@ -90,12 +90,15 @@ export function maxAmount(params: {
   boundPrice: string;
   refPrice: string;
   takerFeeBps?: number;
+  /** The market account's initial margin ratio in basis points; implied by `maxLeverage` when absent. */
+  imBps?: number;
 }): string {
   try {
     const available = toFixedPoint(params.available);
     const refPrice = toFixedPoint(params.refPrice);
     const boundPrice = toFixedPoint(params.boundPrice);
-    const marginBps = params.maxLeverage > 0 ? impliedInitialMarginBps(params.maxLeverage) : null;
+    const marginBps =
+      params.maxLeverage > 0 ? (params.imBps ?? impliedInitialMarginBps(params.maxLeverage)) : null;
     if (available <= 0n || refPrice <= 0n || boundPrice <= 0n) return "0.00";
     const rateBps =
       BigInt(marginBps ?? 10_000) + BigInt(params.takerFeeBps ?? ASSUMED_TAKER_FEE_BPS);

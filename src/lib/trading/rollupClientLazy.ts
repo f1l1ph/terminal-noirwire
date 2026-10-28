@@ -1,11 +1,12 @@
 import type { Connection } from "@solana/web3.js";
 import type { UnknownHold } from "../rollup/accountMemory";
-import type { DeploymentOverrides } from "../rollup/deployment";
+import type { DeploymentOverrides, PublicDeployment } from "../rollup/deployment";
 import type {
   AccountStatus,
   CancelResult,
   FundOutcome,
   KeyWithdrawal,
+  MarketLimits,
   MarketSettingsLookup,
   NewOrderInput,
   OpenAccountOutcome,
@@ -79,18 +80,66 @@ export class LazyRollupTradingClient implements TradingClient {
     return (await (await this.load()).ownerAuth?.()) ?? "transaction";
   }
 
-  async withdrawByKey(wallet: WalletIdentity, atoms: bigint): Promise<KeyWithdrawal> {
+  async withdrawByKey(
+    wallet: WalletIdentity,
+    atoms: bigint,
+    onSigned?: (raw: Uint8Array) => Promise<void>,
+  ): Promise<KeyWithdrawal> {
     const client = await this.load();
     if (!client.withdrawByKey) throw new Error("This client cannot withdraw by order key");
-    return client.withdrawByKey(wallet, atoms);
+    return client.withdrawByKey(wallet, atoms, onSigned);
   }
 
-  async accountStatus(wallet: WalletIdentity): Promise<AccountStatus> {
-    return (await (await this.load()).accountStatus?.(wallet)) ?? "unknown";
+  async accountStatus(
+    wallet: WalletIdentity,
+    options?: { fresh?: boolean },
+  ): Promise<AccountStatus> {
+    return (await (await this.load()).accountStatus?.(wallet, options)) ?? "unknown";
   }
 
   async makersListedMarkets(wallet: WalletIdentity): Promise<ReadonlySet<string>> {
     return (await (await this.load()).makersListedMarkets?.(wallet)) ?? new Set();
+  }
+
+  async marketLimits(wallet: WalletIdentity): Promise<ReadonlyMap<string, MarketLimits>> {
+    return (await (await this.load()).marketLimits?.(wallet)) ?? new Map();
+  }
+
+  subscribeSessionStopped(
+    wallet: WalletIdentity,
+    listener: (stopped: boolean) => void,
+  ): () => void {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void this.load().then((client) => {
+      if (!cancelled) unsubscribe = client.subscribeSessionStopped?.(wallet, listener) ?? null;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }
+
+  subscribeSessionGeneration(wallet: WalletIdentity, listener: () => void): () => void {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void this.load().then((client) => {
+      if (!cancelled) unsubscribe = client.subscribeSessionGeneration?.(wallet, listener) ?? null;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }
+
+  async signInAgain(wallet: WalletIdentity): Promise<void> {
+    await (await this.load()).signInAgain?.(wallet);
+  }
+
+  async sessionDeployment(wallet: WalletIdentity): Promise<PublicDeployment> {
+    const client = await this.load();
+    if (!client.sessionDeployment) throw new Error("This client has no session deployment");
+    return client.sessionDeployment(wallet);
   }
 
   subscribeOrderKeys(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void {
