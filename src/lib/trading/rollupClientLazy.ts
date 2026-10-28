@@ -192,9 +192,17 @@ export class LazyRollupTradingClient implements TradingClient {
     return client.transferBetweenBalances(wallet, toSpot, amount);
   }
 
-  async syncMarket(wallet: WalletIdentity, market: string): Promise<void> {
+  async syncMarket(wallet: WalletIdentity, market: string): Promise<boolean> {
     const client = await this.load();
-    return client.syncMarket?.(wallet, market);
+    return (await client.syncMarket?.(wallet, market)) ?? true;
+  }
+
+  async rollupNowMs(wallet: WalletIdentity): Promise<number | null> {
+    return (await (await this.load()).rollupNowMs?.(wallet)) ?? null;
+  }
+
+  async clockOffsetMs(wallet: WalletIdentity): Promise<number | null> {
+    return (await (await this.load()).clockOffsetMs?.(wallet)) ?? null;
   }
 
   async checkPrivacy(wallet: WalletIdentity, market: string): Promise<PrivacyCheck> {

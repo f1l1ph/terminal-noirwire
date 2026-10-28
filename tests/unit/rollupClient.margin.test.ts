@@ -81,6 +81,7 @@ interface OrderInput {
   remaining: bigint;
   sequence: bigint;
   side: number;
+  expiry?: bigint;
 }
 
 function view(
@@ -197,6 +198,8 @@ describe("RollupTradingClient: margin-aware collateral", () => {
           bandBps: 400,
           minSize: 2n,
           minNotional: 5n * USDC,
+          positionCap: 3_000n,
+          maxOpenOrders: 32,
         },
       ],
     ]);
@@ -216,6 +219,8 @@ describe("RollupTradingClient: margin-aware collateral", () => {
       bandBps: 400,
       minSize: "0.002000",
       minNotional: "5.000000",
+      positionCap: "3.000000",
+      maxOpenOrders: 32,
     });
   });
 
@@ -457,6 +462,22 @@ describe("RollupTradingClient: open orders across markets", () => {
       ["NSOL-PERP", "7", "buy"],
       ["NNVDA-PERP", "9", "sell"],
     ]);
+  });
+
+  it("carries each order's own expiry, null when it never expires", async () => {
+    const expiring: OrderInput = { ...solOrder, expiry: 1_800_000_000n };
+    const forever: OrderInput = { ...nvdaOrder, expiry: 0n };
+    const rollup = clientShowing(
+      [
+        view(1000n * USDC, [{ openBidLots: 2_000n }, { openAskLots: 500n }], 0, [
+          expiring,
+          forever,
+        ]),
+      ],
+      marks,
+    );
+    const state = await rollup.fetchState(WALLET);
+    expect(state.openOrders.map((order) => order.expiresAtMs)).toEqual([1_800_000_000_000, null]);
   });
 
   it("drops a remembered market's orders once its open lots change", async () => {

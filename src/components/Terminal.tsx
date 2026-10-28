@@ -30,6 +30,12 @@ import { deriveOwnFills, type OwnFillRecord } from "@/lib/trading/tags";
 import { withoutSign } from "@/lib/trading/decimal";
 import type { LimitLine } from "@/lib/trading/limitLine";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
+import { syncUntilDone } from "@/lib/trading/fillSync";
+import {
+  expiringOrders,
+  ordersPastExpiry,
+  shouldReadRollupClock,
+} from "@/lib/trading/expiredOrders";
 import { UNCONFIRMED_PLACE_RESULT } from "@/lib/rollup/outcome";
 import { fetchDeployment, quoteSymbolOf, type PublicDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
@@ -38,6 +44,7 @@ import { AccountSetup } from "@/components/AccountSetup";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { useTradingTabGuard } from "@/components/hooks/useTradingTabGuard";
+import { useTradingPause } from "@/components/hooks/useTradingPause";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
@@ -71,6 +78,15 @@ const FundsSection =
     : null;
 
 const CANDLE_INTERVAL: CandleInterval = "1m";
+
+/** An order the rollup's clock does not yet call expired, or a clock reading that failed, is looked at again after this long. */
+const EXPIRY_RECHECK_MS = 5_000;
+
+/** While an order that expires is open, the check for expiry is looked at this often; a fresh clock reading is taken at most every 30 seconds. */
+const EXPIRY_TICK_MS = 10_000;
+
+/** Opens the message shown when cancelling an expired order on the trader's behalf did not go through. */
+const EXPIRED_CANCEL_FAILURE_LEAD = "An order of yours expired and could not be cancelled. ";
 
 interface OrderSession {
   market: string;
@@ -128,6 +144,7 @@ export function Terminal() {
   const ownerIdentity = useOwnerIdentity(wallet);
   const owner = ownerIdentity?.address ?? "";
   const tabGuard = useTradingTabGuard(owner || null);
+  const tradingPause = useTradingPause(env.simUrl);
   const marketSettings = useCallback(
     (id: string) => data.markets.find((item) => item.id === id),
     [data.markets],
@@ -197,11 +214,6 @@ export function Terminal() {
   const [cancelMessage, setCancelMessage] = useState<string | null>(null);
   const [prefillRequest, setPrefillRequest] = useState<PrefillRequest | null>(null);
   const syncedMakerFillsRef = useRef(new Set<string>());
-  // This device's own first-seen time per open order id - there is no
-  // venue-reported placement time on `OpenOrder` to show instead, and
-  // inventing one would be exactly the kind of fabricated figure the
-  // account dock must not show (second design review, item 6/7).
-  const [openOrderFirstSeenAtMs, setOpenOrderFirstSeenAtMs] = useState<Record<string, number>>({});
 
   function appendStep(
     prev: RailStep[],
@@ -373,12 +385,21 @@ export function Terminal() {
     sizeDecimals: number,
     result: CancelResult,
     singleOrder: boolean,
+    failureLead = "",
   ): Promise<void> {
     if (result.pending) {
       setCancelPending({ expiresAtMs: result.pending.expiresAtMs });
       const settled = await result.pending.settled;
       setCancelPending(null);
-      await applyCancelOutcome(market, orderId, size, sizeDecimals, settled, singleOrder);
+      await applyCancelOutcome(
+        market,
+        orderId,
+        size,
+        sizeDecimals,
+        settled,
+        singleOrder,
+        failureLead,
+      );
       return;
     }
     if (result.cancelled > 0) {
@@ -396,7 +417,7 @@ export function Terminal() {
       );
       return;
     }
-    if (result.reason) setCancelMessage(result.reason);
+    if (result.reason) setCancelMessage(`${failureLead}${result.reason}`);
   }
 
   async function handleCancelAll(): Promise<void> {
@@ -424,7 +445,11 @@ export function Terminal() {
     }
   }
 
-  async function handleCancelOrder(market: string, orderId: string): Promise<void> {
+  async function handleCancelOrder(
+    market: string,
+    orderId: string,
+    failureLead = "",
+  ): Promise<void> {
     if (!trading.cancelOrder || cancellingIds.has(orderId)) return;
     if (tabGuard.elsewhere) {
       setCancelMessage(TRADING_IN_OTHER_TAB_NOTICE);
@@ -442,10 +467,11 @@ export function Terminal() {
         settings ? sizeDecimalsOf(settings) : 4,
         await trading.cancelOrder(market, orderId),
         true,
+        failureLead,
       );
     } catch (error) {
       setCancelPending(null);
-      setCancelMessage(userMessageLine(error, { nothingSent: true }));
+      setCancelMessage(`${failureLead}${userMessageLine(error, { nothingSent: true })}`);
     } finally {
       setCancellingIds((prev) => {
         const next = new Set(prev);
@@ -545,13 +571,114 @@ export function Terminal() {
     .filter((fill) => fill.role === "maker")
     .map((fill) => fill.sequence)
     .join(",");
+  // Either sync below is asked again, ever more slowly up to once a minute,
+  // for as long as the account is open and it has not gone through.
+  const accountOpen = trading.accountStatus === "open" && trading.accountLoaded;
   useEffect(() => {
     const synced = syncedMakerFillsRef.current;
     const unsynced = makerFillSequences.split(",").filter((seq) => seq && !synced.has(seq));
-    if (unsynced.length === 0) return;
-    for (const sequence of unsynced) synced.add(sequence);
-    void syncMarket(selectedMarketId);
-  }, [makerFillSequences, selectedMarketId, syncMarket]);
+    if (!accountOpen || unsynced.length === 0) return;
+    return syncUntilDone(
+      () => syncMarket(selectedMarketId),
+      () => {
+        for (const sequence of unsynced) synced.add(sequence);
+      },
+    );
+  }, [accountOpen, makerFillSequences, selectedMarketId, syncMarket]);
+
+  // A fill that landed while this page was closed shows only after a sync, and
+  // no fill seen on the tape prompts one: sync once when the account loads.
+  const sessionSyncedRef = useRef(new Set<string>());
+  useEffect(() => {
+    const key = sessionKey(owner, selectedMarketId);
+    if (!owner || !accountOpen || sessionSyncedRef.current.has(key)) return;
+    return syncUntilDone(
+      () => syncMarket(selectedMarketId),
+      () => sessionSyncedRef.current.add(key),
+    );
+  }, [owner, accountOpen, selectedMarketId, syncMarket]);
+
+  // The program removes an expired resting order only when a crossing order
+  // reaches it, so until then it still holds its margin, its share of the
+  // position limit and one of the open-order slots. Once the rollup's own
+  // clock is past its expiry the order is cancelled with the order key (no
+  // wallet prompt), once per order; a failure is shown and not repeated.
+  // Without a reading of that clock nothing is cancelled: this device's
+  // clock alone could end a live order early.
+  const expiryNow = now + (trading.clockOffsetMs ?? 0);
+  const expiredOrderIds =
+    trading.clockOffsetMs === null
+      ? ""
+      : trading.state.openOrders
+          .filter((order) => typeof order.expiresAtMs === "number" && expiryNow > order.expiresAtMs)
+          .map((order) => `${order.market}:${order.orderId}`)
+          .join(",");
+  const autoCancelledRef = useRef(new Set<string>());
+  const [expiryRecheck, setExpiryRecheck] = useState(0);
+  const { rollupNowMs } = trading;
+  const expiringIds = expiringOrders(trading.state.openOrders)
+    .map((order) => `${order.market}:${order.orderId}`)
+    .join(",");
+  const lastExpiryReadRef = useRef(0);
+  const [expiryTick, setExpiryTick] = useState(0);
+  useEffect(() => {
+    if (!expiringIds) return;
+    const timer = setInterval(() => setExpiryTick((count) => count + 1), EXPIRY_TICK_MS);
+    return () => clearInterval(timer);
+  }, [expiringIds]);
+  useEffect(() => {
+    if (!owner || !expiringIds || tabGuard.elsewhere || !trading.cancelOrder) return;
+    // The offset estimate can be wrong in either direction (a device clock that
+    // moved since it was measured), so with any expiring order open the rollup's
+    // clock is read now and then whatever the estimate says; an order the
+    // estimate already calls expired is looked at sooner.
+    const flagged = expiredOrderIds
+      ? expiredOrderIds.split(",").filter((id) => !autoCancelledRef.current.has(`${owner}:${id}`))
+      : [];
+    const readNow = shouldReadRollupClock({
+      estimateFlagsExpired: flagged.length > 0,
+      lastReadMs: lastExpiryReadRef.current,
+      nowMs: Date.now(),
+    });
+    if (!readNow) return;
+    lastExpiryReadRef.current = Date.now();
+    let stopped = false;
+    let recheck: ReturnType<typeof setTimeout> | undefined;
+    const candidates = trading.state.openOrders.filter((order) =>
+      expiringIds.split(",").includes(`${order.market}:${order.orderId}`),
+    );
+    void (async () => {
+      // What is cancelled is decided by the rollup's clock read now, never by
+      // the estimate: a device clock that jumped since the offset was measured
+      // must not end a live order.
+      const fresh = await rollupNowMs();
+      if (stopped) return;
+      const expired = fresh === null ? [] : ordersPastExpiry(candidates, fresh);
+      const confirmed = new Set(expired.map((order) => `${order.market}:${order.orderId}`));
+      if (flagged.some((id) => !confirmed.has(id))) {
+        recheck = setTimeout(() => setExpiryRecheck((count) => count + 1), EXPIRY_RECHECK_MS);
+      }
+      for (const order of expired) {
+        const key = `${owner}:${order.market}:${order.orderId}`;
+        if (autoCancelledRef.current.has(key)) continue;
+        autoCancelledRef.current.add(key);
+        await handleCancelOrder(order.market, order.orderId, EXPIRED_CANCEL_FAILURE_LEAD);
+      }
+    })();
+    return () => {
+      stopped = true;
+      clearTimeout(recheck);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    owner,
+    expiringIds,
+    expiredOrderIds,
+    tabGuard.elsewhere,
+    rollupNowMs,
+    expiryRecheck,
+    expiryTick,
+  ]);
 
   const relevantSession = orderSessions[sessionKey(owner, selectedMarketId)] ?? null;
   const ownSessions = Object.entries(orderSessions)
@@ -643,29 +770,6 @@ export function Terminal() {
           : []),
       ]
     : [];
-
-  const openOrderIdsKey = trading.state.openOrders
-    .map((order) => order.orderId)
-    .sort()
-    .join(",");
-  useEffect(() => {
-    const ids = new Set(trading.state.openOrders.map((order) => order.orderId));
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setOpenOrderFirstSeenAtMs((prev) => {
-      const next: Record<string, number> = {};
-      let changed = ids.size !== Object.keys(prev).length;
-      for (const id of ids) {
-        if (prev[id] !== undefined) {
-          next[id] = prev[id];
-        } else {
-          next[id] = Date.now();
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openOrderIdsKey]);
 
   // A small cross-market "recent activity" control: every other market
   // this session placed an order in, most recent first.
@@ -768,6 +872,7 @@ export function Terminal() {
       limits={trading.marketLimits.get(market.id)}
       limitsState={trading.marketLimitsState}
       exposureUnreadable={trading.state.exposureUnreadable === true}
+      tradingPause={tradingPause}
       onFund={() => trading.fund()}
       grantAlreadyUsed={trading.grantUsed}
       noFaucet={trading.noFaucet}
@@ -833,7 +938,7 @@ export function Terminal() {
       onTabChange={handleDockTabChange}
       positions={positionsArray}
       openOrders={trading.state.openOrders}
-      openOrderFirstSeenAtMs={openOrderFirstSeenAtMs}
+      expiryNow={expiryNow}
       ownFills={ownFillsForMarket}
       balances={balancesArray}
       collateral={trading.state.collateral ?? null}

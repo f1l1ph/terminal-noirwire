@@ -72,7 +72,19 @@ const REVIEWED_BID: NewOrderInput = {
 
 const limitsOf = (bandBps: number, minSize = 1n, minNotional = 0n) =>
   new Map<number, ChainMarketLimits>([
-    [0, { imBps: 2000, mmBps: 500, takerFeeBps: 5, bandBps, minSize, minNotional }],
+    [
+      0,
+      {
+        imBps: 2000,
+        mmBps: 500,
+        takerFeeBps: 5,
+        bandBps,
+        minSize,
+        minNotional,
+        positionCap: 10_000n,
+        maxOpenOrders: 32,
+      },
+    ],
   ]);
 
 /** The first session is about to lapse, so placing an order replaces it; the second reads the given limits. */

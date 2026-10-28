@@ -7,7 +7,16 @@ const limitsWith = (bandBps: number): ReadonlyMap<string, MarketLimits> =>
   new Map([
     [
       "NSOL-PERP",
-      { imBps: 2000, mmBps: 500, takerFeeBps: 5, bandBps, minSize: "0.1", minNotional: "5" },
+      {
+        imBps: 2000,
+        mmBps: 500,
+        takerFeeBps: 5,
+        bandBps,
+        minSize: "0.1",
+        minNotional: "5",
+        positionCap: "10",
+        maxOpenOrders: 32,
+      },
     ],
   ]);
 

@@ -17,6 +17,19 @@ export function limitSentAsIoc(
   return type === "limit" && makersListed && !reduceOnly;
 }
 
+/**
+ * Whether the order can rest on the book. The program never rests a
+ * reduce-only order: it fills at its price or better at once and the rest is
+ * cancelled. A limit that is sent as immediate-or-cancel does not rest either.
+ */
+export function orderCanRest(
+  type: OrderType,
+  makersListed: boolean,
+  reduceOnly: boolean | undefined,
+): boolean {
+  return type === "limit" && !reduceOnly && !limitSentAsIoc(type, makersListed, reduceOnly);
+}
+
 export function wireOrderType(
   type: OrderType,
   makersListed: boolean,

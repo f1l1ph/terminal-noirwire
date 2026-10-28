@@ -133,7 +133,10 @@ export const healthResponseSchema = z.object({
   ok: z.boolean(),
   venue: z.string(),
   network: z.string(),
+  /** Present only while the service is awake: whether its market maker has quotes up, and why not when it has none. */
+  trading: z.object({ ready: z.boolean(), reason: z.string().optional() }).optional(),
 });
+export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 const wsActivitySchema = z.object({ orders: z.number(), fills: z.number(), volume: z.string() });
 
@@ -207,6 +210,7 @@ export const openOrderSchema = z.object({
   size: z.string(),
   remainingSize: z.string(),
   reduceOnly: z.boolean(),
+  expiresAtMs: z.number().nullable().optional(),
 });
 export type OpenOrder = z.infer<typeof openOrderSchema>;
 

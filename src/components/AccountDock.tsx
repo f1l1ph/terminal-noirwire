@@ -13,10 +13,10 @@ import {
   formatClockTime,
   formatDecimal,
   formatMoney,
-  formatRelativeAge,
+  formatTimeLeft,
   UNAVAILABLE,
 } from "@/lib/format";
-import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
+import { isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { marketDisplayName } from "@/lib/market-data/displayName";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
 import {
@@ -79,7 +79,7 @@ export function AccountDock({
   onTabChange,
   positions,
   openOrders,
-  openOrderFirstSeenAtMs,
+  expiryNow,
   ownFills,
   balances,
   collateral,
@@ -102,8 +102,8 @@ export function AccountDock({
   onTabChange: (tab: Tab) => void;
   positions: Position[];
   openOrders: OpenOrder[];
-  /** This device's own first-seen time per order id (there is no venue-reported placement time on `OpenOrder`): an honest, session-local age, not a fabricated venue timestamp. */
-  openOrderFirstSeenAtMs: Record<string, number>;
+  /** The time an order's expiry is compared with: the rollup's clock, which can differ from this device's. Defaults to `now`. */
+  expiryNow?: number;
   ownFills: OwnFillRecord[];
   balances: Balance[];
   /** The separate perpetuals collateral account. `null` in dev mode: one balance, not two. */
@@ -181,8 +181,7 @@ export function AccountDock({
           <OpenOrdersTable
             openOrders={openOrders}
             marketSettings={marketSettings}
-            firstSeenAtMs={openOrderFirstSeenAtMs}
-            now={now}
+            now={expiryNow ?? now}
             onCancel={onCancelOrder}
             cancellingOrderIds={cancellingOrderIds}
           />
@@ -494,17 +493,19 @@ function EmptyState({ title, hint }: { title: string; hint: string }) {
   );
 }
 
+function isExpired(order: OpenOrder, now: number): boolean {
+  return typeof order.expiresAtMs === "number" && now > order.expiresAtMs;
+}
+
 function OpenOrdersTable({
   openOrders,
   marketSettings,
-  firstSeenAtMs,
   now,
   onCancel,
   cancellingOrderIds,
 }: {
   openOrders: OpenOrder[];
   marketSettings: MarketSettingsLookup;
-  firstSeenAtMs: Record<string, number>;
   now: number;
   onCancel: ((market: string, orderId: string) => void) | null;
   cancellingOrderIds: ReadonlySet<string>;
@@ -526,15 +527,13 @@ function OpenOrdersTable({
           <th className="font-normal">Type</th>
           <th className="font-normal">Price</th>
           <th className="font-normal">Remaining</th>
-          <th className="font-normal">Age</th>
+          <th className="font-normal">Expires</th>
           <th className="font-normal"></th>
         </tr>
       </thead>
       <tbody>
         {openOrders.map((order) => {
           const settings = marketSettings(order.market);
-          const seenAt = firstSeenAtMs[order.orderId];
-          const age = seenAt !== undefined ? ageMs(seenAt, now) : null;
           return (
             <tr key={order.orderId} className="border-line-subtle border-t">
               <td className="py-1.5">{marketDisplayName(order.market)}</td>
@@ -549,10 +548,18 @@ function OpenOrdersTable({
               </td>
               <td>{formatDecimal(order.remainingSize, settings ? sizeDecimalsOf(settings) : 4)}</td>
               <td
-                className="text-faint"
-                title="Since this device first observed the order, not the venue's own placement time"
+                className={isExpired(order, now) ? "text-warning" : "text-faint"}
+                title={
+                  isExpired(order, now)
+                    ? "This order has expired. It still holds its margin until it is cancelled."
+                    : "When the order's own expiry passes"
+                }
               >
-                {age !== null ? formatRelativeAge(age) : UNAVAILABLE}
+                {order.expiresAtMs === undefined
+                  ? UNAVAILABLE
+                  : order.expiresAtMs === null
+                    ? "Never"
+                    : formatTimeLeft(order.expiresAtMs, now)}
               </td>
               <td className="py-1.5 text-right">
                 {onCancel && (

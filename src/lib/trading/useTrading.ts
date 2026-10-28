@@ -64,6 +64,9 @@ interface OwnerFlow {
   sessionStopped: boolean;
 }
 
+/** The rollup's clock is read again this often; the client keeps a reading for 5 minutes. */
+const CLOCK_REREAD_MS = 300_000;
+
 /** A failed read of the market limits is tried again this often, this many times, while nothing else has changed. */
 const LIMITS_RETRY_MS = 10_000;
 const LIMITS_RETRY_ATTEMPTS = 6;
@@ -405,6 +408,42 @@ export function useTrading(
     return () => window.removeEventListener("beforeunload", onUnload);
   }, [client, wallet]);
 
+  // The rollup's clock against this device's, which decides when a resting
+  // order has expired. Null until it has been read; read again now and then.
+  const [clockOffsets, setClockOffsets] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!wallet || !client.clockOffsetMs) return;
+    const identity = wallet;
+    const read = client.clockOffsetMs.bind(client);
+    let active = true;
+    const refresh = () => {
+      read(identity).then(
+        (offsetMs) => {
+          if (active && offsetMs !== null) {
+            setClockOffsets((prev) => ({ ...prev, [identity.address]: offsetMs }));
+          }
+        },
+        () => {},
+      );
+    };
+    refresh();
+    const timer = setInterval(refresh, CLOCK_REREAD_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [client, wallet]);
+  const clockOffsetMs = wallet ? (clockOffsets[wallet.address] ?? null) : null;
+  /** The rollup's clock read afresh, or null when it cannot be read. */
+  const rollupNowMs = useCallback(async (): Promise<number | null> => {
+    if (!wallet || !client.rollupNowMs) return null;
+    try {
+      return await client.rollupNowMs(wallet);
+    } catch {
+      return null;
+    }
+  }, [client, wallet]);
+
   const flow = (wallet ? flows[wallet.address] : undefined) ?? NO_FLOW;
   const currentRead = wallet ? reads[wallet.address] : undefined;
   const effectiveState = currentRead?.state ?? EMPTY_STATE;
@@ -621,10 +660,15 @@ export function useTrading(
     [client, wallet],
   );
 
+  /** Whether the market's view was refreshed; false when it was not and should be tried again. */
   const syncMarket = useCallback(
-    async (market: string) => {
-      if (!wallet || !client.syncMarket) return;
-      await client.syncMarket(wallet, market);
+    async (market: string): Promise<boolean> => {
+      if (!wallet || !client.syncMarket) return true;
+      try {
+        return await client.syncMarket(wallet, market);
+      } catch {
+        return false;
+      }
     },
     [client, wallet],
   );
@@ -699,6 +743,9 @@ export function useTrading(
     marketLimits: flow.limits,
     /** Whether the market limits are still being read, were read, or could not be; mainnet orders wait for "ready". */
     marketLimitsState: flow.limitsState,
+    /** How far the rollup's clock runs ahead of this device's, in milliseconds; null until it has been read. */
+    clockOffsetMs,
+    rollupNowMs,
     /** True once the exchange refused a freshly signed token: nothing signs in on its own until `signInAgain`. */
     sessionStopped: flow.sessionStopped,
     signInAgain,

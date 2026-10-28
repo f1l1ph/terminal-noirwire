@@ -102,6 +102,9 @@ export interface ChainMarketLimits {
   bandBps: number;
   minSize: bigint;
   minNotional: bigint;
+  /** The most lots one seat may hold on one side, resting orders included. */
+  positionCap: bigint;
+  maxOpenOrders: number;
 }
 
 export interface RollupSession {
@@ -291,6 +294,8 @@ async function marketsMatchingChain(
       bandBps: chain.params.bandBps,
       minSize: chain.params.minSize,
       minNotional: chain.params.minNotional,
+      positionCap: chain.params.positionCap,
+      maxOpenOrders: chain.params.maxOpenOrders,
     });
     if (isMakersListed(chain.params.access)) matching.makersListed.add(market.marketId);
   });

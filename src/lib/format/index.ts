@@ -73,6 +73,20 @@ export function formatRelativeAge(ageMs: number): string {
   return `${days}d`;
 }
 
+/** Time left until an order's own expiry: "under 1m", "52m", "3h 10m", "2d 3h"; "Expired" once the moment has passed. */
+export function formatTimeLeft(expiresAtMs: number, now: number): string {
+  if (!Number.isFinite(expiresAtMs) || !Number.isFinite(now)) return UNAVAILABLE;
+  const leftMs = expiresAtMs - now;
+  if (leftMs <= 0) return "Expired";
+  const minutes = Math.floor(leftMs / 60_000);
+  if (minutes < 1) return "under 1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+}
+
 /** How old a price is, as shown beside it: "Updated just now", "Updated 42s ago". */
 export function formatUpdatedAge(ageMs: number): string {
   const relative = formatRelativeAge(ageMs);
