@@ -1,9 +1,12 @@
 import "../bufferBigInt";
 import { deriveVault } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { isStaged, legSends, type OperationRecord } from "./journal";
+import { keyShortfallLamports } from "./keyMoveCost";
 import {
   ROUND_TRIP_LAMPORTS,
   POLL_MS,
   beginOperation,
+  depositKeyMissing,
   finishWhenFinalized,
   holdsSol,
   intentRefusal,
@@ -41,6 +44,7 @@ const ACCOUNT_MISSING = 6114;
 const SEAT_TABLE_FULL = 6013;
 const SEAT_DEPOSIT_TOO_SMALL = 6156;
 const DELEGATION_SHOWN_WITHIN_MS = 60_000;
+const FUNDING_SHOWN_WITHIN_MS = 30_000;
 
 export type DepositOutcome =
   | Stopped
@@ -119,20 +123,19 @@ async function depositRefusal(
 
 /**
  * Step 1, the one signature the wallet gives: a single Solana transaction in
- * which the owner pays `atoms` into the deposit key's token account and the
- * key moves them into the rollup as its own balance (the key co-signs here,
- * locally). The key's rollup balance before it is journaled with the send, so
- * a later run can tell whether it landed.
+ * which the owner alone pays `atoms` into the deposit key's token account and
+ * sends the key the SOL its own move will need. The key's rollup balance
+ * before the move is journaled with the send, so a later run can tell whether
+ * the move landed.
  */
-async function moveToDepositKey(
+async function fundDepositKey(
   env: TransferEnv,
   id: string,
   atoms: bigint,
   wallet: bigint,
 ): Promise<Refused | { broadcastError: string | null }> {
   const key = env.depositKey.publicKey;
-  const first = !(await env.solana.getAccountInfo(depositKeyBalance(key, env.mint), "confirmed"));
-  const vaultMissing = !(await env.solana.getAccountInfo(deriveVault(env.mint)[0], "confirmed"));
+  const { first, vaultMissing } = await moveCircumstances(env);
   const rollupBefore = first ? 0n : await keyHeldInRollup(env);
   if (rollupBefore === null) {
     return refuse(
@@ -140,16 +143,79 @@ async function moveToDepositKey(
       "The deposit key's balance is delegated but the rollup does not show it, so the move cannot be checked later. Nothing was sent.",
     );
   }
-  const instructions = [
-    ...fundKeyInstructions({
+  const lamports = await keyShortfallLamports(env.solana, key, {
+    first,
+    vaultMissing,
+    sealed: env.sealed,
+  });
+  const sent = await sendJournaled(env, {
+    id,
+    kind: "deposit",
+    step: "deposit",
+    atoms,
+    rollupBefore,
+    instructions: fundKeyInstructions({
       owner: env.owner,
       key,
       mint: env.mint,
       decimals: env.decimals,
       atoms,
+      lamports,
     }),
-    ...(await moveKeyInstructions({
-      owner: env.owner,
+    shape: { kind: "key-fund", atoms, key, decimals: env.decimals, lamports },
+    leg: "fund",
+    before: wallet,
+    moved: atoms,
+  });
+  return "status" in sent ? sent : { broadcastError: sent.broadcastError };
+}
+
+/** What decides the accounts the key's move creates, read now: whether the key has no balance account yet and whether the mint has no escrow. */
+async function moveCircumstances(env: TransferEnv) {
+  const first = !(await env.solana.getAccountInfo(
+    depositKeyBalance(env.depositKey.publicKey, env.mint),
+    "confirmed",
+  ));
+  const vaultMissing = !(await env.solana.getAccountInfo(deriveVault(env.mint)[0], "confirmed"));
+  return { first, vaultMissing };
+}
+
+/**
+ * Step 2, which the deposit key signs and pays for alone, so the wallet is not
+ * asked: the key's `atoms` go into the rollup as its own balance. It is built
+ * fresh from what the chain shows now and sent only once the key's token
+ * account shows the tokens, and never while an earlier send of it may still
+ * land.
+ */
+async function moveFromDepositKey(
+  env: TransferEnv,
+  id: string,
+  atoms: bigint,
+): Promise<Refused | Stopped | { broadcastError: string | null }> {
+  const key = env.depositKey.publicKey;
+  const account = depositKeyAccount(key, env.mint);
+  const held = await pollUntil(
+    async () => {
+      const balance = await readTokenBalance(env.solana, account);
+      return balance !== null && balance >= atoms ? balance : null;
+    },
+    env.clock,
+    FUNDING_SHOWN_WITHIN_MS,
+    POLL_MS,
+  );
+  if (held === null) {
+    return waiting(
+      id,
+      `The payment to the deposit key landed, but its token account does not yet show ${atoms} atoms. It is looked at again next time; nothing is sent again.`,
+    );
+  }
+  const { first, vaultMissing } = await moveCircumstances(env);
+  const sent = await sendJournaled(env, {
+    id,
+    kind: "deposit",
+    step: "deposit",
+    atoms,
+    instructions: await moveKeyInstructions({
       key,
       mint: env.mint,
       validator: env.validator,
@@ -157,27 +223,91 @@ async function moveToDepositKey(
       sealed: env.sealed,
       first,
       vaultMissing,
-    })),
-  ];
-  const sent = await sendJournaled(env, {
-    id,
-    kind: "deposit",
-    step: "deposit",
-    atoms,
-    rollupBefore,
-    instructions,
-    shape: { kind: "key-move", atoms, sealed: env.sealed, key, decimals: env.decimals },
-    cosigner: env.depositKey,
-    before: wallet,
+    }),
+    shape: { kind: "key-move", atoms, sealed: env.sealed, key },
+    leg: "move",
+    before: held,
     moved: atoms,
   });
   return "status" in sent ? sent : { broadcastError: sent.broadcastError };
 }
 
 /**
- * Carries the deposit on from whatever the journal shows: step 1 judged, the
- * deposit key's rollup balance awaited, then step 2, which the key signs and
- * pays for itself, so the wallet is not asked again.
+ * Judges the single transaction an earlier version of the app sent, in which
+ * the wallet paid the key and the key moved the tokens into the rollup at once.
+ * Null once it landed, else the stop to show.
+ */
+async function combinedMoveStop(
+  env: TransferEnv,
+  record: OperationRecord,
+  answer: string | undefined,
+): Promise<DepositOutcome | null> {
+  const judged = await reconciled(env, record.id, record.sends, answer);
+  if ("status" in judged) return judged;
+  if (!judged.landed && record.sends.length > 0) {
+    await env.journal.finish(env.owner.toBase58(), record.id);
+    return refuse(
+      "send-failed",
+      "The move into the rollup did not land and cannot any more, so nothing moved. Try again.",
+    );
+  }
+  return null;
+}
+
+/**
+ * Judges the two steps of a deposit through the deposit key and sends the move
+ * when the funding landed and no move is on record or every move on record can
+ * no longer land. Null once the move landed, else the stop to show. The funding
+ * is never sent again.
+ */
+async function stagedMoveStop(
+  env: TransferEnv,
+  record: OperationRecord,
+  atoms: bigint,
+  answer: string | undefined,
+): Promise<DepositOutcome | null> {
+  const { id } = record;
+  const funded = await reconciled(env, id, legSends(record, "fund"), answer);
+  if ("status" in funded) return funded;
+  const moves = legSends(record, "move");
+  if (!funded.landed) {
+    if (moves.length > 0) {
+      return waiting(
+        id,
+        "The payment to the deposit key did not land, yet a move from it is on record. Nothing is sent again; contact support with the transfer id.",
+      );
+    }
+    await env.journal.finish(env.owner.toBase58(), id);
+    return refuse(
+      "send-failed",
+      "The payment to the deposit key did not land and cannot any more, so nothing moved. Try again.",
+    );
+  }
+  const moved = await reconciled(env, id, moves, answer);
+  if ("status" in moved) return moved;
+  if (moved.landed) return null;
+  const sent = await moveFromDepositKey(env, id, atoms);
+  if ("status" in sent) return sent;
+  const after = await reconciled(env, id, legSends(await recordOf(env, id), "move"), answer);
+  if ("status" in after) {
+    return after.status === "waiting"
+      ? { ...after, message: withBroadcastError(after.message, sent.broadcastError) }
+      : after;
+  }
+  return after.landed
+    ? null
+    : refuse(
+        "send-failed",
+        "The move into the rollup did not land and cannot any more. Your USDC is safe in the deposit key. Try the deposit again, or return it to your wallet, under transfers that need attention.",
+      );
+}
+
+/**
+ * Carries the deposit on from whatever the journal shows: the wallet's funding
+ * of the deposit key and the key's move into the rollup judged (a record of the
+ * earlier single-transaction version by its one send), the deposit key's
+ * rollup balance awaited, then the last step, which the key signs and pays for
+ * itself, so the wallet is not asked again.
  */
 async function carryOn(
   env: TransferEnv,
@@ -185,7 +315,6 @@ async function carryOn(
   atoms: bigint,
   answer: string | undefined,
 ): Promise<DepositOutcome> {
-  const owner = env.owner.toBase58();
   const record = await recordOf(env, id);
   if (record.depositKey === undefined) {
     return refuse(
@@ -193,21 +322,11 @@ async function carryOn(
       "This deposit was begun by an earlier version of the app, which put the tokens in your own rollup balance. Return them to your wallet under transfers that need attention, then deposit again. Nothing was sent.",
     );
   }
-  if (record.depositKey !== env.depositKey.publicKey.toBase58()) {
-    return refuse(
-      "deposit-key-missing",
-      `The key that finishes this deposit (transfer ${id}) is no longer stored in this browser, so the deposit cannot be finished from here. The USDC has already left your wallet and sits under that key. Do not deposit again. Contact support and give them this transfer id. Nothing new was sent.`,
-    );
-  }
-  const judged = await reconciled(env, id, record.sends, answer);
-  if ("status" in judged) return judged;
-  if (!judged.landed && record.sends.length > 0) {
-    await env.journal.finish(owner, id);
-    return refuse(
-      "send-failed",
-      "The move into the rollup did not land and cannot any more, so nothing moved. Try again.",
-    );
-  }
+  if (record.depositKey !== env.depositKey.publicKey.toBase58()) return depositKeyMissing(id);
+  const stop = isStaged(record)
+    ? await stagedMoveStop(env, record, atoms, answer)
+    : await combinedMoveStop(env, record, answer);
+  if (stop) return stop;
   if (record.rollupBefore === undefined) {
     throw new Error(
       `Operation ${id} has no rollup balance on record, so the move cannot be judged`,
@@ -317,9 +436,10 @@ function strandedBy(id: string, error: string, recordKept: boolean): DepositOutc
 
 /**
  * Moves `input.amount` of the owner's quote token from the wallet into the
- * seat: step 1 (the wallet's only signature, a Solana transaction) moves it
- * into the rollup as the deposit key's balance, step 2 (signed by the key)
- * deposits it as collateral for the owner.
+ * seat: step 1 (the wallet's only signature, a plain Solana transaction with
+ * the owner as its one signer) pays it to the deposit key, step 2 (signed and
+ * paid by the key) moves it into the rollup as the key's balance, step 3
+ * (signed by the key) deposits it as collateral for the owner.
  * Every send is journaled before it is broadcast, and a run that finds a
  * journal record carries it on without repeating a step that may have landed,
  * asking when it cannot tell. One transfer runs at a time per owner across
@@ -352,7 +472,7 @@ export function deposit(env: TransferEnv, input: DepositInput): Promise<DepositO
     if (!begun.record) {
       const gate = await depositRefusal(env, atoms);
       if ("status" in gate) return gate;
-      const moved = await moveToDepositKey(env, begun.id, atoms, gate.wallet);
+      const moved = await fundDepositKey(env, begun.id, atoms, gate.wallet);
       if ("status" in moved) return moved;
       broadcastError = moved.broadcastError;
     }

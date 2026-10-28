@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  DELEGATION_PROGRAM_ID,
+  EPHEMERAL_SPL_TOKEN_PROGRAM_ID,
+} from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Connection, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
-import nacl from "tweetnacl";
 import { WALLET_ASSERTION_PROGRAM } from "@/lib/rollup/signedCheck";
 import { signatureOf } from "@/lib/transfer/send";
 import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
@@ -43,13 +46,13 @@ function widenedByWallet(world: World, count: number, bytes = (_base: number) =>
   };
 }
 
-/** A deposit whose two steps both land. */
+/** A deposit whose three steps all land: the wallet's payment to the key, the key's move and the key's deposit into the seat. */
 function landing(world: World) {
-  world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+  world.stagedLanding(ATOMS);
   world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
 }
 
-/** Writes down a delegation that was sent, as an earlier run would have. */
+/** Writes down the single transaction an earlier version of the app sent, in which the wallet paid the key and the key moved the tokens into the rollup at once. */
 async function earlierMove(world: World, signature = "sigA") {
   await world.env.journal.record(world.owner, {
     id: "old",
@@ -184,33 +187,70 @@ describe("deposit steps", () => {
       "sign",
       "journal:record",
       "broadcast:solana",
+      "journal:record",
+      "broadcast:solana",
       "journal:seat",
       "broadcast:rollup",
     ]);
   });
 
-  it("has the wallet sign first and the deposit key sign the message the wallet returned", async () => {
+  it("gives the wallet a plain transaction with the owner as its only signer, and never the key's move", async () => {
     const world = makeWorld();
     landing(world);
-    const keySigned: boolean[] = [];
+    const seen: Transaction[] = [];
     const walletSign = world.env.signChecked;
-    world.env.signChecked = async (transaction, shape) => {
-      keySigned.push(
-        transaction.signatures.some(
-          (entry) => entry.publicKey.equals(world.depositKey.publicKey) && entry.signature,
-        ),
-      );
-      return walletSign(transaction, shape);
+    world.env.signChecked = async (transaction, shape, chain) => {
+      seen.push(transaction);
+      return walletSign(transaction, shape, chain);
     };
     await deposit(world.env, { amount: AMOUNT });
-    expect(keySigned).toEqual([false]);
-    const [raw] = world.solana.rawSent;
-    const sent = Transaction.from(raw);
-    expect(sent.verifySignatures()).toBe(true);
-    expect(sent.signatures.filter((entry) => entry.signature !== null)).toHaveLength(2);
+    expect(seen).toHaveLength(1);
+    const message = seen[0].compileMessage();
+    expect(message.header.numRequiredSignatures).toBe(1);
+    expect(message.accountKeys[0].equals(world.keypair.publicKey)).toBe(true);
+    const [fund, move] = world.solana.rawSent.map((raw) => Transaction.from(raw));
+    expect(fund.verifySignatures()).toBe(true);
+    expect(fund.signatures.filter((entry) => entry.signature !== null)).toHaveLength(1);
+    expect(
+      fund.instructions.some((entry) =>
+        entry.keys.some((key) => key.pubkey.equals(DELEGATION_PROGRAM_ID)),
+      ),
+    ).toBe(false);
+    expect(
+      fund.instructions.some((entry) => entry.programId.equals(EPHEMERAL_SPL_TOKEN_PROGRAM_ID)),
+    ).toBe(false);
+    expect(
+      move.instructions.some((entry) => entry.programId.equals(EPHEMERAL_SPL_TOKEN_PROGRAM_ID)),
+    ).toBe(true);
   });
 
-  it("has the deposit key sign the message the wallet returned with its assertions, and journals what is broadcast", async () => {
+  it("has the deposit key alone pay for and sign its move", async () => {
+    const world = makeWorld();
+    landing(world);
+    await deposit(world.env, { amount: AMOUNT });
+    const move = Transaction.from(world.solana.rawSent[1]);
+    const key = world.depositKey.publicKey;
+    expect(move.feePayer?.equals(key)).toBe(true);
+    expect(move.compileMessage().header.numRequiredSignatures).toBe(1);
+    expect(move.signatures.map((entry) => entry.publicKey.toBase58())).toEqual([key.toBase58()]);
+    expect(move.verifySignatures()).toBe(true);
+    expect(world.signed).toHaveLength(1);
+    expect(world.solana.sent[1]).toBe(signatureOf(world.solana.rawSent[1]));
+  });
+
+  it("journals the payment to the key as a fund send and the move as a move send, each before it is broadcast", async () => {
+    const world = makeWorld();
+    world.solana.script({ fate: "land", effect: world.fundEffect(ATOMS) });
+    world.solana.script({ fate: "swallow" });
+    await deposit(world.env, { amount: AMOUNT });
+    const record = world.record()!;
+    expect(record.sends.map((send) => send.leg)).toEqual(["fund", "move"]);
+    expect(record.sends.map((send) => send.signature)).toEqual([...new Set(world.solana.sent)]);
+    expect(record.depositKey).toBe(world.depositKey.publicKey.toBase58());
+    expect(record.rollupBefore).toBe("0");
+  });
+
+  it("has the wallet sign the payment to the key with its assertions, and journals what is broadcast", async () => {
     const world = makeWorld();
     landing(world);
     widenedByWallet(world, 3);
@@ -218,15 +258,8 @@ describe("deposit steps", () => {
     const [raw] = world.solana.rawSent;
     const sent = Transaction.from(raw);
     expect(sent.instructions.filter((entry) => isAssertion(entry))).toHaveLength(3);
-    const key = sent.signatures.find((entry) => entry.publicKey.equals(world.depositKey.publicKey));
-    expect(
-      nacl.sign.detached.verify(
-        sent.serializeMessage(),
-        key!.signature!,
-        world.depositKey.publicKey.toBytes(),
-      ),
-    ).toBe(true);
     expect(sent.verifySignatures()).toBe(true);
+    expect(sent.signatures.filter((entry) => entry.signature !== null)).toHaveLength(1);
     expect(world.solana.sent[0]).toBe(signatureOf(raw));
     expect(world.events.indexOf("journal:record")).toBeLessThan(
       world.events.indexOf("broadcast:solana"),
@@ -236,7 +269,7 @@ describe("deposit steps", () => {
   it("refuses a wallet-widened transaction over 1,232 bytes before anything is broadcast", async () => {
     const world = makeWorld();
     landing(world);
-    widenedByWallet(world, 1, (base) => 1110 - base - 75);
+    widenedByWallet(world, 1, (base) => 1300 - base);
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "refused", reason: "transaction-not-allowed" });
     expect((outcome as { message: string }).message).toMatch(/1232.*Nothing was sent/);
@@ -244,7 +277,7 @@ describe("deposit steps", () => {
     expect(world.rows.size).toBe(0);
   });
 
-  it("does not let the deposit key sign when the wallet is refused", async () => {
+  it("sends nothing when the wallet is refused", async () => {
     const world = makeWorld();
     world.env.signChecked = async () => {
       throw new Error("Refusing to sign: your wallet changed the transaction");
@@ -278,7 +311,7 @@ describe("deposit steps", () => {
     const signers = transaction.signatures
       .filter((entry) => entry.signature !== null)
       .map((entry) => entry.publicKey.toBase58());
-    expect(signers.sort()).toEqual([world.owner, world.depositKey.publicKey.toBase58()].sort());
+    expect(signers).toEqual([world.owner]);
   });
 
   it("has the deposit key sign and pay for the collateral deposit, crediting the owner", async () => {
@@ -304,7 +337,7 @@ describe("deposit steps", () => {
 
   it("writes the deposit key into the record with the move", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     expect(world.record()).toMatchObject({
@@ -316,7 +349,7 @@ describe("deposit steps", () => {
 
   it("resumes from every state without asking the wallet again", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     world.rollup.statuses.set(world.rollup.sent[0], { err: null, confirmationStatus: "finalized" });
@@ -467,7 +500,7 @@ describe("deposit steps", () => {
 
   it("reports a confirmed success as done but keeps the record until it is finalized", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     const signature = world.rollup.sent[0];
@@ -486,7 +519,7 @@ describe("deposit steps", () => {
 
   it("records the rollup send's signature and expiry before it is broadcast", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     expect(world.record()?.seat).toMatchObject({
@@ -498,7 +531,7 @@ describe("deposit steps", () => {
 
   it("never resends: pending waits, expired reports it did not go through, and only a dismissal by hand frees a new try", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "waiting" });
     const seat = world.record()?.seat;
@@ -527,7 +560,7 @@ describe("deposit steps", () => {
 
   it("does not take a balance change for proof that the deposit landed", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     world.depositEffect(ATOMS)();
@@ -540,7 +573,7 @@ describe("deposit steps", () => {
 
   it("finds an original that landed late by its status", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     world.rollup.statuses.set(world.rollup.sent[0], { err: null, confirmationStatus: "finalized" });
@@ -551,7 +584,7 @@ describe("deposit steps", () => {
 
   it("keeps waiting on an error that is only confirmed, since it may still be rolled back", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     world.rollup.statuses.set(world.rollup.sent[0], {
@@ -566,7 +599,7 @@ describe("deposit steps", () => {
 
   it("clears an original whose status shows an error, strands the tokens, and sends nothing itself", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     world.rollup.statuses.set(world.rollup.sent[0], {
@@ -669,7 +702,7 @@ describe("deposit steps", () => {
 
   it("strands the tokens in the rollup balance when the deposit is refused, and retries from there", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "fail" });
     const stranded = await deposit(world.env, { amount: AMOUNT });
     expect(stranded).toMatchObject({ status: "stranded" });
@@ -679,12 +712,12 @@ describe("deposit steps", () => {
     expect(strandedMessage).not.toMatch(/Custom|InstructionError|deposit again by hand/);
     expect(world.rollup.token(world.keyAccount)).toBe(ATOMS);
     expect(world.rows.size).toBe(0);
-    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent).toHaveLength(2);
   });
 
   it("does not block a withdrawal of the collateral already in the account while its tokens wait in the key", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "fail" });
     expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "stranded" });
     world.delegate(0n);
@@ -701,7 +734,7 @@ describe("deposit steps", () => {
 
   it("puts the tokens a refused deposit left in the key into the account once the program takes them", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "fail" });
     expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({ status: "stranded" });
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
@@ -709,13 +742,16 @@ describe("deposit steps", () => {
     expect(world.rollup.token(world.keyAccount)).toBe(0n);
   });
 
-  it("does not send a second move when the first send's answer was lost", async () => {
+  it("does not send a second payment or move when the first send's answer was lost", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land-lost", effect: world.moveEffect(ATOMS) });
+    world.solana.script(
+      { fate: "land-lost", effect: world.fundEffect(ATOMS) },
+      { fate: "land-lost", effect: world.moveEffect(ATOMS) },
+    );
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "done" });
-    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent).toHaveLength(2);
   });
 
   it("is blocked while another tab holds the owner's lock", async () => {

@@ -1,4 +1,4 @@
-import type { OperationRecord } from "./journal";
+import { isStaged, type OperationRecord } from "./journal";
 
 /** What a rollup send stands at, as `rollupSendState` judges it from its signature's status. */
 export type SeatJudgement =
@@ -11,15 +11,17 @@ export interface Attention {
   id: string;
   kind: AttentionKind;
   /** What the transfer was: a deposit, a withdrawal or the return of a deposit's tokens to the wallet. */
-  operation: "deposit" | "withdraw" | "return";
+  operation: "deposit" | "withdraw" | "return" | "sweep";
   /** The amount in atoms as decimal text. */
   atoms: string;
   /** The signature to look the transfer up by, when one was written down. */
   signature?: string;
   /** Whether the flow can carry this record on: not one that did not land, cannot be placed, is still settling on the rollup, or is a return. */
   resumable: boolean;
-  /** Whether the deposit's tokens may be taken back to the wallet: a deposit record, from before deposits went through a deposit key, with no rollup send still settling. */
+  /** Whether the deposit's tokens may be taken back to the wallet: a deposit record, from before deposits went through a deposit key or one whose funding of the key is on record, with no rollup send still settling. */
   returnable: boolean;
+  /** Whether the deposit goes through the deposit key in two steps, its funding by the wallet and the key's move into the rollup, so its tokens may sit in the key's token account on Solana. */
+  staged: boolean;
   /** Whether the deposit's tokens went into the rollup as the deposit key's balance, where "try the deposit again" is their way into the account. */
   keyed: boolean;
   /** Whether the program refused the deposit's last step for good, so its USDC waits in the deposit key's rollup balance and only the move into the rollup is left to settle. */
@@ -45,7 +47,7 @@ export const awaitsFinality = (record: OperationRecord): boolean =>
 export type RecordAction = "copy-signature" | "dismiss" | "resume" | "return";
 
 const operationOf = (record: OperationRecord): Attention["operation"] =>
-  record.step === "return" ? "return" : record.kind;
+  record.step === "return" || record.step === "sweep" ? record.step : record.kind;
 
 const lastSignature = (record: OperationRecord): string | undefined =>
   record.sends[record.sends.length - 1]?.signature;
@@ -73,8 +75,18 @@ export function attentionOf(
     operation,
     atoms: record.atoms,
     keyed: operation === "deposit" && record.depositKey !== undefined,
+    staged: operation === "deposit" && isStaged(record),
     stranded: record.stranded === true,
   };
+  if (operation === "sweep") {
+    return {
+      ...base,
+      kind: "waiting",
+      signature: lastSignature(record),
+      resumable: false,
+      returnable: false,
+    };
+  }
   const pending = record.seat?.state === "pending" ? record.seat : undefined;
   if (pending && seat === "not-seen") {
     return {
@@ -105,7 +117,7 @@ export function attentionOf(
       operation === "deposit" &&
       !behindReturn &&
       record.seat?.state !== "landed" &&
-      record.depositKey === undefined,
+      (record.depositKey === undefined || (base.staged && record.seat === undefined)),
   };
 }
 

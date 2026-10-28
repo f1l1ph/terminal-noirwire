@@ -16,7 +16,7 @@ const ask = (world: World, intent?: Parameters<typeof withdraw>[1]["intent"]) =>
 /** After a stop, a new transfer may start: nothing on record blocks it. */
 async function expectNothingBlocks(world: World) {
   expect(world.rows.size).toBe(0);
-  world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+  world.stagedLanding(ATOMS);
   world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
   expect(await deposit(world.env, { amount: "2.5", intent: { kind: "new" } })).toMatchObject({
     status: "done",
@@ -190,7 +190,7 @@ describe("resuming an empty withdrawal record", () => {
 describe("a deposit that is done at confirmed", () => {
   const confirmedDeposit = async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS), commitment: "confirmed" });
+    world.stagedLanding(ATOMS, "confirmed");
     world.rollup.script({
       fate: "land",
       effect: world.depositEffect(ATOMS),
@@ -207,10 +207,9 @@ describe("a deposit that is done at confirmed", () => {
     await finishCompleted(world.env);
     expect(world.rows.size).toBe(1);
     const record = world.record()!;
-    world.solana.statuses.set(record.sends[0].signature, {
-      err: null,
-      confirmationStatus: "finalized",
-    });
+    for (const send of record.sends) {
+      world.solana.statuses.set(send.signature, { err: null, confirmationStatus: "finalized" });
+    }
     world.rollup.statuses.set(record.seat!.signature!, {
       err: null,
       confirmationStatus: "finalized",
@@ -229,7 +228,7 @@ describe("a deposit that is done at confirmed", () => {
     });
     expect(again).toMatchObject({ status: "done" });
     expect(world.clock.now() - started).toBeLessThan(10_000);
-    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent).toHaveLength(2);
     expect(world.rollup.sent).toHaveLength(1);
   });
 });

@@ -18,17 +18,45 @@ const sizeOf = (instructions: Parameters<Transaction["add"]>) =>
     .add(...instructions)
     .serialize({ requireAllSignatures: false, verifySignatures: false }).length;
 
-describe("the deposit key's move fits one Solana transaction", () => {
+describe("each step of the deposit through the deposit key fits one Solana transaction", () => {
+  it("the wallet's payment to the key, with the key's token account to make and SOL to send", () => {
+    const instructions = withComputeBudget(
+      fundKeyInstructions({
+        owner,
+        key,
+        mint,
+        decimals: 6,
+        atoms: 2_500_000n,
+        lamports: 30_000_000,
+      }),
+    );
+    expect(sizeOf(instructions)).toBeLessThanOrEqual(PACKET_LIMIT);
+  });
+
   for (const sealed of [false, true]) {
     for (const first of [true, false]) {
       for (const vaultMissing of first ? [true, false] : [false]) {
-        it(`${sealed ? "sealed" : "open"} custody, ${first ? "first" : "later"} deposit, escrow ${vaultMissing ? "missing" : "present"}`, async () => {
-          const parts = { owner, key, mint, validator, atoms: 2_500_000n, sealed, first };
-          const instructions = withComputeBudget([
-            ...fundKeyInstructions({ ...parts, decimals: 6 }),
-            ...(await moveKeyInstructions({ ...parts, vaultMissing, shuttleId: 7 })),
-          ]);
-          expect(sizeOf(instructions)).toBeLessThanOrEqual(PACKET_LIMIT);
+        it(`the key's move, ${sealed ? "sealed" : "open"} custody, ${first ? "first" : "later"} deposit, escrow ${vaultMissing ? "missing" : "present"}`, async () => {
+          const instructions = withComputeBudget(
+            await moveKeyInstructions({
+              key,
+              mint,
+              validator,
+              atoms: 2_500_000n,
+              sealed,
+              first,
+              vaultMissing,
+              shuttleId: 7,
+            }),
+          );
+          const transaction = new Transaction({
+            feePayer: key,
+            blockhash: PublicKey.default.toBase58(),
+            lastValidBlockHeight: 1,
+          }).add(...instructions);
+          expect(
+            transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).length,
+          ).toBeLessThanOrEqual(PACKET_LIMIT);
         });
       }
     }

@@ -13,7 +13,13 @@ import { depositKeyAccount, depositKeyBalance } from "./depositKey";
 import { redactToken } from "../rollup/redact";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
 export { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "./computeBudget";
-import { toSolanaSend, type Journal, type JournalSend, type OperationRecord } from "./journal";
+import {
+  toSolanaSend,
+  type Journal,
+  type JournalSend,
+  type OperationRecord,
+  type SendLeg,
+} from "./journal";
 import { signableRefusal, validatedPins, type TransferPins, type TransferShape } from "./guard";
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 import type { OwnerLock } from "./lock";
@@ -165,6 +171,8 @@ export type Refusal =
   | "legacy-deposit"
   | "deposit-key-missing"
   | "deposit-landed"
+  | "key-moved"
+  | "key-empty"
   | "rollup-short"
   | "nothing-to-dismiss"
   | "not-dismissable"
@@ -218,6 +226,13 @@ export const waiting = (id: string, message: string): Stopped => ({
   id,
   message,
 });
+
+/** The refusal for a deposit whose key is no longer the one stored in this browser. */
+export const depositKeyMissing = (id: string) =>
+  refuse(
+    "deposit-key-missing",
+    `The key that finishes this deposit (transfer ${id}) is no longer stored in this browser, so the deposit cannot be finished from here. The USDC has already left your wallet and sits under that key. Do not deposit again. Contact support and give them this transfer id. Nothing new was sent.`,
+  );
 
 export { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx };
 
@@ -436,16 +451,18 @@ export async function sendJournaled(
     instructions: TransactionInstruction[];
     /** The exact transaction these instructions must make. */
     shape: TransferShape;
-    /** A key that signs the transaction too, before the owner is asked: the deposit key, which the instructions name as the authority over its own tokens. */
-    cosigner?: Keypair;
-    /** The owner's token account on Solana before this send, and what it is to move. */
+    /** Which step of a deposit through the deposit key this is. The key then pays and signs the transaction alone, with no wallet; without it the owner pays and signs. */
+    leg?: SendLeg;
+    /** The token account on Solana before this send that pays, and what it is to move. */
     before: bigint;
     moved: bigint;
   },
 ): Promise<Refused | { signature: string; broadcastError: string | null }> {
   const { blockhash, lastValidBlockHeight } = await freshBlockhash(env.solana);
+  const keyed = plan.leg === "move" || plan.leg === "return" || plan.leg === "sweep";
+  const payer = keyed ? env.depositKey.publicKey : env.owner;
   const built = (units?: number, microLamports?: number) =>
-    new Transaction({ feePayer: env.owner, blockhash, lastValidBlockHeight }).add(
+    new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(
       ...withComputeBudget(plan.instructions, units, microLamports),
     );
   const probe = built();
@@ -476,8 +493,9 @@ export async function sendJournaled(
     computeUnitsAfterSimulation(plan.instructions.length, simulated.unitsConsumed),
     microLamportsFromFees(await recentPrioritizationFees(env.solana, [...written.values()])),
   );
-  const signed = await env.signChecked(transaction, plan.shape, "solana:mainnet");
-  if (plan.cosigner) signed.partialSign(plan.cosigner);
+  let signed = transaction;
+  if (keyed) transaction.sign(env.depositKey);
+  else signed = await env.signChecked(transaction, plan.shape, "solana:mainnet");
   let raw: Uint8Array;
   try {
     raw = signed.serialize();
@@ -500,11 +518,12 @@ export async function sendJournaled(
       atoms: plan.atoms.toString(),
       step: plan.step,
       rollupBefore: plan.rollupBefore?.toString(),
-      depositKey: plan.cosigner?.publicKey.toBase58(),
+      depositKey: plan.leg ? env.depositKey.publicKey.toBase58() : undefined,
     },
     lastValidBlockHeight,
     before: plan.before.toString(),
     moved: plan.moved.toString(),
+    leg: plan.leg,
     signedTx: raw,
     broadcast: (bytes) =>
       env.solana.sendRawTransaction(bytes, { preflightCommitment: "confirmed" }).catch((error) => {

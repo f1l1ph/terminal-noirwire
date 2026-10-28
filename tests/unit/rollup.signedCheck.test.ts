@@ -10,6 +10,8 @@ import {
 } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { WALLET_ASSERTION_PROGRAM, signedDiffers as check } from "@/lib/rollup/signedCheck";
+import { withComputeBudget } from "@/lib/transfer/computeBudget";
+import { fundKeyInstructions } from "@/lib/transfer/depositKey";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 
 const BLOCKHASH = "11111111111111111111111111111111";
@@ -572,5 +574,88 @@ describe("signedDiffers on a wallet that appends its assertions", () => {
         "your wallet changed the transaction",
       );
     });
+  });
+});
+
+describe("signedDiffers on the wallet's payment to the deposit key", () => {
+  const limit = (units: number) => ComputeBudgetProgram.setComputeUnitLimit({ units });
+  const assertion = () =>
+    new TransactionInstruction({
+      programId: new PublicKey(WALLET_ASSERTION_PROGRAM),
+      keys: [{ pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: false }],
+      data: Buffer.from([7, 7, 7]),
+    });
+
+  function payment() {
+    const owner = Keypair.generate();
+    const [, price, ...rest] = withComputeBudget(
+      fundKeyInstructions({
+        owner: owner.publicKey,
+        key: Keypair.generate().publicKey,
+        mint: Keypair.generate().publicKey,
+        decimals: 6,
+        atoms: 2_500_000n,
+        lamports: 6_000_000,
+      }),
+      150_000,
+    );
+    const make = (instructions: TransactionInstruction[]) =>
+      new Transaction({
+        feePayer: owner.publicKey,
+        blockhash: BLOCKHASH,
+        lastValidBlockHeight: 1,
+      }).add(...instructions);
+    const walletSigns = (instructions: TransactionInstruction[]) => {
+      const tx = make(instructions);
+      tx.partialSign(owner);
+      return Transaction.from(tx.serialize({ requireAllSignatures: false }));
+    };
+    return { owner, price, rest, built: make([limit(150_000), price, ...rest]), walletSigns };
+  }
+
+  it("has the owner as its only required signer", () => {
+    const { built, owner } = payment();
+    const message = built.compileMessage();
+    expect(message.header.numRequiredSignatures).toBe(1);
+    expect(message.accountKeys[0].equals(owner.publicKey)).toBe(true);
+  });
+
+  it("accepts the wallet's assertions with a raised limit, up to the allowance for its instructions", () => {
+    const { built, owner, price, rest, walletSigns } = payment();
+    const raised = walletSigns([limit(300_000), price, ...rest, assertion()]);
+    expect(signedDiffers(built, raised, owner.publicKey, true)).toBeNull();
+    const atAllowance = walletSigns([limit(600_000), price, assertion(), ...rest]);
+    expect(signedDiffers(built, atAllowance, owner.publicKey, true)).toBeNull();
+  });
+
+  it("refuses a raised limit past the allowance, an altered payment and a changed price", () => {
+    const { built, owner, price, rest, walletSigns } = payment();
+    const past = walletSigns([limit(600_001), price, ...rest, assertion()]);
+    expect(signedDiffers(built, past, owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+    const dearer = walletSigns([
+      limit(300_000),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 60_000 }),
+      ...rest,
+      assertion(),
+    ]);
+    expect(signedDiffers(built, dearer, owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
+    const redirected = walletSigns([
+      limit(300_000),
+      price,
+      ...rest.slice(0, -1),
+      SystemProgram.transfer({
+        fromPubkey: owner.publicKey,
+        toPubkey: Keypair.generate().publicKey,
+        lamports: 6_000_000,
+      }),
+      assertion(),
+    ]);
+    expect(signedDiffers(built, redirected, owner.publicKey, true)).toContain(
+      "your wallet changed the transaction",
+    );
   });
 });

@@ -11,15 +11,16 @@ const AMOUNT = "2.5";
 /** A deposit whose move into the rollup is only confirmed when the program refuses the last step. */
 async function refusedWhileConfirmed() {
   const world = makeWorld();
-  world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS), commitment: "confirmed" });
+  world.stagedLanding(ATOMS, "confirmed");
   world.rollup.script({ fate: "fail" });
   const outcome = await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } });
   return { world, outcome };
 }
 
 const finalize = (world: World) => {
-  const [send] = world.record()!.sends;
-  world.solana.statuses.set(send.signature, { err: null, confirmationStatus: "finalized" });
+  for (const send of world.record()!.sends) {
+    world.solana.statuses.set(send.signature, { err: null, confirmationStatus: "finalized" });
+  }
 };
 
 describe("a deposit the program refused while its move into the rollup is only confirmed", () => {
@@ -29,8 +30,8 @@ describe("a deposit the program refused while its move into the rollup is only c
     const record = world.record()!;
     expect(record.stranded).toBe(true);
     expect(record.seat).toBeUndefined();
-    expect(record.sends).toHaveLength(1);
-    expect(record.sends[0]).toMatchObject({ moved: ATOMS.toString() });
+    expect(record.sends.map((send) => send.leg)).toEqual(["fund", "move"]);
+    expect(record.sends[1]).toMatchObject({ moved: ATOMS.toString() });
     expect(awaitsFinality(record)).toBe(true);
   });
 
@@ -47,7 +48,7 @@ describe("a deposit the program refused while its move into the rollup is only c
     const { world } = await refusedWhileConfirmed();
     const second = await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } });
     expect(second).toMatchObject({ status: "refused", reason: "unfinished-operation" });
-    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent).toHaveLength(2);
     expect(world.events.filter((event) => event === "sign")).toHaveLength(1);
   });
 
@@ -58,7 +59,7 @@ describe("a deposit the program refused while its move into the rollup is only c
     finalize(world);
     await finishCompleted(world.env);
     expect(world.rows.size).toBe(0);
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     expect(await deposit(world.env, { amount: "1", intent: { kind: "new" } })).toMatchObject({
       status: "done",
@@ -74,7 +75,7 @@ describe("a deposit the program refused while its move into the rollup is only c
       intent: { kind: "resume", id: record.id, atoms: record.atoms },
     });
     expect(outcome).toMatchObject({ status: "done" });
-    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent).toHaveLength(2);
     expect(world.rollup.token(world.keyAccount)).toBe(0n);
   });
 
@@ -88,14 +89,14 @@ describe("a deposit the program refused while its move into the rollup is only c
     });
     expect(again).toMatchObject({ status: "stranded", recordKept: true });
     expect(world.record()?.stranded).toBe(true);
-    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent).toHaveLength(2);
   });
 });
 
 describe("a deposit the program refused once its move into the rollup is final", () => {
   it("leaves no record, and the leftover button handles the key's balance", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "fail" });
     const outcome = await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } });
     expect(outcome).toMatchObject({ status: "stranded", recordKept: false });

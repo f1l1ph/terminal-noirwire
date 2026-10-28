@@ -100,7 +100,7 @@ describe("a resume whose record is cleaned up on the way", () => {
   /** A deposit that is done and confirmed, whose record stays until its send is finalized. */
   async function confirmedDeposit() {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "swallow" });
     await deposit(world.env, { amount: AMOUNT });
     const signature = world.rollup.sent[0];
@@ -114,7 +114,7 @@ describe("a resume whose record is cleaned up on the way", () => {
     const { world, signature } = await confirmedDeposit();
     world.rollup.statuses.set(signature, { err: null, confirmationStatus: "finalized" });
     const sentBefore = [world.solana.sent.length, world.rollup.sent.length];
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     const outcome = await deposit(world.env, {
       amount: AMOUNT,
       intent: { kind: "resume", id: [...world.rows.values()][0].id, atoms: ATOMS.toString() },
@@ -142,11 +142,11 @@ describe("a resume whose record is cleaned up on the way", () => {
   it("still lets a transfer with no resume intent start after the cleanup", async () => {
     const { world, signature } = await confirmedDeposit();
     world.rollup.statuses.set(signature, { err: null, confirmationStatus: "finalized" });
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "done" });
-    expect(world.solana.sent).toHaveLength(2);
+    expect(world.solana.sent).toHaveLength(4);
   });
 });
 

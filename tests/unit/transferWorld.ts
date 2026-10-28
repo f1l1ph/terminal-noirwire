@@ -98,6 +98,11 @@ export class FakeRpc implements SolanaRpc {
     this.plans.push(...Array.from({ length: 200 }, () => ({ fate: "swallow" as const })));
   }
 
+  /** Forgets the sends still scripted, such as the swallows left over once a send and its rebroadcasts were taken. */
+  clearPlans() {
+    this.plans = [];
+  }
+
   setToken(address: PublicKey, amount: bigint) {
     this.accounts.set(address.toBase58(), tokenAccount(amount));
   }
@@ -150,8 +155,16 @@ export class FakeRpc implements SolanaRpc {
     return this.accounts.get(address.toBase58()) ?? null;
   }
 
-  async getBalance() {
-    return this.lamports;
+  /** The SOL of the accounts a test named; every other account holds `lamports`. */
+  lamportsOf = new Map<string, number>();
+
+  async getBalance(address?: PublicKey) {
+    return (address && this.lamportsOf.get(address.toBase58())) ?? this.lamports;
+  }
+
+  /** The cluster's rent exemption: two years at 3,480 lamports per byte, with 128 bytes of account overhead. */
+  async getMinimumBalanceForRentExemption(dataLength: number) {
+    return (128 + dataLength) * 3_480 * 2;
   }
 
   async sendRawTransaction(
@@ -400,12 +413,27 @@ export function makeWorld(
     delegateKey(amount: bigint, validator = env.validator) {
       delegateTo(keyBalance, keyAccount, amount, validator);
     },
-    /** What the move into the rollup does when it lands: the wallet's tokens become the deposit key's rollup balance. */
-    moveEffect(atoms: bigint) {
+    /** What the wallet's payment to the deposit key does when it lands: the tokens go from the wallet to the key's token account, and the key holds a little SOL, below what is worth sweeping. */
+    fundEffect(atoms: bigint) {
       return () => {
         solana.setToken(wallet, solana.token(wallet) - atoms);
+        solana.setToken(keyAccount, solana.token(keyAccount) + atoms);
+        solana.lamportsOf.set(depositKey.publicKey.toBase58(), 1_000_000);
+      };
+    },
+    /** What the key's move into the rollup does when it lands: its tokens on Solana become its rollup balance. */
+    moveEffect(atoms: bigint) {
+      return () => {
+        solana.setToken(keyAccount, solana.token(keyAccount) - atoms);
         world.delegateKey(rollup.token(keyAccount) + atoms);
       };
+    },
+    /** The next two Solana sends land, the wallet's payment to the key and then the key's move, as far as the node takes each. */
+    stagedLanding(atoms: bigint, commitment?: "confirmed" | "finalized") {
+      solana.script(
+        { fate: "land", effect: world.fundEffect(atoms), commitment },
+        { fate: "land", effect: world.moveEffect(atoms), commitment },
+      );
     },
     /** What the rollup deposit does when it lands: the deposit key's balance goes to the seat. */
     depositEffect(atoms: bigint) {
@@ -427,6 +455,7 @@ export function makeWorld(
     },
   };
   world.fund({ onSolana: 100n * USDC, inCustody: 0n });
+  solana.lamportsOf.set(depositKey.publicKey.toBase58(), 0);
   return world;
 }
 

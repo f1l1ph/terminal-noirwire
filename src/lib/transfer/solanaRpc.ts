@@ -17,6 +17,8 @@ export interface SolanaRpc extends SolanaReader {
   ): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   getAccountInfo(address: PublicKey, commitment?: "confirmed"): Promise<AccountInfo<Buffer> | null>;
   getBalance(address: PublicKey, commitment?: "confirmed"): Promise<number>;
+  /** What an account of `dataLength` bytes of data must hold to stay open, in lamports. */
+  getMinimumBalanceForRentExemption(dataLength: number): Promise<number>;
   sendRawTransaction(
     raw: Uint8Array,
     options: { skipPreflight?: boolean; preflightCommitment?: "confirmed" },

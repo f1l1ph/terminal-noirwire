@@ -27,7 +27,11 @@ import {
   withComputeBudget,
 } from "@/lib/transfer/computeBudget";
 import { deposit } from "@/lib/transfer/deposit";
-import { fundKeyInstructions, moveKeyInstructions } from "@/lib/transfer/depositKey";
+import {
+  fundKeyInstructions,
+  moveKeyInstructions,
+  returnKeyInstructions,
+} from "@/lib/transfer/depositKey";
 import {
   signableRefusal,
   validatedPins,
@@ -431,13 +435,13 @@ describe("the env", () => {
   it("deposits through a sealed custody and into an existing balance", async () => {
     const sealed = makeWorld();
     sealed.env.sealed = true;
-    sealed.solana.script({ fate: "land", effect: sealed.moveEffect(ATOMS) });
+    sealed.stagedLanding(ATOMS);
     sealed.rollup.script({ fate: "land", effect: sealed.depositEffect(ATOMS) });
     expect(await deposit(sealed.env, { amount: "2.5" })).toMatchObject({ status: "done" });
 
     const existing = makeWorld();
     existing.delegateKey(USDC_TEN);
-    existing.solana.script({ fate: "land", effect: existing.moveEffect(ATOMS) });
+    existing.stagedLanding(ATOMS);
     existing.rollup.script({ fate: "land", effect: existing.depositEffect(ATOMS) });
     expect(await deposit(existing.env, { amount: "2.5" })).toMatchObject({ status: "done" });
   });
@@ -455,43 +459,153 @@ describe("the env", () => {
 const USDC_TEN = 10_000_000n;
 
 describe("the deposit key's transactions", () => {
-  const keyMove = async (world: World, atoms = ATOMS, first = true) => {
-    const parts = {
-      owner: world.keypair.publicKey,
-      key: world.depositKey.publicKey,
-      mint: world.pins.mint,
-      validator: world.pins.validator,
-      atoms,
-      sealed: false,
-      first,
-    };
-    return withComputeBudget([
-      ...fundKeyInstructions({ ...parts, decimals: 6 }),
-      ...(await moveKeyInstructions({ ...parts, vaultMissing: first })),
-    ]);
-  };
-  const keyMoveShape = (world: World, atoms = ATOMS) =>
+  const keyFund = (world: World, atoms = ATOMS, lamports = 4_000_000) =>
+    withComputeBudget(
+      fundKeyInstructions({
+        owner: world.keypair.publicKey,
+        key: world.depositKey.publicKey,
+        mint: world.pins.mint,
+        decimals: 6,
+        atoms,
+        lamports,
+      }),
+    );
+  const keyFundShape = (world: World, atoms = ATOMS, lamports = 4_000_000) =>
     ({
-      kind: "key-move",
+      kind: "key-fund",
       atoms,
-      sealed: false,
       key: world.depositKey.publicKey,
       decimals: 6,
+      lamports,
     }) as const;
 
-  it("accepts the owner-paid move into the key and nothing altered", async () => {
+  it("accepts the wallet's payment to the key and nothing altered", async () => {
     const world = makeWorld();
-    expect(await refusalOf(world, await keyMove(world), keyMoveShape(world))).toBeNull();
+    expect(await refusalOf(world, keyFund(world), keyFundShape(world))).toBeNull();
     expect(
-      await refusalOf(world, await keyMove(world, ATOMS, false), keyMoveShape(world)),
+      await refusalOf(world, keyFund(world, ATOMS, 0), keyFundShape(world, ATOMS, 0)),
     ).toBeNull();
-    expect(await refusalOf(world, await keyMove(world, ATOMS + 1n), keyMoveShape(world))).toMatch(
-      /not the expected key-move/,
+    const instructions = keyFund(world);
+    expect(instructions.map((each) => each.programId.toBase58())).toContain(
+      SystemProgram.programId.toBase58(),
     );
-    const other = makeWorld();
-    expect(await refusalOf(world, await keyMove(other), keyMoveShape(world))).toMatch(
-      /not the expected key-move/,
+    expect(keyFund(world, ATOMS, 0).map((each) => each.programId.toBase58())).not.toContain(
+      SystemProgram.programId.toBase58(),
     );
+  });
+
+  it("refuses a payment to the key that differs in its amount, its SOL, its fee payer or its key", async () => {
+    const world = makeWorld();
+    const expected = /not the expected key-fund/;
+    expect(await refusalOf(world, keyFund(world, ATOMS + 1n), keyFundShape(world))).toMatch(
+      expected,
+    );
+    expect(await refusalOf(world, keyFund(world, ATOMS, 4_000_001), keyFundShape(world))).toMatch(
+      expected,
+    );
+    expect(await refusalOf(world, keyFund(world, ATOMS, 0), keyFundShape(world))).toMatch(expected);
+    expect(await refusalOf(world, keyFund(makeWorld()), keyFundShape(world))).toMatch(expected);
+    expect(
+      await refusalOf(world, keyFund(world), keyFundShape(world), world.depositKey.publicKey),
+    ).toMatch(/owner is not the fee payer/);
+    const drained = keyFund(world);
+    drained.push(
+      SystemProgram.transfer({
+        fromPubkey: world.keypair.publicKey,
+        toPubkey: PublicKey.unique(),
+        lamports: 1,
+      }),
+    );
+    expect(await refusalOf(world, drained, keyFundShape(world))).toMatch(expected);
+  });
+
+  it("has the owner as the only signer of the payment to the key", () => {
+    const world = makeWorld();
+    const message = txOf(world.keypair.publicKey, keyFund(world)).compileMessage();
+    expect(message.header.numRequiredSignatures).toBe(1);
+    expect(message.accountKeys[0].equals(world.keypair.publicKey)).toBe(true);
+  });
+
+  const keyMove = async (world: World, atoms = ATOMS, first = true, sealed = false) =>
+    withComputeBudget(
+      await moveKeyInstructions({
+        key: world.depositKey.publicKey,
+        mint: world.pins.mint,
+        validator: world.pins.validator,
+        atoms,
+        sealed,
+        first,
+        vaultMissing: first,
+      }),
+    );
+  const keyMoveShape = (world: World, atoms = ATOMS, sealed = false) =>
+    ({ kind: "key-move", atoms, sealed, key: world.depositKey.publicKey }) as const;
+
+  it("accepts the key's own move into the rollup only when the key pays and signs alone", async () => {
+    const world = makeWorld();
+    const key = world.depositKey.publicKey;
+    for (const sealed of [false, true]) {
+      for (const first of [true, false]) {
+        expect(
+          await refusalOf(
+            world,
+            await keyMove(world, ATOMS, first, sealed),
+            keyMoveShape(world, ATOMS, sealed),
+            key,
+          ),
+        ).toBeNull();
+      }
+    }
+    const instructions = await keyMove(world, ATOMS, true, true);
+    expect(await refusalOf(world, instructions, keyMoveShape(world, ATOMS, true))).toMatch(
+      /deposit key is not the fee payer/,
+    );
+    expect(txOf(key, instructions).compileMessage().header.numRequiredSignatures).toBe(1);
+  });
+
+  it("refuses a key move that differs in its amount, its key or its custody", async () => {
+    const world = makeWorld();
+    const key = world.depositKey.publicKey;
+    const expected = /not the expected key-move/;
+    expect(
+      await refusalOf(world, await keyMove(world, ATOMS + 1n), keyMoveShape(world), key),
+    ).toMatch(expected);
+    expect(await refusalOf(world, await keyMove(makeWorld()), keyMoveShape(world), key)).toMatch(
+      expected,
+    );
+    expect(
+      await refusalOf(world, await keyMove(world, ATOMS, true, true), keyMoveShape(world), key),
+    ).toMatch(expected);
+  });
+
+  it("accepts the key's payment back to the owner only when the key pays, and nothing else", async () => {
+    const world = makeWorld();
+    const key = world.depositKey.publicKey;
+    const instructions = withComputeBudget(
+      returnKeyInstructions({
+        owner: world.keypair.publicKey,
+        key,
+        mint: world.pins.mint,
+        decimals: 6,
+        atoms: ATOMS,
+      }),
+    );
+    const shape = { kind: "key-return", atoms: ATOMS, key, decimals: 6 } as const;
+    expect(await refusalOf(world, instructions, shape, key)).toBeNull();
+    expect(await refusalOf(world, instructions, shape)).toMatch(/deposit key is not the fee payer/);
+    expect(await refusalOf(world, instructions, { ...shape, atoms: ATOMS + 1n }, key)).toMatch(
+      /not the expected key-return/,
+    );
+    const elsewhere = withComputeBudget(
+      returnKeyInstructions({
+        owner: PublicKey.unique(),
+        key,
+        mint: world.pins.mint,
+        decimals: 6,
+        atoms: ATOMS,
+      }),
+    );
+    expect(await refusalOf(world, elsewhere, shape, key)).toMatch(/not the expected key-return/);
   });
 
   it("accepts the key's own collateral deposit only when the key pays", async () => {

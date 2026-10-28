@@ -5,15 +5,26 @@ export type SeenStatus = "processed" | "confirmed" | "finalized";
 
 const STRENGTH: Record<SeenStatus, number> = { processed: 1, confirmed: 2, finalized: 3 };
 
+/**
+ * Which step of a deposit through the deposit key a send is: `fund` is the
+ * wallet's payment of the tokens and fee money to the key, `move` the key's own
+ * move of them into the rollup, `return` the key's payment of its tokens back
+ * to the wallet, `sweep` the key's payment of its spare SOL to the owner after
+ * the deposit. A send without one is the single wallet-and-key transaction
+ * of an earlier version of the app, or a withdrawal's.
+ */
+export type SendLeg = "fund" | "move" | "return" | "sweep";
+
 /** One Solana transaction, as written down before it was broadcast. */
 export interface JournalSend {
   signature: string;
   lastValidBlockHeight: number;
   status?: SeenStatus;
   at: number;
-  /** The owner's token account on Solana before it, and what it was to move, in atoms as decimal text. */
+  /** The token account on Solana before it that pays, and what it was to move, in atoms as decimal text. */
   before: string;
   moved: string;
+  leg?: SendLeg;
 }
 
 export interface OperationRecord {
@@ -35,13 +46,25 @@ export interface OperationRecord {
   updatedAt: number;
 }
 
+/** Whether a deposit went through the deposit key in two steps, the wallet's funding and the key's move, each its own send. */
+export const isStaged = (record: Pick<OperationRecord, "sends">): boolean =>
+  record.sends.some((send) => send.leg === "fund" || send.leg === "move");
+
+/** Whether a record is a payment of the deposit key's spare SOL to the owner. */
+export const isKeySweep = (record: Pick<OperationRecord, "step">): boolean =>
+  record.step === "sweep";
+
+/** The sends of one step of a staged deposit. */
+export const legSends = (record: Pick<OperationRecord, "sends">, leg: SendLeg): JournalSend[] =>
+  record.sends.filter((send) => send.leg === leg);
+
 export type OperationInput = Pick<OperationRecord, "id" | "kind" | "atoms" | "step"> & {
   rollupBefore?: string;
   depositKey?: string;
   /** A recovery's seat step, written with its record because it has no Solana send to write first. */
   seat?: SeatSend;
   sends: Array<
-    Pick<JournalSend, "signature" | "lastValidBlockHeight" | "status" | "before" | "moved">
+    Pick<JournalSend, "signature" | "lastValidBlockHeight" | "status" | "before" | "moved" | "leg">
   >;
 };
 

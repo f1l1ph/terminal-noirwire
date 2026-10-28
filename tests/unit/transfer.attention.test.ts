@@ -191,6 +191,7 @@ describe("no path offers a resend", () => {
         resumable: true,
         returnable: true,
         keyed: false,
+        staged: false,
         stranded: false,
       });
       for (const action of actions) {
@@ -222,6 +223,7 @@ describe("no path offers a resend", () => {
         "depositKeyStore",
         "dismiss",
         "journal",
+        "keySweep",
         "keyedWithdrawal",
         "leftover",
         "mainnetEnv",

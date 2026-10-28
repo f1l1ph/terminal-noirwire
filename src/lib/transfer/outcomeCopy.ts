@@ -48,6 +48,10 @@ const REFUSALS: Record<Refusal, string> = {
   "deposit-key-missing":
     "The key that finishes this deposit is no longer stored in this browser, so it cannot be finished from here. Do not deposit again. Contact support and give them the transfer id. Nothing new was sent.",
   "deposit-landed": "The deposit already went through. Nothing was sent.",
+  "key-moved":
+    "The USDC already moved into the rollup, so it cannot be sent back from here. Use Try the deposit again under transfers that need attention to put it in your account. Nothing was sent.",
+  "key-empty":
+    "The deposit key holds no USDC on Solana, so there is nothing to send back. Nothing was sent.",
   "rollup-short": "Your rollup balance holds less than that. Nothing was sent.",
   "nothing-to-dismiss": "No transfer is waiting to be dismissed.",
   "not-dismissable": "That transfer cannot be dismissed yet. Nothing was changed.",
