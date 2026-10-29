@@ -16,8 +16,11 @@ import {
 } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
 import {
+  FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
   MAX_EXIT_PRIORITY_LAMPORTS,
+  MAX_LOADED_ACCOUNTS_DATA_BYTES,
   MAX_MOVE_PRIORITY_LAMPORTS,
+  MIN_LOADED_ACCOUNTS_DATA_BYTES,
   MAX_MICRO_LAMPORTS_PER_UNIT,
   MAX_SETUP_PRIORITY_LAMPORTS,
   MICRO_LAMPORTS_PER_UNIT,
@@ -46,6 +49,7 @@ import {
   walletAccount,
   withdrawInstruction,
 } from "@/lib/transfer/operation";
+import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
 import { withdraw } from "@/lib/transfer/withdraw";
 import { makeWorld, type World } from "./transferWorld";
 
@@ -306,6 +310,48 @@ describe("exactly what may be signed", () => {
       const [limit2, price2, first, ...rest] = await budgeted(world);
       expect(await refusalOf(world, [limit2, price2, ...rest], EXIT)).toMatch(/expected exit/);
       expect(await refusalOf(world, [limit2, price2, first, ...rest], EXIT)).toBeNull();
+    });
+
+    it("accepts a loaded accounts data limit from the floor to the protocol maximum, and refuses one outside it", async () => {
+      const world = makeWorld();
+      const [first, second, ...rest] = await budgeted(world);
+      for (const bytes of [
+        MIN_LOADED_ACCOUNTS_DATA_BYTES,
+        FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
+        MAX_LOADED_ACCOUNTS_DATA_BYTES,
+      ]) {
+        const [, , loaded] = withComputeBudget([], undefined, undefined, bytes);
+        expect(
+          await refusalOf(world, [first, second, loaded, ...rest], EXIT),
+          String(bytes),
+        ).toBeNull();
+      }
+      for (const bytes of [
+        0,
+        MIN_LOADED_ACCOUNTS_DATA_BYTES - 1,
+        MAX_LOADED_ACCOUNTS_DATA_BYTES + 1,
+      ]) {
+        const [, , loaded] = withComputeBudget([], undefined, undefined, bytes);
+        expect(
+          await refusalOf(world, [first, second, loaded, ...rest], EXIT),
+          String(bytes),
+        ).toMatch(/expected exit/);
+      }
+    });
+
+    it("refuses a second loaded accounts data limit, or one in another place", async () => {
+      const world = makeWorld();
+      const [first, second, ...rest] = await budgeted(world);
+      const [, , loaded] = withComputeBudget([], undefined, undefined, 1_000_000);
+      expect(await refusalOf(world, [first, second, loaded, loaded, ...rest], EXIT)).toMatch(
+        /expected exit/,
+      );
+      expect(await refusalOf(world, [first, loaded, second, ...rest], EXIT)).toMatch(
+        /expected exit/,
+      );
+      expect(await refusalOf(world, [first, second, ...rest, loaded], EXIT)).toMatch(
+        /expected exit/,
+      );
     });
 
     it("refuses a third budget instruction", async () => {
@@ -606,6 +652,39 @@ describe("the deposit key's transactions", () => {
       }),
     );
     expect(await refusalOf(world, elsewhere, shape, key)).toMatch(/not the expected key-return/);
+  });
+
+  it("allows the making of the owner's token account in the key's return and in no other key shape", async () => {
+    const world = makeWorld();
+    const key = world.depositKey.publicKey;
+    const parts = {
+      owner: world.keypair.publicKey,
+      key,
+      mint: world.pins.mint,
+      decimals: 6,
+      atoms: ATOMS,
+    };
+    const [create, pay] = returnKeyInstructions(parts);
+    const shape = { kind: "key-return", atoms: ATOMS, key, decimals: 6 } as const;
+    expect(await refusalOf(world, withComputeBudget([create, pay]), shape, key)).toBeNull();
+    expect(await refusalOf(world, withComputeBudget([pay]), shape, key)).toMatch(
+      /not the expected key-return/,
+    );
+    const payerIsOwner = createAssociatedTokenAccountIdempotentIx(
+      world.keypair.publicKey,
+      associatedTokenAddress(world.keypair.publicKey, world.pins.mint),
+      world.keypair.publicKey,
+      world.pins.mint,
+    );
+    expect(await refusalOf(world, withComputeBudget([payerIsOwner, pay]), shape, key)).toMatch(
+      /not the expected key-return/,
+    );
+    const move = await keyMove(world);
+    const withCreate = [...move.slice(0, 2), create, ...move.slice(2)];
+    expect(await refusalOf(world, move, keyMoveShape(world), key)).toBeNull();
+    expect(await refusalOf(world, withCreate, keyMoveShape(world), key)).toMatch(
+      /not the expected key-move/,
+    );
   });
 
   it("accepts the key's own collateral deposit only when the key pays", async () => {

@@ -28,6 +28,7 @@ import { judgeSend, recordThenBroadcast, signatureOf } from "./send";
 import { MISSING_RECHECK_MS } from "./verdicts";
 import {
   computeUnitsAfterSimulation,
+  loadedAccountsDataBytesAfterSimulation,
   microLamportsFromFees,
   withComputeBudget,
 } from "./computeBudget";
@@ -174,6 +175,8 @@ export type Refusal =
   | "deposit-landed"
   | "key-moved"
   | "key-empty"
+  | "key-short"
+  | "key-needs-sol"
   | "rollup-short"
   | "nothing-to-dismiss"
   | "not-dismissable"
@@ -494,9 +497,9 @@ export async function sendJournaled(
   const { blockhash, lastValidBlockHeight } = await freshBlockhash(env.solana);
   const keyed = plan.leg === "move" || plan.leg === "return" || plan.leg === "sweep";
   const payer = keyed ? env.depositKey.publicKey : env.owner;
-  const built = (units?: number, microLamports?: number) =>
+  const built = (units?: number, microLamports?: number, loadedBytes?: number) =>
     new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(
-      ...withComputeBudget(plan.instructions, units, microLamports),
+      ...withComputeBudget(plan.instructions, units, microLamports, loadedBytes),
     );
   const probe = built();
   const unsafe = await shapeRefusal(env, probe, plan.shape);
@@ -525,6 +528,7 @@ export async function sendJournaled(
   const transaction = built(
     computeUnitsAfterSimulation(plan.instructions.length, simulated.unitsConsumed),
     microLamportsFromFees(await recentPrioritizationFees(env.solana, [...written.values()])),
+    loadedAccountsDataBytesAfterSimulation(simulated.loadedAccountsDataSize),
   );
   let signed = transaction;
   if (keyed) transaction.sign(env.depositKey);
