@@ -8,7 +8,12 @@ import {
   initEphemeralAtaIx,
   withdrawSpl,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { PublicKey, type Transaction, type TransactionInstruction } from "@solana/web3.js";
+import {
+  PublicKey,
+  SystemProgram,
+  type Transaction,
+  type TransactionInstruction,
+} from "@solana/web3.js";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
 import {
   MAX_MICRO_LAMPORTS_PER_UNIT,
@@ -18,7 +23,12 @@ import {
   computeUnitPriceOf,
   withComputeBudget,
 } from "./computeBudget";
-import { depositKeyAccount, fundKeyInstructions, moveKeyInstructions } from "./depositKey";
+import {
+  depositKeyAccount,
+  fundKeyInstructions,
+  moveKeyInstructions,
+  returnKeyInstructions,
+} from "./depositKey";
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 
 /** What the app pins: the order book program, the quote token and the rollup validator. */
@@ -50,8 +60,14 @@ export type TransferShape =
   | { kind: "setup" }
   /** The order book's collateral deposit. */
   | { kind: "seat-deposit"; atoms: bigint }
-  /** The owner's tokens paid to the deposit key's token account and moved into the rollup as the key's own balance. */
-  | { kind: "key-move"; atoms: bigint; sealed: boolean; key: PublicKey; decimals: number }
+  /** The owner's tokens paid to the deposit key's token account, with `lamports` of SOL (none when 0) for the key's own fees and rent: the one transaction the wallet signs, with the owner its only signer. */
+  | { kind: "key-fund"; atoms: bigint; key: PublicKey; decimals: number; lamports: number }
+  /** The deposit key's tokens moved into the rollup as the key's own balance, paid and signed by the key alone. */
+  | { kind: "key-move"; atoms: bigint; sealed: boolean; key: PublicKey }
+  /** The deposit key's tokens paid back to the owner's token account, signed by the key alone. */
+  | { kind: "key-return"; atoms: bigint; key: PublicKey; decimals: number }
+  /** The deposit key's spare SOL paid to the owner, one system transfer and nothing else, signed by the key alone. */
+  | { kind: "key-sweep"; key: PublicKey; lamports: number }
   /** The order book's collateral deposit out of the deposit key's balance into the owner's account, paid by the key. */
   | { kind: "key-deposit"; atoms: bigint; key: PublicKey }
   /** The order book's collateral withdrawal, naming every perp market. */
@@ -144,22 +160,27 @@ async function expectedTransactions(
           ),
         ],
       ];
+    case "key-fund":
+      return [
+        withComputeBudget(
+          fundKeyInstructions({
+            owner,
+            key: shape.key,
+            mint: pins.mint,
+            decimals: shape.decimals,
+            atoms: shape.atoms,
+            lamports: shape.lamports,
+          }),
+        ),
+      ];
     case "key-move": {
       const variants = [true, false].flatMap((first) =>
         [true, false].map((vaultMissing) => ({ first, vaultMissing })),
       );
       return Promise.all(
         variants.map(async ({ first, vaultMissing }) =>
-          withComputeBudget([
-            ...fundKeyInstructions({
-              owner,
-              key: shape.key,
-              mint: pins.mint,
-              decimals: shape.decimals,
-              atoms: shape.atoms,
-            }),
-            ...(await moveKeyInstructions({
-              owner,
+          withComputeBudget(
+            await moveKeyInstructions({
               key: shape.key,
               mint: pins.mint,
               validator: pins.validator,
@@ -168,11 +189,33 @@ async function expectedTransactions(
               first,
               vaultMissing,
               shuttleId,
-            })),
-          ]),
+            }),
+          ),
         ),
       );
     }
+    case "key-sweep":
+      return [
+        withComputeBudget([
+          SystemProgram.transfer({
+            fromPubkey: shape.key,
+            toPubkey: owner,
+            lamports: shape.lamports,
+          }),
+        ]),
+      ];
+    case "key-return":
+      return [
+        withComputeBudget(
+          returnKeyInstructions({
+            owner,
+            key: shape.key,
+            mint: pins.mint,
+            decimals: shape.decimals,
+            atoms: shape.atoms,
+          }),
+        ),
+      ];
     case "seat-withdraw":
       return [
         [
@@ -233,7 +276,8 @@ async function expectedTransactions(
 
 /**
  * Why `transaction` may not be signed, or null. Run on every transaction just
- * before the owner is asked to sign: the owner pays, and the instructions are
+ * before it is signed: the owner pays (the deposit key, for the shapes the key
+ * signs alone), and the instructions are
  * exactly the ordered list the flow means to send, rebuilt here from the pins,
  * the owner and the requested amount (the shapes sent to Solana lead with
  * a compute unit limit within the allowance of `withComputeBudget` and a unit
@@ -247,11 +291,14 @@ export async function signableRefusal(
   transaction: Transaction,
   shape: TransferShape,
 ): Promise<string | null> {
-  const payer = shape.kind === "key-deposit" ? shape.key : context.owner;
+  const keyPays =
+    shape.kind === "key-deposit" ||
+    shape.kind === "key-move" ||
+    shape.kind === "key-return" ||
+    shape.kind === "key-sweep";
+  const payer = keyPays ? shape.key : context.owner;
   if (!transaction.feePayer?.equals(payer)) {
-    return shape.kind === "key-deposit"
-      ? "the deposit key is not the fee payer"
-      : "the owner is not the fee payer";
+    return keyPays ? "the deposit key is not the fee payer" : "the owner is not the fee payer";
   }
   const candidates = await expectedTransactions(context, shape, shuttleIdOf(transaction));
   return candidates.some((expected) => sameBudgeted(transaction.instructions, expected))

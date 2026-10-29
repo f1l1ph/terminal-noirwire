@@ -13,7 +13,14 @@ import { depositKeyAccount, depositKeyBalance } from "./depositKey";
 import { redactToken } from "../rollup/redact";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
 export { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "./computeBudget";
-import { toSolanaSend, type Journal, type JournalSend, type OperationRecord } from "./journal";
+import {
+  isKeySweep,
+  toSolanaSend,
+  type Journal,
+  type JournalSend,
+  type OperationRecord,
+  type SendLeg,
+} from "./journal";
 import { signableRefusal, validatedPins, type TransferPins, type TransferShape } from "./guard";
 import { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx } from "./tokenAccounts";
 import type { OwnerLock } from "./lock";
@@ -165,6 +172,8 @@ export type Refusal =
   | "legacy-deposit"
   | "deposit-key-missing"
   | "deposit-landed"
+  | "key-moved"
+  | "key-empty"
   | "rollup-short"
   | "nothing-to-dismiss"
   | "not-dismissable"
@@ -176,6 +185,8 @@ export interface Refused {
   message: string;
   /** Set when the collateral already left the account and the stop was in the step that takes it to the wallet, so the USDC is in the rollup balance and not where it started. */
   inRollup?: true;
+  /** Set when the wallet's payment to the deposit key landed and the stop was in the key's move into the rollup, so the USDC waits in the deposit key and not in the wallet. */
+  inKey?: true;
 }
 
 /** Why a transfer stopped without finishing or moving anything new: another tab holds the lock, a refusal, a send that may still land, or one that cannot be told. */
@@ -218,6 +229,13 @@ export const waiting = (id: string, message: string): Stopped => ({
   id,
   message,
 });
+
+/** The refusal for a deposit whose key is no longer the one stored in this browser. */
+export const depositKeyMissing = (id: string) =>
+  refuse(
+    "deposit-key-missing",
+    `The key that finishes this deposit (transfer ${id}) is no longer stored in this browser, so the deposit cannot be finished from here. The USDC has already left your wallet and sits under that key. Do not deposit again. Contact support and give them this transfer id. Nothing new was sent.`,
+  );
 
 export { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx };
 
@@ -335,7 +353,9 @@ export async function intentRefusal(
   intent: Intent | undefined,
 ): Promise<Refused | null> {
   if (!intent) return null;
-  const records = await env.journal.unfinished(env.owner.toBase58());
+  const records = (await env.journal.unfinished(env.owner.toBase58())).filter(
+    (record) => !isKeySweep(record),
+  );
   if (intent.kind === "new") {
     return records.length === 0
       ? null
@@ -362,6 +382,30 @@ export async function intentRefusal(
 }
 
 /**
+ * Judges the payments of spare SOL from the deposit key to the owner that are
+ * still on record before a new transfer starts. One that can never land is
+ * dropped; one that landed is closed once final. Until then the start stops
+ * with a plain wait: a payment that may still land, or one that landed but is
+ * not final, would let the key's balance be read from before it, and the new
+ * transfer would send the key too little SOL.
+ */
+async function settleKeySweeps(env: TransferEnv): Promise<Stopped | null> {
+  const owner = env.owner.toBase58();
+  const stillReturning = (id: string) =>
+    waiting(
+      id,
+      "Your deposit key is still returning its spare SOL to your wallet. Wait a moment and try again. Nothing was sent.",
+    );
+  for (const sweep of (await env.journal.unfinished(owner)).filter(isKeySweep)) {
+    const judged = await reconciled(env, sweep.id, sweep.sends, undefined);
+    if ("status" in judged) return stillReturning(sweep.id);
+    if (!judged.landed) await env.journal.finish(owner, sweep.id);
+    else if (!(await finishWhenFinalized(env, sweep.id))) return stillReturning(sweep.id);
+  }
+  return null;
+}
+
+/**
  * The operation to carry on for `method` and `atoms`: the unfinished one when
  * it asked for the same, else a new id; a refusal when an unfinished one asked
  * for something else, since carrying on with different figures would hide what
@@ -372,14 +416,18 @@ export async function beginOperation(
   method: "deposit" | "withdraw",
   atoms: bigint,
   resumeId?: string,
-): Promise<{ id: string; record: OperationRecord | null } | Refused> {
+): Promise<{ id: string; record: OperationRecord | null } | Stopped> {
   const owner = env.owner.toBase58();
   for (const done of await env.journal.unfinished(owner)) {
     if (done.step === "deposit" && done.seat?.state === "landed") {
       await finishWhenFinalized(env, done.id);
     }
   }
-  const current = currentRecord(await env.journal.unfinished(owner));
+  const stillSweeping = await settleKeySweeps(env);
+  if (stillSweeping) return stillSweeping;
+  const current = currentRecord(
+    (await env.journal.unfinished(owner)).filter((record) => !isKeySweep(record)),
+  );
   if (resumeId !== undefined && current?.id !== resumeId) {
     return refuse(
       "record-changed",
@@ -436,16 +484,18 @@ export async function sendJournaled(
     instructions: TransactionInstruction[];
     /** The exact transaction these instructions must make. */
     shape: TransferShape;
-    /** A key that signs the transaction too, before the owner is asked: the deposit key, which the instructions name as the authority over its own tokens. */
-    cosigner?: Keypair;
-    /** The owner's token account on Solana before this send, and what it is to move. */
+    /** Which step of a deposit through the deposit key this is. The key then pays and signs the transaction alone, with no wallet; without it the owner pays and signs. */
+    leg?: SendLeg;
+    /** The token account on Solana before this send that pays, and what it is to move. */
     before: bigint;
     moved: bigint;
   },
 ): Promise<Refused | { signature: string; broadcastError: string | null }> {
   const { blockhash, lastValidBlockHeight } = await freshBlockhash(env.solana);
+  const keyed = plan.leg === "move" || plan.leg === "return" || plan.leg === "sweep";
+  const payer = keyed ? env.depositKey.publicKey : env.owner;
   const built = (units?: number, microLamports?: number) =>
-    new Transaction({ feePayer: env.owner, blockhash, lastValidBlockHeight }).add(
+    new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(
       ...withComputeBudget(plan.instructions, units, microLamports),
     );
   const probe = built();
@@ -476,8 +526,9 @@ export async function sendJournaled(
     computeUnitsAfterSimulation(plan.instructions.length, simulated.unitsConsumed),
     microLamportsFromFees(await recentPrioritizationFees(env.solana, [...written.values()])),
   );
-  const signed = await env.signChecked(transaction, plan.shape, "solana:mainnet");
-  if (plan.cosigner) signed.partialSign(plan.cosigner);
+  let signed = transaction;
+  if (keyed) transaction.sign(env.depositKey);
+  else signed = await env.signChecked(transaction, plan.shape, "solana:mainnet");
   let raw: Uint8Array;
   try {
     raw = signed.serialize();
@@ -500,11 +551,12 @@ export async function sendJournaled(
       atoms: plan.atoms.toString(),
       step: plan.step,
       rollupBefore: plan.rollupBefore?.toString(),
-      depositKey: plan.cosigner?.publicKey.toBase58(),
+      depositKey: plan.leg ? env.depositKey.publicKey.toBase58() : undefined,
     },
     lastValidBlockHeight,
     before: plan.before.toString(),
     moved: plan.moved.toString(),
+    leg: plan.leg,
     signedTx: raw,
     broadcast: (bytes) =>
       env.solana.sendRawTransaction(bytes, { preflightCommitment: "confirmed" }).catch((error) => {

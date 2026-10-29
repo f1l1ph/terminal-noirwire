@@ -19,11 +19,22 @@ export const computeUnitsFor = (count: number) =>
 export const priorityLamportsFor = (units: number) =>
   Math.ceil((units * MAX_MICRO_LAMPORTS_PER_UNIT) / 1_000_000);
 
-/** The most instructions each owner-paid Solana shape can carry: a sealed first deposit with the escrow and the permission, the token account's setup, the exit. */
+/** What each signature of a transaction costs, in lamports, before any priority fee. */
+export const BASE_FEE_LAMPORTS = 5_000;
+
+/** The most instructions each Solana shape can carry: the wallet's funding of the deposit key, the key's sealed first move with the escrow and the permission, the token account's setup, the exit. */
+const FUND_INSTRUCTIONS = 3;
 const MOVE_INSTRUCTIONS = 7;
 const SETUP_INSTRUCTIONS = 3;
 const EXIT_INSTRUCTIONS = 4;
 
+/** The most a key-signed transaction of one instruction of its own costs in fees at the dearest priority: what the deposit key keeps for a later payment back to the wallet, and what a sweep of its SOL costs. */
+export const MAX_KEY_TRANSFER_FEE_LAMPORTS =
+  BASE_FEE_LAMPORTS + priorityLamportsFor(computeUnitsFor(1));
+/** The least SOL worth a transaction to send the owner back from the deposit key. */
+export const SWEEP_MIN_LAMPORTS = 100_000;
+
+export const MAX_FUND_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(FUND_INSTRUCTIONS));
 export const MAX_MOVE_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(MOVE_INSTRUCTIONS));
 export const MAX_SETUP_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(SETUP_INSTRUCTIONS));
 export const MAX_EXIT_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(EXIT_INSTRUCTIONS));
@@ -31,8 +42,9 @@ export const MAX_EXIT_PRIORITY_LAMPORTS = priorityLamportsFor(computeUnitsFor(EX
 /** What the exit's steps on Solana cost their fee payer, in lamports: the transaction fee and the rent of the accounts the token program makes, and the priority fee of the token account's setup and of the exit. */
 export const SOLANA_EXIT_LAMPORTS =
   10_000_000 + MAX_SETUP_PRIORITY_LAMPORTS + MAX_EXIT_PRIORITY_LAMPORTS;
-/** What a deposit costs its fee payer, the owner: the move into the rollup also pays the balance account's rent and the mint's escrow account, so three times the exit's, the rent of the deposit key's token account on its first deposit, and the priority fee of the move (the deposit into the seat is a rollup send and has none). */
-export const ROUND_TRIP_LAMPORTS = 35_000_000 + MAX_MOVE_PRIORITY_LAMPORTS;
+/** The most a deposit costs the owner: the move into the rollup also pays the balance account's rent and the mint's escrow account, so three times the exit's, the rent of the deposit key's token account on its first deposit, and the priority fees of the wallet's funding and of the key's move (the deposit into the seat is a rollup send and has none). The owner pays it all, the key's share as SOL sent to the key. */
+export const ROUND_TRIP_LAMPORTS =
+  35_000_000 + MAX_FUND_PRIORITY_LAMPORTS + MAX_MOVE_PRIORITY_LAMPORTS;
 
 /** The fewest compute units a measured limit is set to, so a small simulated figure never starves the transaction. */
 export const MIN_COMPUTE_UNITS = 50_000;

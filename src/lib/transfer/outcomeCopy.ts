@@ -48,6 +48,10 @@ const REFUSALS: Record<Refusal, string> = {
   "deposit-key-missing":
     "The key that finishes this deposit is no longer stored in this browser, so it cannot be finished from here. Do not deposit again. Contact support and give them the transfer id. Nothing new was sent.",
   "deposit-landed": "The deposit already went through. Nothing was sent.",
+  "key-moved":
+    "The USDC already moved into the rollup, so it cannot be sent back from here. Use Try the deposit again under transfers that need attention to put it in your account. Nothing was sent.",
+  "key-empty":
+    "The deposit key holds no USDC on Solana, so there is nothing to send back. Nothing was sent.",
   "rollup-short": "Your rollup balance holds less than that. Nothing was sent.",
   "nothing-to-dismiss": "No transfer is waiting to be dismissed.",
   "not-dismissable": "That transfer cannot be dismissed yet. Nothing was changed.",
@@ -72,6 +76,15 @@ function inRollupLine(reason: Refusal, feeLamports: number): string {
       ? "The last step did not go through."
       : "The last step stopped before it was sent.";
   return `${lead} ${stop} It is safe in your rollup balance. Press Resume under transfers that need attention to finish it.`;
+}
+
+/** What a stop in the deposit key's move into the rollup says, after the wallet already paid the key: the USDC waits in the key and the open record finishes or returns it. */
+function inKeyLine(reason: Refusal): string {
+  const stop =
+    reason === "send-failed"
+      ? "Its move into the rollup did not go through."
+      : "Its move into the rollup stopped before it was sent.";
+  return `Your USDC left your wallet and is safe in the deposit key. ${stop} Press Try the deposit again, or Return to wallet, under transfers that need attention.`;
 }
 
 /** What a flow's outcome says to the user, in plain words. */
@@ -103,11 +116,13 @@ export function outcomeLine(
         tone: "error",
         text: outcome.inRollup
           ? inRollupLine(outcome.reason, feeLamports)
-          : outcome.reason === "insufficient-sol"
-            ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
-            : outcome.reason === "deposit-key-missing" || outcome.reason === "below-seat-minimum"
-              ? outcome.message
-              : REFUSALS[outcome.reason],
+          : outcome.inKey
+            ? inKeyLine(outcome.reason)
+            : outcome.reason === "insufficient-sol"
+              ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
+              : outcome.reason === "deposit-key-missing" || outcome.reason === "below-seat-minimum"
+                ? outcome.message
+                : REFUSALS[outcome.reason],
       };
     case "waiting":
       return {

@@ -36,6 +36,7 @@ import { returnToWallet } from "@/lib/transfer/returnToWallet";
 import { canStartTransfer, giveBack, resumeRecord } from "@/lib/transfer/resume";
 import { readTokenBalance } from "@/lib/transfer/solanaRpc";
 import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
+import { sweepKeySol } from "@/lib/transfer/keySweep";
 import { finishCompleted, withdraw } from "@/lib/transfer/withdraw";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
 import { needsAcknowledgement, recordAcknowledgement } from "@/lib/trading/realMoneyAck";
@@ -163,6 +164,7 @@ export default function FundsSection({
             },
             dismiss: async () => dismissRollupSend(await makeEnv()),
             settle: async () => finishCompleted(await makeEnv()),
+            sweep: async () => sweepKeySol(await makeEnv()),
             resume: async (attention, report) => {
               const transfer = withProgress(await makeEnv(), (step) => report(PHASE_LINES[step]));
               const outcome = await resumeRecord(

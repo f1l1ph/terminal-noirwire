@@ -1,3 +1,4 @@
+import { Transaction } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
 import {
   MAX_MICRO_LAMPORTS_PER_UNIT,
@@ -92,10 +93,13 @@ describe("confirmSignature", () => {
       given.push(options);
       return send(raw);
     };
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     await ask(world);
-    expect(given[0]).toEqual({ preflightCommitment: "confirmed" });
+    expect(given).toEqual([
+      { preflightCommitment: "confirmed" },
+      { preflightCommitment: "confirmed" },
+    ]);
   });
 });
 
@@ -145,12 +149,20 @@ describe("a Solana send that was seen and then dropped", () => {
     const signature = record.sends[0].signature;
     heights.confirmed = heights.finalized = record.sends[0].lastValidBlockHeight + 1;
     world.solana.statuses.set(signature, { err: null, confirmationStatus: "finalized" });
-    world.moveEffect(ATOMS)();
+    world.fundEffect(ATOMS)();
+    const seenSend = world.solana.sendRawTransaction.bind(world.solana);
+    world.solana.sendRawTransaction = async (raw, options) => {
+      const sent = await seenSend(raw, options);
+      world.solana.statuses.set(sent, { err: null, confirmationStatus: "finalized" });
+      return sent;
+    };
+    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     expect(await ask(world, { kind: "resume", id: record.id, atoms: record.atoms })).toMatchObject({
       status: "done",
     });
-    expect(new Set(world.solana.sent).size).toBe(1);
+    expect(world.solana.sent[0]).toBe(signature);
+    expect(world.solana.sent).toHaveLength(2);
   });
 
   it("does not show internal wording while it is waited on", async () => {
@@ -195,7 +207,7 @@ describe("the compute budget of a Solana send", () => {
     return { units: computeUnitLimitOf(limit), price: computeUnitPriceOf(price) };
   };
   const run = async (world: World) => {
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     expect(await ask(world)).toMatchObject({ status: "done" });
   };
@@ -234,7 +246,8 @@ describe("the compute budget of a Solana send", () => {
     world.solana.recentFees = Array.from({ length: 100 }, (_, at) => (at + 1) * 1_000);
     await run(world);
     expect(budgetOf(world).price).toBe(75_000);
-    const written = world.signed[0].instructions
+    const written = world.solana.rawSent
+      .flatMap((raw) => Transaction.from(raw).instructions)
       .flatMap((instruction) => instruction.keys)
       .filter((key) => key.isWritable)
       .map((key) => key.pubkey.toBase58());

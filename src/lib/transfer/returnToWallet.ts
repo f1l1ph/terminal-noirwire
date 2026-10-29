@@ -9,6 +9,8 @@ import {
   walletAccount,
   type TransferEnv,
 } from "./operation";
+import { isStaged } from "./journal";
+import { isKeyReturn, returnFromDepositKey, sendKeyReturn } from "./keyReturn";
 import { readTokenBalance } from "./solanaRpc";
 import { shuttleToWallet, type WithdrawOutcome } from "./withdraw";
 
@@ -24,10 +26,13 @@ export interface ReturnInput {
 const returnIdOf = (depositId: string) => `${depositId}.return`;
 
 /**
- * Takes back to the wallet the tokens a deposit moved into the rollup when its
- * second step did not land, with the token program's withdrawal, journaled the
- * same way. Only for a deposit whose first step landed and whose second was
- * never sent or was refused: where the second may have landed it asks, and
+ * Takes back to the wallet the tokens of a deposit through the deposit key
+ * that sit in the key's token account on Solana, with a payment signed by the
+ * key alone, and the tokens a deposit of an earlier version moved into the
+ * rollup when its second step did not land, with the token program's
+ * withdrawal, journaled the same way. Only for a deposit whose first step
+ * landed and whose second was never sent or was refused: where the second may
+ * have landed it asks, and
  * where it did, the deposit is done and there is nothing to return. A return
  * already under way is carried on, never repeated.
  */
@@ -40,6 +45,9 @@ export function returnToWallet(env: TransferEnv, input: ReturnInput = {}): Promi
         "record-changed",
         "This transfer already finished or changed, perhaps in another tab. Nothing was sent.",
       );
+    }
+    if (current && isKeyReturn(current)) {
+      return sendKeyReturn(env, current.id, current.id.slice(0, -".return".length), input.answer);
     }
     if (current?.step === "return") {
       return shuttleToWallet(
@@ -59,6 +67,8 @@ export function returnToWallet(env: TransferEnv, input: ReturnInput = {}): Promi
         "There is no unfinished deposit to return. Nothing was sent.",
       );
     }
+
+    if (isStaged(current)) return returnFromDepositKey(env, current, input.answer);
 
     const atoms = BigInt(current.atoms);
     const settled = await reconciled(env, current.id, current.sends, input.answer);

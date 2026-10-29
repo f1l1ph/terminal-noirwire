@@ -14,7 +14,12 @@ import { atomsText } from "@/lib/transfer/amount";
 import { newTransferBlocked } from "@/lib/transfer/resume";
 import type { DismissOutcome } from "@/lib/transfer/dismiss";
 import { userMessageLine } from "@/lib/userMessage";
-import { createJournal, indexedDbStorage, type OperationRecord } from "@/lib/transfer/journal";
+import {
+  createJournal,
+  indexedDbStorage,
+  isKeySweep,
+  type OperationRecord,
+} from "@/lib/transfer/journal";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 
 /** What judging and dismissing a record needs: present only in a build with transfers on. */
@@ -31,6 +36,8 @@ export interface RecordsEngine {
   recover(report: (line: string) => void): Promise<string>;
   /** Closes the records that are complete and only waiting for finality, sending nothing. */
   settle(): Promise<void>;
+  /** Sends the deposit key's spare SOL back to the wallet when no transfer is open, with the key alone; best effort. */
+  sweep(): Promise<void>;
 }
 
 const RELOAD_MS = 20_000;
@@ -39,6 +46,7 @@ const OPERATION_LABEL: Record<Attention["operation"], string> = {
   deposit: "Deposit",
   withdraw: "Withdrawal",
   return: "Return to wallet",
+  sweep: "Return of spare network fee money to your wallet",
 };
 
 const KIND_COPY: Record<Exclude<Attention["kind"], "not-landed">, string> = {
@@ -107,6 +115,10 @@ export function TransferRecords({
         let records = await journal.unfinished(owner);
         if (engine && !runningNow.current && records.some(awaitsFinality)) {
           await engine.settle().catch(() => {});
+          records = await journal.unfinished(owner);
+        }
+        if (engine && !runningNow.current && records.every(isKeySweep)) {
+          await engine.sweep().catch(() => {});
           records = await journal.unfinished(owner);
         }
         const judged =
@@ -241,18 +253,27 @@ export function TransferRecords({
       {items.map((item) => (
         <div key={item.id} className="border-line-subtle rounded-tile mt-2 border p-2">
           <p className="text-ink text-[13px]">
-            {OPERATION_LABEL[item.operation]} of {atomsText(BigInt(item.atoms), QUOTE_DECIMALS)}{" "}
-            USDC
+            {OPERATION_LABEL[item.operation]}
+            {item.operation !== "sweep" &&
+              ` of ${atomsText(BigInt(item.atoms), QUOTE_DECIMALS)} USDC`}
           </p>
           <p className="text-dim mt-1 text-[12px]">{kindCopy(item)}</p>
-          {engine && item.returnable && (
+          {engine && item.returnable && item.staged && (
+            <p className="text-dim mt-1 text-[12px]">
+              Your USDC left your wallet and is held by this browser&apos;s deposit key. &quot;Try
+              the deposit again&quot; finishes moving it into your account, and &quot;Return to
+              wallet&quot; sends it back to your wallet. Either one sends nothing that was already
+              sent.
+            </p>
+          )}
+          {engine && item.returnable && !item.staged && (
             <p className="text-dim mt-1 text-[12px]">
               If your USDC already moved into the rollup, &quot;Try the deposit again&quot; puts it
               in your account, and &quot;Return to wallet&quot; sends it back to your wallet. Either
               one sends nothing that was already sent.
             </p>
           )}
-          {engine && item.keyed && item.resumable && (
+          {engine && item.keyed && item.resumable && !(item.staged && item.returnable) && (
             <p className="text-dim mt-1 text-[12px]">
               If your USDC already moved into the rollup, it is held by this browser&apos;s deposit
               key. &quot;Try the deposit again&quot; puts it in your account and asks nothing of

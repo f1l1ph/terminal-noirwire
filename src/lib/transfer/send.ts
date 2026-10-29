@@ -1,4 +1,10 @@
-import { toSolanaSend, type Journal, type JournalSend, type OperationInput } from "./journal";
+import {
+  toSolanaSend,
+  type Journal,
+  type JournalSend,
+  type OperationInput,
+  type SendLeg,
+} from "./journal";
 import { solanaVerdict, type SolanaReader, type SolanaVerdict } from "./verdicts";
 
 /**
@@ -82,6 +88,7 @@ export async function recordThenBroadcast<T>({
   lastValidBlockHeight,
   before,
   moved,
+  leg,
   signedTx,
   broadcast,
 }: {
@@ -92,6 +99,8 @@ export async function recordThenBroadcast<T>({
   /** The owner's token account on Solana before this send, and what it moves, in atoms as decimal text. */
   before: string;
   moved: string;
+  /** Which step of a deposit through the deposit key this send is, when it is one. */
+  leg?: SendLeg;
   signedTx: Uint8Array;
   broadcast: (signedTx: Uint8Array) => Promise<T>;
 }): Promise<{ signature: string; result: T }> {
@@ -101,7 +110,7 @@ export async function recordThenBroadcast<T>({
   const signature = signatureOf(signedTx);
   await journal.record(owner, {
     ...op,
-    sends: [{ signature, lastValidBlockHeight, before, moved }],
+    sends: [{ signature, lastValidBlockHeight, before, moved, ...(leg ? { leg } : {}) }],
   });
   return { signature, result: await broadcast(signedTx) };
 }

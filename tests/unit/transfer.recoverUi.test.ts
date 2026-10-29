@@ -14,7 +14,7 @@ const lineOf = (outcome: Awaited<ReturnType<typeof deposit>>) =>
 describe("a stranded key-based deposit has a way out that blocks nothing", () => {
   it("names the button that exists, and leaves no record to block other transfers", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "fail" });
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "stranded" });
@@ -26,19 +26,19 @@ describe("a stranded key-based deposit has a way out that blocks nothing", () =>
 
   it("credits the account when the leftover button is pressed", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "fail" });
     await deposit(world.env, { amount: AMOUNT });
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     const outcome = await recoverDepositKey(world.env);
     expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
     expect(world.rollup.token(world.keyAccount)).toBe(0n);
-    expect(world.solana.sent).toHaveLength(1);
+    expect(world.solana.sent).toHaveLength(2);
   });
 
   it("keeps the leftover button when the program refuses again, and says why, without sending by itself", async () => {
     const world = makeWorld();
-    world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+    world.stagedLanding(ATOMS);
     world.rollup.script({ fate: "fail" }, { fate: "fail" });
     await deposit(world.env, { amount: AMOUNT });
     const again = await recoverDepositKey(world.env);
