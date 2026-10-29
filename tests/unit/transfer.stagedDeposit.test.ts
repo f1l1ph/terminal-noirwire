@@ -221,10 +221,10 @@ describe("the wallet's payment to the deposit key", () => {
   it("sends nothing when the network would refuse it", async () => {
     const world = makeWorld();
     world.solana.simulateAnswers.push({ InstructionError: [0, 1] });
-    expect(await deposit(world.env, { amount: AMOUNT })).toMatchObject({
-      status: "refused",
-      reason: "simulation-failed",
-    });
+    const outcome = await deposit(world.env, { amount: AMOUNT });
+    expect(outcome).toMatchObject({ status: "refused", reason: "simulation-failed" });
+    expect(outcome).not.toHaveProperty("inKey");
+    expect(outcomeLine("deposit", outcome, 6, 1).text).toContain("Nothing moved.");
     expect(world.solana.rawSent).toEqual([]);
     expect(world.rows.size).toBe(0);
     expect(world.signed).toHaveLength(0);
@@ -296,7 +296,11 @@ describe("resuming a deposit through the deposit key", () => {
   it("sends the move, built fresh and signed by the key, when the payment landed and no move was sent, and never the payment again", async () => {
     const world = makeWorld();
     const first = await fundedDeposit(world, "unsent");
-    expect(first).toMatchObject({ status: "refused", reason: "simulation-failed" });
+    expect(first).toMatchObject({ status: "refused", reason: "simulation-failed", inKey: true });
+    const text = outcomeLine("deposit", first, 6, 1).text;
+    expect(text).not.toMatch(/Nothing (moved|was sent)/);
+    expect(text).toContain("safe in the deposit key");
+    expect(text).toContain("stopped before it was sent");
     expect(world.record()?.sends.map((send) => send.leg)).toEqual(["fund"]);
     const fundSignature = world.record()!.sends[0].signature;
     world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
@@ -338,7 +342,11 @@ describe("resuming a deposit through the deposit key", () => {
     const first = await fundedDeposit(world, "fail");
     expect(first).toMatchObject({ status: "refused", reason: "send-failed" });
     expect(world.rows.size).toBe(1);
-    expect(outcomeLine("deposit", first, 6, 1).text).toBeTruthy();
+    expect(first).toMatchObject({ inKey: true });
+    const text = outcomeLine("deposit", first, 6, 1).text;
+    expect(text).not.toMatch(/Nothing moved/);
+    expect(text).toContain("Your USDC left your wallet and is safe in the deposit key.");
+    expect(text).toContain("did not go through");
     world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
     world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
     expect(await resumeOf(world)).toMatchObject({ status: "done" });

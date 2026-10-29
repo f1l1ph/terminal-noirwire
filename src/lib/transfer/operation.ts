@@ -185,6 +185,8 @@ export interface Refused {
   message: string;
   /** Set when the collateral already left the account and the stop was in the step that takes it to the wallet, so the USDC is in the rollup balance and not where it started. */
   inRollup?: true;
+  /** Set when the wallet's payment to the deposit key landed and the stop was in the key's move into the rollup, so the USDC waits in the deposit key and not in the wallet. */
+  inKey?: true;
 }
 
 /** Why a transfer stopped without finishing or moving anything new: another tab holds the lock, a refusal, a send that may still land, or one that cannot be told. */

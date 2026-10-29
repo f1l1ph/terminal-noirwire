@@ -283,6 +283,23 @@ async function stagedMoveStop(
       "The payment to the deposit key did not land and cannot any more, so nothing moved. Try again.",
     );
   }
+  const stop = await keyMoveStop(env, record, atoms, answer);
+  return stop?.status === "refused" ? { ...stop, inKey: true } : stop;
+}
+
+/**
+ * The move half of `stagedMoveStop`, once the wallet's payment to the key
+ * landed: judges every move on record and sends a fresh one when none landed
+ * and none may still land. Null once the move landed, else the stop to show.
+ */
+async function keyMoveStop(
+  env: TransferEnv,
+  record: OperationRecord,
+  atoms: bigint,
+  answer: string | undefined,
+): Promise<DepositOutcome | null> {
+  const { id } = record;
+  const moves = legSends(record, "move");
   const moved = await reconciled(env, id, moves, answer);
   if ("status" in moved) return moved;
   if (moved.landed) return null;

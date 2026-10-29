@@ -78,6 +78,15 @@ function inRollupLine(reason: Refusal, feeLamports: number): string {
   return `${lead} ${stop} It is safe in your rollup balance. Press Resume under transfers that need attention to finish it.`;
 }
 
+/** What a stop in the deposit key's move into the rollup says, after the wallet already paid the key: the USDC waits in the key and the open record finishes or returns it. */
+function inKeyLine(reason: Refusal): string {
+  const stop =
+    reason === "send-failed"
+      ? "Its move into the rollup did not go through."
+      : "Its move into the rollup stopped before it was sent.";
+  return `Your USDC left your wallet and is safe in the deposit key. ${stop} Press Try the deposit again, or Return to wallet, under transfers that need attention.`;
+}
+
 /** What a flow's outcome says to the user, in plain words. */
 export function outcomeLine(
   kind: "deposit" | "withdraw",
@@ -107,11 +116,13 @@ export function outcomeLine(
         tone: "error",
         text: outcome.inRollup
           ? inRollupLine(outcome.reason, feeLamports)
-          : outcome.reason === "insufficient-sol"
-            ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
-            : outcome.reason === "deposit-key-missing" || outcome.reason === "below-seat-minimum"
-              ? outcome.message
-              : REFUSALS[outcome.reason],
+          : outcome.inKey
+            ? inKeyLine(outcome.reason)
+            : outcome.reason === "insufficient-sol"
+              ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
+              : outcome.reason === "deposit-key-missing" || outcome.reason === "below-seat-minimum"
+                ? outcome.message
+                : REFUSALS[outcome.reason],
       };
     case "waiting":
       return {
