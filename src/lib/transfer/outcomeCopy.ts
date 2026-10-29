@@ -109,7 +109,7 @@ export function outcomeLine(
     case "busy":
       return {
         tone: "warn",
-        text: "Another tab of this browser is already moving funds for this wallet. Finish there first.",
+        text: "This browser is still finishing another transfer for this wallet. Try again in a moment. Nothing was sent.",
       };
     case "refused":
       return {

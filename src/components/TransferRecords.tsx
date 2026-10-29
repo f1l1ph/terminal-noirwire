@@ -11,7 +11,7 @@ import {
   type SeatJudgement,
 } from "@/lib/transfer/attention";
 import { atomsText } from "@/lib/transfer/amount";
-import { newTransferBlocked } from "@/lib/transfer/resume";
+import { newTransferBlocked, openTransfers } from "@/lib/transfer/resume";
 import type { DismissOutcome } from "@/lib/transfer/dismiss";
 import { userMessageLine } from "@/lib/userMessage";
 import {
@@ -130,7 +130,11 @@ export function TransferRecords({
             ? await engine.leftover().catch(() => null)
             : null;
         if (!active) return;
-        setItems(records.map((record) => attentionOf(record, judged[record.id] ?? null, records)));
+        setItems(
+          openTransfers(records).map((record) =>
+            attentionOf(record, judged[record.id] ?? null, records),
+          ),
+        );
         if (records.length > 0) setWaiting(null);
         else if (lookForLeftover) setWaiting(leftover);
         if (leftover !== null && accountKnown && autoTried.current !== owner) {
@@ -138,11 +142,11 @@ export function TransferRecords({
           autoRecover.current();
         }
         setUnreadable(false);
-        onBlocked?.(newTransferBlocked(records.length, false));
+        onBlocked?.(newTransferBlocked(records, false));
       } catch {
         if (!active) return;
         setUnreadable(true);
-        onBlocked?.(newTransferBlocked(0, true));
+        onBlocked?.(newTransferBlocked([], true));
       }
     };
     void load(true);
@@ -253,9 +257,8 @@ export function TransferRecords({
       {items.map((item) => (
         <div key={item.id} className="border-line-subtle rounded-tile mt-2 border p-2">
           <p className="text-ink text-[13px]">
-            {OPERATION_LABEL[item.operation]}
-            {item.operation !== "sweep" &&
-              ` of ${atomsText(BigInt(item.atoms), QUOTE_DECIMALS)} USDC`}
+            {OPERATION_LABEL[item.operation]} of {atomsText(BigInt(item.atoms), QUOTE_DECIMALS)}{" "}
+            USDC
           </p>
           <p className="text-dim mt-1 text-[12px]">{kindCopy(item)}</p>
           {engine && item.returnable && item.staged && (

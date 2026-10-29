@@ -1,6 +1,7 @@
 import type { Attention } from "./attention";
 import { atomsText } from "./amount";
 import type { DepositInput, DepositOutcome } from "./deposit";
+import { isKeySweep, type OperationRecord } from "./journal";
 import type { TransferEnv } from "./operation";
 import type { ReturnInput } from "./returnToWallet";
 import type { WithdrawInput, WithdrawOutcome } from "./withdraw";
@@ -63,6 +64,12 @@ export const canStartTransfer = (state: {
 }): boolean =>
   !state.running && !state.blocked && state.amountOk && state.accountOpen && state.settingsKnown;
 
-/** A new transfer waits while any record is open, or while the records cannot be read. */
-export const newTransferBlocked = (open: number, unreadable: boolean): boolean =>
-  unreadable || open > 0;
+/** The open records the user is shown and that hold a new transfer back: the key's routine return of spare SOL is neither, since the next transfer judges it first. */
+export const openTransfers = <T extends Pick<OperationRecord, "step">>(records: T[]): T[] =>
+  records.filter((record) => !isKeySweep(record));
+
+/** A new transfer waits while any shown record is open, or while the records cannot be read. */
+export const newTransferBlocked = (
+  records: Pick<OperationRecord, "step">[],
+  unreadable: boolean,
+): boolean => unreadable || openTransfers(records).length > 0;

@@ -1,4 +1,4 @@
-import { isStaged, type OperationRecord } from "./journal";
+import { isKeySweep, isStaged, type OperationRecord } from "./journal";
 
 /** What a rollup send stands at, as `rollupSendState` judges it from its signature's status. */
 export type SeatJudgement =
@@ -31,6 +31,14 @@ export interface Attention {
 /** Whether a deposit is between its first step and its last: its record is written before the first send and removed when it finishes. */
 export const depositInProgress = (records: readonly OperationRecord[]): boolean =>
   records.some((record) => operationOf(record) === "deposit");
+
+/** The deposit key's return of spare SOL to the owner while its record is open, with its latest signature once one was sent; null when none is open. */
+export const keySweepInProgress = (
+  records: readonly OperationRecord[],
+): { signature?: string } | null => {
+  const sweep = records.find(isKeySweep);
+  return sweep ? { signature: lastSignature(sweep) } : null;
+};
 
 /**
  * Whether a record is complete and only waiting for its sends to be final: a

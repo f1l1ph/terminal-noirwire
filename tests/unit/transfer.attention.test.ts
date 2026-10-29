@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   actionsOf,
   attentionOf,
+  keySweepInProgress,
   shortSignature,
   type AttentionKind,
   type SeatJudgement,
@@ -305,5 +306,27 @@ describe("shortSignature", () => {
   it("keeps the ends of a long signature and a short one whole", () => {
     expect(shortSignature(SIGNATURE)).toBe("55555555...55555555");
     expect(shortSignature("abc")).toBe("abc");
+  });
+});
+
+describe("the line for the deposit key's return of spare SOL", () => {
+  const sweep = (sends: OperationRecord["sends"] = []) =>
+    record({ id: "op1.sweep", step: "sweep", sends });
+
+  it("is absent without a sweep record, and shows with one", () => {
+    expect(keySweepInProgress([])).toBeNull();
+    expect(keySweepInProgress([record()])).toBeNull();
+    expect(keySweepInProgress([record(), sweep()])).toEqual({ signature: undefined });
+  });
+
+  it("carries the latest signature once one was sent", () => {
+    const send = {
+      signature: SIGNATURE,
+      lastValidBlockHeight: 10,
+      at: 1,
+      before: "0",
+      moved: "0",
+    };
+    expect(keySweepInProgress([sweep([send])])).toEqual({ signature: SIGNATURE });
   });
 });

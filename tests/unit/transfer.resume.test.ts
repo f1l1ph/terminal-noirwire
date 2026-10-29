@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { actionsOf, attentionOf, type SeatJudgement } from "@/lib/transfer/attention";
 import type { OperationRecord } from "@/lib/transfer/journal";
 import type { TransferEnv } from "@/lib/transfer/operation";
-import { newTransferBlocked, resumeRecord } from "@/lib/transfer/resume";
+import { outcomeLine } from "@/lib/transfer/outcomeCopy";
+import { newTransferBlocked, openTransfers, resumeRecord } from "@/lib/transfer/resume";
 
 const env = {} as TransferEnv;
 const HUNDRED = "100000000";
@@ -104,8 +105,29 @@ describe("resuming an open record", () => {
 
 describe("a new transfer while a record is open", () => {
   it("is blocked by any open record or unreadable records, and free otherwise", () => {
-    expect(newTransferBlocked(1, false)).toBe(true);
-    expect(newTransferBlocked(0, true)).toBe(true);
-    expect(newTransferBlocked(0, false)).toBe(false);
+    expect(newTransferBlocked([record({})], false)).toBe(true);
+    expect(newTransferBlocked([], true)).toBe(true);
+    expect(newTransferBlocked([], false)).toBe(false);
+  });
+
+  it("is not blocked by the deposit key's return of spare SOL alone, but still by a real record beside it", () => {
+    const sweep = record({ id: "op1.sweep", step: "sweep" });
+    expect(newTransferBlocked([sweep], false)).toBe(false);
+    expect(newTransferBlocked([sweep, record({})], false)).toBe(true);
+    expect(newTransferBlocked([sweep], true)).toBe(true);
+  });
+
+  it("does not show the return of spare SOL among the transfers that need attention", () => {
+    const sweep = record({ id: "op1.sweep", step: "sweep" });
+    const open = record({ id: "op2" });
+    expect(openTransfers([sweep, open])).toEqual([open]);
+    expect(openTransfers([sweep])).toEqual([]);
+  });
+
+  it("says a busy flow sent nothing, whoever holds the lock", () => {
+    const line = outcomeLine("deposit", { status: "busy" }, 6, 30_000_000);
+    expect(line.text).toBe(
+      "This browser is still finishing another transfer for this wallet. Try again in a moment. Nothing was sent.",
+    );
   });
 });
