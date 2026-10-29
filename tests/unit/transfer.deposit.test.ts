@@ -618,7 +618,7 @@ describe("deposit steps", () => {
     "says why a final refusal %i of the seat step stranded the tokens, and that they are safe",
     async (code, reason) => {
       const world = makeWorld();
-      world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+      world.stagedLanding(ATOMS);
       world.rollup.script({ fate: "swallow" });
       await deposit(world.env, { amount: AMOUNT });
       world.rollup.statuses.set(world.rollup.sent[0], {
