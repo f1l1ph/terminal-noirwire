@@ -952,6 +952,7 @@ export function Terminal() {
       onReducePosition={requestReduce}
       limits={trading.marketLimits}
       exposureUnreadable={trading.state.exposureUnreadable === true}
+      unseated={trading.state.unseated === true}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
       cancellingOrderIds={
         cancelling ? new Set(trading.state.openOrders.map((order) => order.orderId)) : cancellingIds
@@ -962,6 +963,8 @@ export function Terminal() {
             <FundsSection
               identity={ownerIdentity}
               rollupReader={trading.rollupReader}
+              confirmSeat={trading.confirmSeat}
+              unseated={trading.state.unseated === true}
               withdrawByKey={trading.withdrawByKey}
               ownerAuthKnown={trading.ownerAuthKnown}
               accountOpen={trading.accountStatus === "open"}

@@ -44,6 +44,13 @@ export function balanceAtoms(text: string, decimals: number): bigint | null {
   return BigInt(parts[1]) * 10n ** BigInt(decimals) + BigInt(fraction || "0");
 }
 
+/** What the first deposit has to bring when the exchange sets a minimum for opening the trading account. */
+export function firstDepositNeeds(minimum: bigint, decimals: number): string {
+  const exact = atomsText(minimum, decimals);
+  const amount = exact.includes(".") ? exact.replace(/\.?0+$/, "") : exact;
+  return `Your first deposit opens your trading account: at least ${amount} USDC`;
+}
+
 /** Atoms as a plain decimal string with every decimal place kept, such as 2.500000. */
 export function atomsText(atoms: bigint, decimals: number): string {
   const scale = 10n ** BigInt(decimals);

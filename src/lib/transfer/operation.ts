@@ -11,7 +11,7 @@ import type { KeyWithdrawal } from "../trading/types";
 import type { MainnetChain } from "../wallet/ownerSigner";
 import { depositKeyAccount, depositKeyBalance } from "./depositKey";
 import { redactToken } from "../rollup/redact";
-import { programAddresses, programInstructions, type CustodyToken } from "../rollup/sdk";
+import { programInstructions, type CustodyToken } from "../rollup/sdk";
 export { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "./computeBudget";
 import { toSolanaSend, type Journal, type JournalSend, type OperationRecord } from "./journal";
 import { signableRefusal, validatedPins, type TransferPins, type TransferShape } from "./guard";
@@ -46,9 +46,12 @@ export const POLL_MS = 1_000;
 
 /** The exchange as the transfers see it; the app builds it from the program client so this module never imports it. */
 export interface ExchangePort {
-  /** Whether the owner has an open account (seat) on the exchange. */
+  /** Whether the owner has an open account (a view) on the exchange. It may hold no seat yet: the first deposit takes one. */
   accountOpen(): Promise<boolean>;
-  read(): Promise<{ paused: boolean; custodyCap: bigint }>;
+  /** Whether the account holds a seat right now, confirmed with the exchange and not read from the last view, which a released seat leaves unchanged. */
+  confirmSeat(): Promise<boolean>;
+  /** `minSeatDeposit` is the collateral a first deposit must bring to take a seat; 0 for no minimum. */
+  read(): Promise<{ paused: boolean; minSeatDeposit: bigint }>;
   /** The collateral token as the exchange registered it; its mint must be the pinned one. */
   token: CustodyToken;
   /** Every perp market the exchange has, in rising order, which a withdrawal names. */
@@ -144,10 +147,11 @@ export type Refusal =
   | "unfinished-operation"
   | "account-not-open"
   | "exchange-paused"
-  | "custody-cap"
+  | "below-seat-minimum"
   | "insufficient-usdc"
   | "insufficient-sol"
   | "above-free-collateral"
+  | "nothing-in-account"
   | "sealed-balance-missing"
   | "delegated-elsewhere"
   | "simulation-failed"
@@ -219,10 +223,6 @@ export { associatedTokenAddress, createAssociatedTokenAccountIdempotentIx };
 
 export const walletAccount = (env: TransferEnv) => associatedTokenAddress(env.owner, env.mint);
 export const balanceAccount = (env: TransferEnv) => deriveEphemeralAta(env.owner, env.mint)[0];
-
-/** The custody token account that deposits land in, derived from the pinned program and the registered token. */
-export const custodyAccount = (env: TransferEnv) =>
-  programAddresses(env.pins.programId).custody(env.exchange.token);
 
 /** The order book's collateral deposit of the owner's own tokens in the rollup. */
 export const depositInstruction = (env: TransferEnv, atoms: bigint) =>

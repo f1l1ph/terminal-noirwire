@@ -28,8 +28,10 @@ function viewWithCollateral(collateral: bigint, resultsWritten: number): View {
     orderKeys: [],
     resultsWritten,
     results: [],
+    seatRecorded: true,
+    snapshotOld: false,
     snapshot: {
-      seat: { collateral, spot: [], perp: [], openOrders: [] },
+      seat: { collateral, spot: [], positions: [] },
       marketId: 0,
       orders: [],
     },

@@ -66,6 +66,7 @@ export const PROGRAM_ERROR = {
   seatBlocked: 90,
   makerNotListed: 91,
   takerNotListed: 92,
+  slotsFull: 93,
   accountExists: 113,
   accountMissing: 114,
   notOrderKey: 123,
@@ -83,6 +84,9 @@ export const PROGRAM_ERROR = {
   wrongPriceFeed: 146,
   wrongPriceExponent: 147,
   custodyCapReached: 150,
+  notSeated: 155,
+  seatDepositTooSmall: 156,
+  layoutNotMigrated: 157,
 } as const;
 
 type Sentence = string | ((market: RefusalContext) => string);
@@ -139,6 +143,8 @@ const PRICE_SOURCE_NOT_READY =
   "The exchange's price source is not set up as expected, so it cannot check prices right now. This is on our side. Try again later. No fill occurred.";
 const FEE_ACCOUNT_NOT_READY =
   "The exchange's fee account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
+const UPGRADE_UNDER_WAY =
+  "The exchange is being upgraded right now, so it takes no new requests. This is on our side. Try again later. Nothing was charged.";
 const INSURANCE_ACCOUNT_NOT_READY =
   "The exchange's insurance account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
 
@@ -152,7 +158,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.seatNotOpen]:
     "Your account is not open on the exchange yet, so there is nothing to trade with. Open your account first. No fill occurred.",
   [PROGRAM_ERROR.seatTableFull]:
-    "The exchange has no room for more accounts right now. Try again later. Nothing was charged.",
+    "New trading accounts are full right now. Nothing was taken from your wallet. Try again later.",
   [PROGRAM_ERROR.seatAlreadyOpen]: "Your account is already open.",
   [PROGRAM_ERROR.zeroAmount]: "The amount is zero. Enter an amount above zero. Nothing moved.",
   [PROGRAM_ERROR.insufficientBalance]:
@@ -210,6 +216,8 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
     "This market only lets listed makers rest orders, and this account is not one. No fill occurred.",
   [PROGRAM_ERROR.takerNotListed]:
     "This market only lets listed takers place orders that match, and this account is not one. No fill occurred.",
+  [PROGRAM_ERROR.slotsFull]:
+    "You can hold positions or orders in up to 4 markets at once. Close one to trade here.",
   [PROGRAM_ERROR.accountExists]: "Your account already exists.",
   [PROGRAM_ERROR.accountMissing]:
     "Your account could not be found on the exchange. If you just opened it, wait a moment and try again.",
@@ -235,6 +243,11 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.wrongPriceExponent]: PRICE_SOURCE_NOT_READY,
   [PROGRAM_ERROR.custodyCapReached]:
     "Deposits are paused at the current limit. You can still trade and withdraw. Nothing moved.",
+  [PROGRAM_ERROR.notSeated]:
+    "Your trading account holds no funds yet. Deposit to start trading. Nothing was charged.",
+  [PROGRAM_ERROR.seatDepositTooSmall]:
+    "Your first deposit opens your trading account, so it has to be USDC collateral, and at least the exchange's minimum if it sets one. Add more and try again. Nothing moved.",
+  [PROGRAM_ERROR.layoutNotMigrated]: UPGRADE_UNDER_WAY,
 };
 
 /**
@@ -247,7 +260,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
 export const NOT_RAISED_BY_TRADERS: ReadonlySet<number> = new Set([
   3, 4, 5, 6, 10, 12, 15, 16, 17, 20, 60, 61, 62, 63, 70, 71, 72, 73, 74, 75, 76, 100, 101, 102,
   103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 115, 116, 117, 118, 119, 120, 121, 122, 126,
-  127, 128, 129, 131, 132, 135, 136, 138, 139, 140, 148, 149,
+  127, 128, 129, 131, 132, 135, 136, 138, 139, 140, 148, 149, 158, 159, 160, 161, 162,
 ]);
 
 /** A plain sentence for a program refusal by its number in the program's error list, or null for one this terminal has no sentence for. */

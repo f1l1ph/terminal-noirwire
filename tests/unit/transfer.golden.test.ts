@@ -294,8 +294,8 @@ describe("golden transactions, written by hand", () => {
         [
           signer(owner),
           readonly(pda([Buffer.from("exchange")], program)),
-          writable(pda([Buffer.from("ledger")], program)),
-          readonly(pda([Buffer.from("view"), owner.toBuffer()], program)),
+          writable(pda([Buffer.from("ledger-v2")], program)),
+          writable(pda([Buffer.from("view"), owner.toBuffer()], program)),
           readonly(authority),
           writable(associated(authority, world.pins.mint)),
           writable(walletAccount(world.env)),
@@ -327,7 +327,7 @@ describe("golden transactions, written by hand", () => {
         [
           signer(owner),
           readonly(pda([Buffer.from("exchange")], program)),
-          writable(pda([Buffer.from("ledger")], program)),
+          writable(pda([Buffer.from("ledger-v2")], program)),
           writable(pda([Buffer.from("view"), owner.toBuffer()], program)),
           readonly(authority),
           writable(associated(authority, world.pins.mint)),

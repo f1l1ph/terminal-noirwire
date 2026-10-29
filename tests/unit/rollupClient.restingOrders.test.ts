@@ -70,19 +70,21 @@ function viewWith(resting: boolean, resultsWritten: number, expiry = 0n): View {
     orderKeys: [],
     resultsWritten,
     results: [],
+    seatRecorded: true,
+    snapshotOld: false,
     snapshot: {
       seat: {
         collateral: 500n * USDC,
         spot: [],
-        perp: [
+        positions: [
           {
+            marketId: 0,
             base: 0n,
             quote: 0n,
             openBidLots: resting ? 1_000n : 0n,
             openAskLots: 0n,
           },
         ],
-        openOrders: [],
       },
       marketId: 0,
       orders: resting

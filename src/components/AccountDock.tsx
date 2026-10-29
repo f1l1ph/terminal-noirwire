@@ -95,6 +95,7 @@ export function AccountDock({
   cancellingOrderIds,
   limits = NO_LIMITS,
   exposureUnreadable = false,
+  unseated = false,
   transfers = null,
   bordered = true,
 }: {
@@ -127,6 +128,8 @@ export function AccountDock({
   limits?: ReadonlyMap<string, MarketLimits>;
   /** The account holds exposure in a market this terminal cannot read: margin and liquidation figures are unknown. */
   exposureUnreadable?: boolean;
+  /** The account holds no seat, so there is nothing to list: the tabs give way to the prompt to deposit. */
+  unseated?: boolean;
   /** Deposits, withdrawals and the transfers that did not finish, shown above the tabs. */
   transfers?: React.ReactNode;
   /** False inside the desktop Account panel frame, which already supplies the border. True (default) on phone, where this renders standalone. */
@@ -163,7 +166,13 @@ export function AccountDock({
             <p className="text-dim text-[13px]">{walletlessDockText(isMainnetBuild())}</p>
           </div>
         )}
-        {hasWallet && tab === "positions" && (
+        {hasWallet && unseated && (
+          <EmptyState
+            title="Deposit to start trading"
+            hint="Your trading account holds nothing yet. Your first deposit opens it."
+          />
+        )}
+        {hasWallet && !unseated && tab === "positions" && (
           <PositionsTable
             positions={positions}
             collateral={collateral}
@@ -177,7 +186,7 @@ export function AccountDock({
             onReduce={onReducePosition}
           />
         )}
-        {hasWallet && tab === "openOrders" && (
+        {hasWallet && !unseated && tab === "openOrders" && (
           <OpenOrdersTable
             openOrders={openOrders}
             marketSettings={marketSettings}
@@ -186,10 +195,10 @@ export function AccountDock({
             cancellingOrderIds={cancellingOrderIds}
           />
         )}
-        {hasWallet && tab === "fills" && (
+        {hasWallet && !unseated && tab === "fills" && (
           <FillsTable fills={ownFills} marketSettings={marketSettings} />
         )}
-        {hasWallet && tab === "balances" && (
+        {hasWallet && !unseated && tab === "balances" && (
           <BalancesTable
             balances={balances}
             collateral={collateral}
@@ -198,7 +207,7 @@ export function AccountDock({
             now={now}
           />
         )}
-        {hasWallet && tab === "margin" && (
+        {hasWallet && !unseated && tab === "margin" && (
           <MarginTable
             positions={positions}
             collateral={collateral}

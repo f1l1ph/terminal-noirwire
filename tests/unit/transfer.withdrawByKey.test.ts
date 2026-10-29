@@ -5,6 +5,7 @@ import { actionsOf, attentionOf } from "@/lib/transfer/attention";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { blockhashOf, NotDispatched } from "@/lib/transfer/keyedWithdrawal";
 import { ORDER_KEY_WITHDRAWAL_UNPROVEN } from "@/lib/transfer/operation";
+import { outcomeLine } from "@/lib/transfer/outcomeCopy";
 import { signatureOf } from "@/lib/transfer/send";
 import { withdraw } from "@/lib/transfer/withdraw";
 import { USDC, makeWorld, signedAttempt, type World } from "./transferWorld";
@@ -113,6 +114,16 @@ describe("a withdrawal signed by an order key", () => {
     refusedAtFinality(world, 1);
     expect(await ask(world)).toMatchObject({ status: "refused", reason: "rollup-refused" });
     expect(calls()).toBe(1);
+    expect(world.record()?.seat).toBeUndefined();
+    expect(world.solana.sent).toEqual([]);
+  });
+
+  it("shows an account already emptied by a withdrawal as empty, not as a failure", async () => {
+    const { world } = keyWorld([{ kind: "refused", code: 6155 }]);
+    refusedAtFinality(world, 1);
+    const outcome = await ask(world);
+    expect(outcome).toMatchObject({ status: "refused", reason: "nothing-in-account" });
+    expect(outcomeLine("withdraw", outcome, 6, 0).text).toMatch(/holds no funds.*Deposit to start/);
     expect(world.record()?.seat).toBeUndefined();
     expect(world.solana.sent).toEqual([]);
   });

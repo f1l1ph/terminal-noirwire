@@ -76,31 +76,54 @@ describe("deposit preconditions", () => {
     expect(check).toBeTypeOf("function");
   });
 
-  it("refuses a deposit that takes custody past its cap, before any signature", async () => {
+  it("asks nothing about the seat and adds no minimum when the exchange sets none", async () => {
     const world = makeWorld();
-    world.exchange.custodyCap = 10n * USDC;
-    world.fund({ onSolana: 100n * USDC, inCustody: 10n * USDC - ATOMS + 1n });
+    landing(world);
+    const outcome = await deposit(world.env, { amount: "0.000001" });
+    expect(outcome).toMatchObject({ status: "done" });
+    expect(world.events).not.toContain("confirm-seat");
+  });
+
+  it("refuses a first deposit below the minimum, confirming the seat first and before any signature", async () => {
+    const world = makeWorld();
+    world.exchange.minSeatDeposit = 10n * USDC;
     const outcome = await deposit(world.env, { amount: AMOUNT });
-    expect(outcome).toMatchObject({ status: "refused", reason: "custody-cap" });
-    expect(world.events).toEqual([]);
+    expect(outcome).toMatchObject({
+      status: "refused",
+      reason: "below-seat-minimum",
+      message: "Your first deposit opens your trading account: at least 10 USDC. Nothing was sent.",
+    });
+    expect(world.events).toEqual(["confirm-seat"]);
     expect(world.rows.size).toBe(0);
   });
 
-  it("allows a deposit that takes custody exactly to its cap", async () => {
+  it("takes a deposit of exactly the minimum without asking about the seat", async () => {
     const world = makeWorld();
-    world.exchange.custodyCap = 10n * USDC;
-    world.fund({ onSolana: 100n * USDC, inCustody: 10n * USDC - ATOMS });
+    world.exchange.minSeatDeposit = ATOMS;
     landing(world);
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
+    expect(world.events).not.toContain("confirm-seat");
   });
 
-  it("leaves the cap to the program when the rollup does not serve custody", async () => {
+  it("takes a small deposit into an account the exchange confirms holds a seat", async () => {
     const world = makeWorld();
-    world.rollup.accounts.delete(world.custody.toBase58());
+    world.exchange.minSeatDeposit = 10n * USDC;
+    world.exchange.seated = true;
     landing(world);
     const outcome = await deposit(world.env, { amount: AMOUNT });
     expect(outcome).toMatchObject({ status: "done", atoms: ATOMS });
+    expect(world.events[0]).toBe("confirm-seat");
+  });
+
+  it("does not move the wallet's funds when a swept seat leaves a small deposit below the minimum", async () => {
+    const world = makeWorld();
+    world.exchange.minSeatDeposit = 10n * USDC;
+    world.exchange.seated = false;
+    const outcome = await deposit(world.env, { amount: AMOUNT });
+    expect(outcome).toMatchObject({ status: "refused", reason: "below-seat-minimum" });
+    expect(world.events).not.toContain("sign");
+    expect(world.events).not.toContain("journal:record");
   });
 
   it("refuses when the wallet holds less SOL than the steps cost, before any signature", async () => {
@@ -554,6 +577,28 @@ describe("deposit steps", () => {
     expect(world.record()?.seat).toBeUndefined();
     expect(new Set(world.rollup.sent).size).toBe(1);
   });
+
+  it.each([
+    [6013, /New trading accounts are full right now\. Try again later\./],
+    [6156, /first deposit was too small to open your trading account/],
+  ])(
+    "says why a final refusal %i of the seat step stranded the tokens, and that they are safe",
+    async (code, reason) => {
+      const world = makeWorld();
+      world.solana.script({ fate: "land", effect: world.moveEffect(ATOMS) });
+      world.rollup.script({ fate: "swallow" });
+      await deposit(world.env, { amount: AMOUNT });
+      world.rollup.statuses.set(world.rollup.sent[0], {
+        err: { InstructionError: [0, { Custom: code }] },
+        confirmationStatus: "finalized",
+      });
+      const outcome = await deposit(world.env, { amount: AMOUNT });
+      expect(outcome).toMatchObject({ status: "stranded" });
+      const message = (outcome as { message: string }).message;
+      expect(message).toMatch(reason);
+      expect(message).toMatch(/safe/);
+    },
+  );
 
   it("treats a crash between the record and the send like any send: waits, reports, never rebuilds on its own", async () => {
     const world = makeWorld();

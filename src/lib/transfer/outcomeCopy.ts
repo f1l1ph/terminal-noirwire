@@ -19,12 +19,14 @@ const REFUSALS: Record<Refusal, string> = {
     "Another transfer is not finished yet. Finish it first by starting it again with the same amount. Nothing new was sent.",
   "account-not-open": "This wallet has no open account on the exchange yet. Nothing moved.",
   "exchange-paused": "The exchange is paused and takes no transfers right now. Nothing moved.",
-  "custody-cap":
-    "Deposits are paused at the current limit. You can still trade and withdraw. Nothing moved.",
+  "below-seat-minimum":
+    "Your first deposit opens your trading account and has to meet the exchange's minimum. Nothing moved.",
   "insufficient-usdc": "Your wallet does not hold that much USDC. Nothing moved.",
   "insufficient-sol": "Your wallet needs more SOL for network fees. Nothing moved.",
   "above-free-collateral":
     "That is more than your free collateral. Close a position or lower the amount. Nothing moved.",
+  "nothing-in-account":
+    "Your trading account holds no funds, so there is nothing to withdraw. Deposit to start trading. Nothing moved.",
   "sealed-balance-missing":
     "This account needs a private balance that cannot be made here. Nothing moved.",
   "delegated-elsewhere": "Your token balance sits with a different rollup. Nothing moved.",
@@ -103,7 +105,7 @@ export function outcomeLine(
           ? inRollupLine(outcome.reason, feeLamports)
           : outcome.reason === "insufficient-sol"
             ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
-            : outcome.reason === "deposit-key-missing"
+            : outcome.reason === "deposit-key-missing" || outcome.reason === "below-seat-minimum"
               ? outcome.message
               : REFUSALS[outcome.reason],
       };

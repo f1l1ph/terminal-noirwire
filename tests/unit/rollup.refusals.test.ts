@@ -6,6 +6,7 @@ import {
   PROGRAM_ERROR,
   WIRE_ERROR_OFFSET,
 } from "@/lib/rollup/refusals";
+import { SEAT_ERROR } from "@noirwire/orderbook";
 import { ACCESS_ERROR } from "@/lib/rollup/sdk";
 
 /**
@@ -74,6 +75,7 @@ const PROGRAM_ERROR_CODES: Readonly<Record<number, string>> = {
   90: "SeatBlocked",
   91: "MakerNotListed",
   92: "TakerNotListed",
+  93: "SlotsFull",
   100: "NotUpgradeAuthority",
   101: "NotAdmin",
   102: "NotNominee",
@@ -125,6 +127,14 @@ const PROGRAM_ERROR_CODES: Readonly<Record<number, string>> = {
   148: "PriceSourceBound",
   149: "PriceSourceInUse",
   150: "CustodyCapReached",
+  155: "NotSeated",
+  156: "SeatDepositTooSmall",
+  157: "LayoutNotMigrated",
+  158: "AlreadyMigrated",
+  159: "LedgerTooLarge",
+  160: "RelayoutOutOfOrder",
+  161: "RelayoutMismatch",
+  162: "RelayoutIncomplete",
 };
 
 const NUMBERS = Object.keys(PROGRAM_ERROR_CODES).map(Number);
@@ -168,6 +178,16 @@ describe("the sentence for every refusal a trader can meet", () => {
     expect(PROGRAM_ERROR.seatBlocked).toBe(ACCESS_ERROR.seatBlocked - WIRE_ERROR_OFFSET);
     expect(PROGRAM_ERROR.makerNotListed).toBe(ACCESS_ERROR.makerNotListed - WIRE_ERROR_OFFSET);
     expect(PROGRAM_ERROR.takerNotListed).toBe(ACCESS_ERROR.takerNotListed - WIRE_ERROR_OFFSET);
+  });
+
+  it("agrees with the package on the seat table and slot codes", () => {
+    expect(PROGRAM_ERROR.slotsFull).toBe(SEAT_ERROR.slotsFull - WIRE_ERROR_OFFSET);
+    expect(PROGRAM_ERROR.notSeated).toBe(SEAT_ERROR.notSeated - WIRE_ERROR_OFFSET);
+    expect(PROGRAM_ERROR.seatDepositTooSmall).toBe(
+      SEAT_ERROR.seatDepositTooSmall - WIRE_ERROR_OFFSET,
+    );
+    expect(PROGRAM_ERROR.layoutNotMigrated).toBe(SEAT_ERROR.layoutNotMigrated - WIRE_ERROR_OFFSET);
+    expect(13).toBe(SEAT_ERROR.seatTableFull - WIRE_ERROR_OFFSET);
   });
 
   it("never shows a code, a program error label or a raw address in a sentence", () => {
@@ -220,6 +240,32 @@ describe("the sentences the issue calls out", () => {
     [137, /all the new accounts it allows today/],
   ])("code %i", (number, sentence) => {
     expect(describeProgramError(number)).toMatch(sentence);
+  });
+
+  it("says a full seat table takes no new accounts and that nothing left the wallet (13)", () => {
+    expect(describeProgramError(13)).toBe(
+      "New trading accounts are full right now. Nothing was taken from your wallet. Try again later.",
+    );
+  });
+
+  it("tells a trader on a fifth market to close one of the four (93)", () => {
+    expect(describeProgramError(93)).toBe(
+      "You can hold positions or orders in up to 4 markets at once. Close one to trade here.",
+    );
+  });
+
+  it("asks an unseated account to deposit (155)", () => {
+    expect(describeProgramError(155)).toMatch(/Deposit to start trading/);
+  });
+
+  it("says a first deposit has to be collateral and meet any minimum (156)", () => {
+    const sentence = describeProgramError(156) ?? "";
+    expect(sentence).toMatch(/first deposit opens your trading account/);
+    expect(sentence).toMatch(/Nothing moved/);
+  });
+
+  it("says the exchange is being upgraded while its seats move to the new ledger (157)", () => {
+    expect(describeProgramError(157)).toMatch(/being upgraded/);
   });
 
   it("says withdrawals are blocked while a shortfall is recorded (64), and that funds are safe", () => {

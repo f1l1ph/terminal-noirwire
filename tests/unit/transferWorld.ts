@@ -276,7 +276,10 @@ export function makeWorld(
   const exchangeState = {
     open: true,
     paused: false,
-    custodyCap: 1_000_000_000n,
+    /** The collateral a first deposit must bring to take a seat; 0 for no minimum. */
+    minSeatDeposit: 0n,
+    /** Whether the exchange says the account holds a seat. */
+    seated: false,
     /** How many times a withdrawal was about to be built. */
     withdrawBuilds: 0,
     marketIds: [0, 1],
@@ -299,7 +302,14 @@ export function makeWorld(
     rollup,
     exchange: {
       accountOpen: async () => exchangeState.open,
-      read: async () => ({ paused: exchangeState.paused, custodyCap: exchangeState.custodyCap }),
+      confirmSeat: async () => {
+        events.push("confirm-seat");
+        return exchangeState.seated;
+      },
+      read: async () => ({
+        paused: exchangeState.paused,
+        minSeatDeposit: exchangeState.minSeatDeposit,
+      }),
       token,
       perpMarketIds: async () => {
         exchangeState.withdrawBuilds += 1;

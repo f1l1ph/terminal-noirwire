@@ -89,17 +89,19 @@ function view(
   slots: [SlotInput, SlotInput],
   snapshotMarket = 0,
   orders: OrderInput[] = [],
+  state: { seatRecorded?: boolean; snapshotOld?: boolean } = {},
 ): View {
   return {
     orderKeys: [],
     resultsWritten: 1,
     results: [],
+    seatRecorded: state.seatRecorded ?? true,
+    snapshotOld: state.snapshotOld ?? false,
     snapshot: {
       seat: {
         collateral,
         spot: [],
-        perp: slots.map((slot) => ({ ...noSlot, ...slot })),
-        openOrders: [],
+        positions: slots.map((slot, marketId) => ({ ...noSlot, marketId, openOrders: 0, ...slot })),
       },
       marketId: snapshotMarket,
       orders,
@@ -168,8 +170,15 @@ describe("RollupTradingClient: margin-aware collateral", () => {
 
   it("makes margin unknown when the seat holds exposure in a market outside the deployment", async () => {
     const seen = view(1000n * USDC, [{ base: 10_000n, quote: -1000n * USDC }, {}]);
-    // Slot 2 is a market this terminal does not trade (the deployment lists 0 and 1).
-    (seen.snapshot.seat.perp as unknown[]).push({ ...noSlot, base: 5_000n, quote: -500n * USDC });
+    // Market 2 is one this terminal does not trade (the deployment lists 0 and 1).
+    seen.snapshot.seat.positions.push({
+      ...noSlot,
+      marketId: 2,
+      openOrders: 0,
+      fundingCheckpoint: 0n,
+      base: 5_000n,
+      quote: -500n * USDC,
+    });
     const state = await clientShowing([seen], marks).fetchState(WALLET);
     expect(state.exposureUnreadable).toBe(true);
     expect(state.equity).toBeNull();

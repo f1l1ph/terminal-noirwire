@@ -6,14 +6,24 @@ import { env } from "@/lib/env";
 import { formatMoney } from "@/lib/format";
 import { isAvailableUnknown, transferableAmount } from "@/lib/trading/balanceDisplay";
 import type { Balance, KeyWithdrawal, WalletIdentity } from "@/lib/trading/types";
-import { atomsText, balanceAtoms, checkAmount, type AmountCheck } from "@/lib/transfer/amount";
+import {
+  atomsText,
+  balanceAtoms,
+  checkAmount,
+  firstDepositNeeds,
+  type AmountCheck,
+} from "@/lib/transfer/amount";
 import { deposit, recoverDepositKey } from "@/lib/transfer/deposit";
 import { depositKeyLeftover } from "@/lib/transfer/leftover";
 import { loadOrCreateDepositKey } from "@/lib/transfer/depositKeyStore";
 import { dismissRollupSend } from "@/lib/transfer/dismiss";
 import { createJournal, indexedDbStorage } from "@/lib/transfer/journal";
 import { checkDepositStorage } from "@/lib/transfer/storageGuard";
-import { createMainnetTransferEnv, mainnetTransferPins } from "@/lib/transfer/mainnetEnv";
+import {
+  createMainnetTransferEnv,
+  mainnetTransferPins,
+  readExchange,
+} from "@/lib/transfer/mainnetEnv";
 import {
   ROUND_TRIP_LAMPORTS,
   SOLANA_EXIT_LAMPORTS,
@@ -71,6 +81,8 @@ const AMOUNT_MESSAGES: Record<
 export default function FundsSection({
   identity,
   rollupReader,
+  confirmSeat,
+  unseated,
   withdrawByKey,
   ownerAuthKnown,
   accountOpen,
@@ -80,6 +92,10 @@ export default function FundsSection({
 }: {
   identity: WalletIdentity | null;
   rollupReader: (() => Promise<Connection>) | null;
+  /** Asks the exchange whether the account holds a seat right now; the first deposit takes one. */
+  confirmSeat: (() => Promise<boolean>) | null;
+  /** The account shows no seat, so the next deposit is the first and must meet any minimum the exchange sets. */
+  unseated: boolean;
   /** Given only where the deployment takes the owner's consent as a signed message; the seat's withdrawal then needs no wallet signature. */
   withdrawByKey:
     | ((atoms: bigint, onSigned?: (raw: Uint8Array) => Promise<void>) => Promise<KeyWithdrawal>)
@@ -102,7 +118,7 @@ export default function FundsSection({
   }, [accountOpen]);
 
   const makeEnv = useCallback(async (): Promise<TransferEnv> => {
-    if (!signer || !rollupReader) throw new Error("Connect a wallet first.");
+    if (!signer || !rollupReader || !confirmSeat) throw new Error("Connect a wallet first.");
     if (!ownerAuthKnown)
       throw new Error("Still loading the account settings. Try again in a moment.");
     const rollup = await rollupReader();
@@ -113,9 +129,10 @@ export default function FundsSection({
       rollupEndpoint: rollup.rpcEndpoint,
       depositKey: await loadOrCreateDepositKey(signer.publicKey.toBase58()),
       accountOpen: async () => accountOpenRef.current,
+      confirmSeat,
       ...(withdrawByKey ? { withdrawByKey } : {}),
     });
-  }, [signer, rollupReader, solana, withdrawByKey, ownerAuthKnown]);
+  }, [signer, rollupReader, confirmSeat, solana, withdrawByKey, ownerAuthKnown]);
 
   const freeCollateral =
     collateral && !isAvailableUnknown(collateral)
@@ -129,7 +146,7 @@ export default function FundsSection({
 
   const engine = useMemo<RecordsEngine | null>(
     () =>
-      signer && rollupReader
+      signer && rollupReader && confirmSeat
         ? {
             judge: async (records) => {
               const transfer = await makeEnv();
@@ -179,7 +196,7 @@ export default function FundsSection({
             },
           }
         : null,
-    [signer, rollupReader, makeEnv],
+    [signer, rollupReader, confirmSeat, makeEnv],
   );
   const [blocked, setBlocked] = useState(true);
 
@@ -193,6 +210,7 @@ export default function FundsSection({
   const [funds, setFunds] = useState<WalletFunds>({ usdc: null, lamports: null });
   const [ackedBy, setAckedBy] = useState<string | null>(null);
   const [showAck, setShowAck] = useState(false);
+  const [minSeatDeposit, setMinSeatDeposit] = useState<bigint | null>(null);
 
   const readFunds = useCallback(async (): Promise<WalletFunds | null> => {
     if (!owner) return null;
@@ -220,10 +238,35 @@ export default function FundsSection({
     };
   }, [open, readFunds, refreshKey]);
 
+  useEffect(() => {
+    if (!open || !unseated || !rollupReader) return;
+    let active = true;
+    void rollupReader()
+      .then((reader) => readExchange(reader))
+      .then(
+        (facts) => {
+          if (active) setMinSeatDeposit(facts.minSeatDeposit);
+        },
+        () => {
+          if (active) setMinSeatDeposit(null);
+        },
+      );
+    return () => {
+      active = false;
+    };
+  }, [open, unseated, rollupReader, refreshKey]);
+
   if (!owner || !signer) return null;
 
   const limit = kind === "deposit" ? funds.usdc : freeCollateral;
-  const check = checkAmount(text, QUOTE_DECIMALS, limit);
+  const typed = checkAmount(text, QUOTE_DECIMALS, limit);
+  const firstDeposit =
+    kind === "deposit" && unseated && minSeatDeposit !== null && minSeatDeposit > 0n
+      ? firstDepositNeeds(minSeatDeposit, QUOTE_DECIMALS)
+      : null;
+  const belowFirstMinimum =
+    firstDeposit !== null && typed.ok && minSeatDeposit !== null && typed.atoms < minSeatDeposit;
+  const check: AmountCheck = belowFirstMinimum ? { ok: false, reason: "empty" } : typed;
   const busy = phase !== null;
   const feeLamports = kind === "deposit" ? ROUND_TRIP_LAMPORTS : SOLANA_EXIT_LAMPORTS;
   const lacksSol = funds.lamports !== null && funds.lamports < BigInt(feeLamports);
@@ -348,6 +391,14 @@ export default function FundsSection({
               onChange={(event) => setText(event.target.value)}
               aria-label={`${kind === "deposit" ? "Deposit" : "Withdraw"} amount (USDC)`}
             />
+            {firstDeposit !== null && (
+              <p
+                role={belowFirstMinimum ? "alert" : "status"}
+                className={`mt-1 text-[12px] ${belowFirstMinimum ? "text-danger" : "text-dim"}`}
+              >
+                {firstDeposit}
+              </p>
+            )}
             {!check.ok && AMOUNT_MESSAGES[check.reason](kind) !== "" && (
               <p className="text-dim mt-1 text-[12px]">{AMOUNT_MESSAGES[check.reason](kind)}</p>
             )}

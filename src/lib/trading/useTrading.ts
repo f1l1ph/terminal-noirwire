@@ -585,6 +585,11 @@ export function useTrading(
     return wallet && read ? () => read(wallet) : null;
   }, [client, wallet]);
 
+  const confirmSeat = useMemo(() => {
+    const confirm = client.confirmSeat?.bind(client);
+    return wallet && confirm ? () => confirm(wallet) : null;
+  }, [client, wallet]);
+
   const withdrawByKey = useMemo(() => {
     const withdraw = client.withdrawByKey?.bind(client);
     return wallet && withdraw && ownerAuth === "message"
@@ -729,6 +734,8 @@ export function useTrading(
     recheckAccount,
     /** Reads the rollup as the owner; null in dev mode and with no wallet. */
     rollupReader,
+    /** Asks the exchange whether the account holds a seat right now; null in dev mode and with no wallet. */
+    confirmSeat,
     /** How the owner consents to account actions here: "message" only where the deployment says so. */
     ownerAuth,
     /** False while the deployment's `ownerAuth` is still being read; a withdrawal waits for it. */

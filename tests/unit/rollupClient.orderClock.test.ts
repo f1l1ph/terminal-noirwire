@@ -69,12 +69,15 @@ function viewHolding(base: bigint): View {
     orderKeys: [],
     resultsWritten: 1,
     results: [],
+    seatRecorded: true,
+    snapshotOld: false,
     snapshot: {
       seat: {
         collateral: 100_000_000n,
         spot: [],
-        perp: [{ base, quote: -base * 150_000n, openBidLots: 0n, openAskLots: 0n }],
-        openOrders: [],
+        positions: [
+          { marketId: 0, base, quote: -base * 150_000n, openBidLots: 0n, openAskLots: 0n },
+        ],
       },
       marketId: 0,
       orders: [],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atomsText, balanceAtoms, checkAmount } from "@/lib/transfer/amount";
+import { atomsText, balanceAtoms, checkAmount, firstDepositNeeds } from "@/lib/transfer/amount";
 
 const BALANCE = 10_000_000n;
 
@@ -78,6 +78,19 @@ describe("balanceAtoms", () => {
     expect(balanceAtoms("-1", 6)).toBeNull();
     expect(balanceAtoms("", 6)).toBeNull();
     expect(balanceAtoms("1e6", 6)).toBeNull();
+  });
+});
+
+describe("firstDepositNeeds", () => {
+  it.each([
+    [10_000_000n, "10"],
+    [2_500_000n, "2.5"],
+    [100_000_000n, "100"],
+    [1n, "0.000001"],
+  ])("states a minimum of %s atoms as %s USDC", (atoms, shown) => {
+    expect(firstDepositNeeds(atoms, 6)).toBe(
+      `Your first deposit opens your trading account: at least ${shown} USDC`,
+    );
   });
 });
 

@@ -32,7 +32,7 @@ export function mainnetTransferPins(): TransferPins {
 
 export interface ExchangeFacts {
   paused: boolean;
-  custodyCap: bigint;
+  minSeatDeposit: bigint;
   sealed: boolean;
   token: CustodyToken;
   perpMarketIds: number[];
@@ -52,7 +52,7 @@ export async function readExchange(
   for (let id = 0; id < 32; id += 1) if ((exchange.perpMarkets >>> id) & 1) perpMarketIds.push(id);
   return {
     paused: exchange.paused,
-    custodyCap: collateral.custodyCap,
+    minSeatDeposit: exchange.minSeatDeposit,
     sealed: collateral.custodyVisibility === "sealed",
     token: { mint: collateral.mint, custodyNonce: collateral.custodyNonce },
     perpMarketIds,
@@ -73,6 +73,8 @@ export interface MainnetTransferParts {
   depositRollup?: () => Promise<SolanaRpc>;
   /** Whether the owner has an open account on the exchange, as the trading session reads it. */
   accountOpen(): Promise<boolean>;
+  /** Asks the exchange whether the owner's account holds a seat right now (a `sync_view`), which the first deposit takes if it does not. */
+  confirmSeat(): Promise<boolean>;
   /** Given only where the deployment takes the owner's consent as a signed message: the seat's withdrawal is then signed by an order key and the wallet signs no rollup transaction. */
   withdrawByKey?: (atoms: bigint) => Promise<KeyWithdrawal>;
   /** Reads the Exchange account; by default from `rollup`. Tests pass their own. */
@@ -138,8 +140,9 @@ export async function createMainnetTransferEnv(parts: MainnetTransferParts): Pro
     accountOpen: parts.accountOpen,
     read: async () => {
       const fresh = await readFresh();
-      return { paused: fresh.paused, custodyCap: fresh.custodyCap };
+      return { paused: fresh.paused, minSeatDeposit: fresh.minSeatDeposit };
     },
+    confirmSeat: parts.confirmSeat,
     token: exchange.token,
     perpMarketIds: async () => (await readFresh()).perpMarketIds,
   };

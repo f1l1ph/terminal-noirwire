@@ -4,9 +4,9 @@
  * defined here, so a client package upgrade is an edit to this one file.
  * Mirrors the same discipline sim-noirwire's own `src/rollup/program.ts`
  * follows for the same package (see that repo's docs/DESIGN.md, "The rollup
- * venue"). Currently on 0.6.0, which names every perp market in each
- * order-key call itself, read from the Exchange account, so no caller passes
- * a risk market list any more.
+ * venue"). Currently on 0.9.0: every order-key call names every perp market
+ * itself, read from the Exchange account, and a trader's seat is taken by its
+ * first collateral deposit, so positions are read with `positionOn`.
  */
 import "../bufferBigInt";
 import { Connection, PublicKey, type Keypair } from "@solana/web3.js";
@@ -35,6 +35,7 @@ import {
   clockOf as sdkClockOf,
   decodeExchange,
   decodeMarket,
+  positionOn as sdkPositionOn,
   ownerActionMessage as sdkOwnerActionMessage,
   ownerExpiry as sdkOwnerExpiry,
   randomSecret,
@@ -354,6 +355,16 @@ export class TraderClient {
     return this.inner.syncView(marketId, expirySeconds);
   }
 
+  /**
+   * Whether the view holds a seat right now: a `sync_view`, which repairs the
+   * view either way, read back. The view's own record of a seat proves nothing,
+   * because the release sweep may have given the seat back. May throw
+   * `OutcomeUnknown`; see `cancelOrder`.
+   */
+  async confirmSeat(expirySeconds?: number): Promise<{ seated: boolean; view: View }> {
+    return this.inner.confirmSeat(expirySeconds);
+  }
+
   /** May throw `OutcomeUnknown`; see `cancelOrder`. */
   transferBetweenBalances(
     toCollateral: boolean,
@@ -390,6 +401,9 @@ export const RESULT_STATUS_CODE = RESULT_STATUS;
 export function decodeExchangeAccount(data: Uint8Array) {
   return decodeExchange(data);
 }
+
+/** What the seat holds on a perpetual market: flat with no orders when no slot is tagged with it. */
+export const positionOn = sdkPositionOn;
 
 /** The maker/taker receipt for one of this browser's own order secrets at a given fill. */
 export function fillReceipt(
