@@ -18,7 +18,7 @@ export interface Attention {
   signature?: string;
   /** Whether the flow can carry this record on: not one that did not land, cannot be placed, is still settling on the rollup, or is a return. */
   resumable: boolean;
-  /** Whether the deposit's tokens may be taken back to the wallet: a deposit record, from before deposits went through a deposit key or one whose funding of the key is on record, with no rollup send still settling. */
+  /** Whether the deposit's tokens may be taken back to the wallet: a deposit record, from before deposits went through a deposit key or one whose funding of the key is on record and whose tokens are not stranded in the key's rollup balance, with no rollup send still settling. */
   returnable: boolean;
   /** Whether the deposit goes through the deposit key in two steps, its funding by the wallet and the key's move into the rollup, so its tokens may sit in the key's token account on Solana. */
   staged: boolean;
@@ -117,7 +117,8 @@ export function attentionOf(
       operation === "deposit" &&
       !behindReturn &&
       record.seat?.state !== "landed" &&
-      (record.depositKey === undefined || (base.staged && record.seat === undefined)),
+      (record.depositKey === undefined ||
+        (base.staged && record.seat === undefined && !base.stranded)),
   };
 }
 
