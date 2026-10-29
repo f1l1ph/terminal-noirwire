@@ -174,6 +174,8 @@ export type Refusal =
   | "deposit-landed"
   | "key-moved"
   | "key-empty"
+  | "key-short"
+  | "key-needs-sol"
   | "rollup-short"
   | "nothing-to-dismiss"
   | "not-dismissable"

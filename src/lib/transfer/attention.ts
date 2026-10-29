@@ -69,12 +69,15 @@ const lastSignature = (record: OperationRecord): string | undefined =>
  * can an order key's withdrawal that was never signed through the hook, which
  * says plainly that it cannot be placed. `seat` is the judgement of the record's pending rollup
  * send, or null when none was made (no pending send, or transfers are off in
- * this build, where nothing can be judged).
+ * this build, where nothing can be judged). `moved` is whether the deposit
+ * key's move into the rollup is known to have landed, after which the tokens
+ * are no longer in the key on Solana and cannot be returned from there.
  */
 export function attentionOf(
   record: OperationRecord,
   seat: SeatJudgement | null,
   all: readonly OperationRecord[] = [],
+  moved = false,
 ): Attention {
   const operation = operationOf(record);
   const behindReturn = all.some((other) => other.id === `${record.id}.return`);
@@ -124,6 +127,7 @@ export function attentionOf(
       settled &&
       operation === "deposit" &&
       !behindReturn &&
+      !moved &&
       record.seat?.state !== "landed" &&
       (record.depositKey === undefined ||
         (base.staged && record.seat === undefined && !base.stranded)),

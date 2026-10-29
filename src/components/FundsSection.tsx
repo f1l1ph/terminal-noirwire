@@ -36,6 +36,7 @@ import { returnToWallet } from "@/lib/transfer/returnToWallet";
 import { canStartTransfer, giveBack, resumeRecord } from "@/lib/transfer/resume";
 import { readTokenBalance } from "@/lib/transfer/solanaRpc";
 import { associatedTokenAddress } from "@/lib/transfer/tokenAccounts";
+import { movedDeposits } from "@/lib/transfer/keyReturn";
 import { sweepKeySol } from "@/lib/transfer/keySweep";
 import { finishCompleted, withdraw } from "@/lib/transfer/withdraw";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
@@ -162,6 +163,7 @@ export default function FundsSection({
               }
               return judged;
             },
+            moved: async (records) => movedDeposits(await makeEnv(), records),
             dismiss: async () => dismissRollupSend(await makeEnv()),
             settle: async () => finishCompleted(await makeEnv()),
             sweep: async () => sweepKeySol(await makeEnv()),

@@ -28,9 +28,9 @@ const MOVE_INSTRUCTIONS = 7;
 const SETUP_INSTRUCTIONS = 3;
 const EXIT_INSTRUCTIONS = 4;
 
-/** The most a key-signed transaction of one instruction of its own costs in fees at the dearest priority: what the deposit key keeps for a later payment back to the wallet, and what a sweep of its SOL costs. */
+/** The most a key-signed transaction of up to two instructions of its own (the payment back to the wallet, with the making of the wallet's token account) costs in fees at the dearest priority: what the deposit key keeps for a later payment back to the wallet, and more than a sweep of its SOL costs. */
 export const MAX_KEY_TRANSFER_FEE_LAMPORTS =
-  BASE_FEE_LAMPORTS + priorityLamportsFor(computeUnitsFor(1));
+  BASE_FEE_LAMPORTS + priorityLamportsFor(computeUnitsFor(2));
 /** The least SOL worth a transaction to send the owner back from the deposit key. */
 export const SWEEP_MIN_LAMPORTS = 100_000;
 
