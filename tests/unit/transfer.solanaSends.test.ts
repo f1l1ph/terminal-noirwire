@@ -1,13 +1,18 @@
 import { Transaction } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
 import {
+  FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
+  MAX_LOADED_ACCOUNTS_DATA_BYTES,
   MAX_MICRO_LAMPORTS_PER_UNIT,
   MICRO_LAMPORTS_PER_UNIT,
   MIN_COMPUTE_UNITS,
+  MIN_LOADED_ACCOUNTS_DATA_BYTES,
   computeUnitLimitOf,
   computeUnitPriceOf,
   computeUnitsAfterSimulation,
   computeUnitsFor,
+  loadedAccountsDataBytesAfterSimulation,
+  loadedAccountsDataLimitOf,
   microLamportsFromFees,
 } from "@/lib/transfer/computeBudget";
 import { deposit } from "@/lib/transfer/deposit";
@@ -229,7 +234,7 @@ describe("the compute budget of a Solana send", () => {
   it("keeps today's limit when the node reports no units", async () => {
     const world = makeWorld();
     await run(world);
-    const count = world.signed[0].instructions.length - 2;
+    const count = world.signed[0].instructions.length - 3;
     expect(budgetOf(world).units).toBe(computeUnitsFor(count));
   });
 
@@ -239,6 +244,45 @@ describe("the compute budget of a Solana send", () => {
     expect(computeUnitsAfterSimulation(4, 0)).toBe(computeUnitsFor(4));
     expect(computeUnitsAfterSimulation(4, Number.NaN)).toBe(computeUnitsFor(4));
     expect(computeUnitsAfterSimulation(4, 300_000)).toBe(330_000);
+  });
+
+  it("sets the loaded accounts data limit to the simulated bytes plus 25%", async () => {
+    const world = makeWorld();
+    world.solana.loadedAccountsDataSize = 1_000_000;
+    await run(world);
+    expect(loadedAccountsDataLimitOf(world.signed[0].instructions[2])).toBe(1_250_000);
+  });
+
+  it("simulates without a loaded accounts data limit", async () => {
+    const world = makeWorld();
+    world.solana.loadedAccountsDataSize = 1_000_000;
+    await run(world);
+    expect(world.solana.simulated[0].instructions.map(loadedAccountsDataLimitOf)).toEqual(
+      world.solana.simulated[0].instructions.map(() => null),
+    );
+  });
+
+  it("signs the fallback limit when the node reports no loaded bytes", async () => {
+    const world = makeWorld();
+    await run(world);
+    expect(loadedAccountsDataLimitOf(world.signed[0].instructions[2])).toBe(
+      FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
+    );
+  });
+
+  it("never signs a loaded accounts data limit below the floor or above the protocol maximum", () => {
+    expect(loadedAccountsDataBytesAfterSimulation(1_000)).toBe(MIN_LOADED_ACCOUNTS_DATA_BYTES);
+    expect(loadedAccountsDataBytesAfterSimulation(100_000_000)).toBe(
+      MAX_LOADED_ACCOUNTS_DATA_BYTES,
+    );
+    expect(loadedAccountsDataBytesAfterSimulation(0)).toBe(FALLBACK_LOADED_ACCOUNTS_DATA_BYTES);
+    expect(loadedAccountsDataBytesAfterSimulation(Number.NaN)).toBe(
+      FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
+    );
+    expect(loadedAccountsDataBytesAfterSimulation(undefined)).toBe(
+      FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
+    );
+    expect(loadedAccountsDataBytesAfterSimulation(2_000_000)).toBe(2_500_000);
   });
 
   it("follows the 75th percentile of the recent fees, asked for the accounts the transaction writes", async () => {

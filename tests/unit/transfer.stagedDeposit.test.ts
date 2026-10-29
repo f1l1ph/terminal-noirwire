@@ -215,14 +215,15 @@ describe("the wallet's payment to the deposit key", () => {
     expect(fund.instructions.map((each) => each.programId.toBase58())).toEqual([
       ComputeBudgetProgram.programId.toBase58(),
       ComputeBudgetProgram.programId.toBase58(),
+      ComputeBudgetProgram.programId.toBase58(),
       "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
       "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
       SystemProgram.programId.toBase58(),
     ]);
-    const system = SystemInstruction.decodeTransfer(fund.instructions[4]);
+    const system = SystemInstruction.decodeTransfer(fund.instructions[5]);
     expect(system.fromPubkey.equals(world.keypair.publicKey)).toBe(true);
     expect(system.toPubkey.equals(world.depositKey.publicKey)).toBe(true);
-    const tokens = fund.instructions[3];
+    const tokens = fund.instructions[4];
     expect(
       tokens.keys[2].pubkey.equals(depositKeyAccount(world.depositKey.publicKey, world.pins.mint)),
     ).toBe(true);
@@ -481,7 +482,7 @@ describe("sweeping the deposit key's spare SOL back to the owner", () => {
       fate: "land",
       effect: () => {
         const sweep = Transaction.from(world.solana.rawSent[world.solana.rawSent.length - 1]);
-        const paid = Number(SystemInstruction.decodeTransfer(sweep.instructions[2]).lamports);
+        const paid = Number(SystemInstruction.decodeTransfer(sweep.instructions[3]).lamports);
         const held = world.solana.lamportsOf.get(keyOf(world)) ?? 0;
         world.solana.lamportsOf.set(keyOf(world), held - paid - MAX_KEY_TRANSFER_FEE_LAMPORTS);
       },
@@ -498,8 +499,8 @@ describe("sweeping the deposit key's spare SOL back to the owner", () => {
     expect(sweep.feePayer?.equals(key)).toBe(true);
     expect(sweep.compileMessage().header.numRequiredSignatures).toBe(1);
     expect(sweep.verifySignatures()).toBe(true);
-    expect(sweep.instructions).toHaveLength(3);
-    const transfer = SystemInstruction.decodeTransfer(sweep.instructions[2]);
+    expect(sweep.instructions).toHaveLength(4);
+    const transfer = SystemInstruction.decodeTransfer(sweep.instructions[3]);
     expect(transfer.fromPubkey.equals(key)).toBe(true);
     expect(transfer.toPubkey.equals(world.keypair.publicKey)).toBe(true);
     expect(Number(transfer.lamports)).toBe(20_000_000 - KEPT);
@@ -541,7 +542,7 @@ describe("sweeping the deposit key's spare SOL back to the owner", () => {
     expect(world.rows.size).toBe(0);
     await sweepKeySol(world.env);
     expect(new Set(world.solana.sent).size).toBe(4);
-    expect(Number(SystemInstruction.decodeTransfer(lastSend(world).instructions[2]).lamports)).toBe(
+    expect(Number(SystemInstruction.decodeTransfer(lastSend(world).instructions[3]).lamports)).toBe(
       20_000_000 - KEPT,
     );
   });
@@ -769,8 +770,8 @@ describe("returning the deposit key's USDC to the wallet", () => {
     expect(sent.feePayer?.equals(key)).toBe(true);
     expect(sent.compileMessage().header.numRequiredSignatures).toBe(1);
     expect(sent.verifySignatures()).toBe(true);
-    const [, , create, pay] = sent.instructions;
-    expect(sent.instructions).toHaveLength(4);
+    const [, , , create, pay] = sent.instructions;
+    expect(sent.instructions).toHaveLength(5);
     expect(create.programId.toBase58()).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
     expect(create.keys[0].pubkey.equals(key)).toBe(true);
     expect(
@@ -798,10 +799,11 @@ describe("returning the deposit key's USDC to the wallet", () => {
     expect(sent.instructions.map((each) => each.programId.toBase58())).toEqual([
       ComputeBudgetProgram.programId.toBase58(),
       ComputeBudgetProgram.programId.toBase58(),
+      ComputeBudgetProgram.programId.toBase58(),
       "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
       "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
     ]);
-    expect(sent.instructions[3].data[0]).toBe(12);
+    expect(sent.instructions[4].data[0]).toBe(12);
   });
 
   it("is offered after the move failed for good, and works when the move keeps failing", async () => {
@@ -874,7 +876,7 @@ describe("returning the deposit key's USDC to the wallet", () => {
     world.solana.script({ fate: "land", effect: returnEffect(world) });
     expect(await returnFor(world)).toMatchObject({ status: "done", atoms: ATOMS });
     const sent = Transaction.from(world.solana.rawSent[world.solana.rawSent.length - 1]);
-    expect(sent.instructions[2].programId.toBase58()).toBe(
+    expect(sent.instructions[3].programId.toBase58()).toBe(
       "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
     );
   });

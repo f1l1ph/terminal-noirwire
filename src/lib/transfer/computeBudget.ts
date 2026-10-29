@@ -1,4 +1,4 @@
-import { ComputeBudgetProgram, type TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, TransactionInstruction } from "@solana/web3.js";
 
 /** Solana's default allowance per instruction, used because no measured consumption is on record. */
 export const UNITS_PER_INSTRUCTION = 200_000;
@@ -63,6 +63,43 @@ export function computeUnitsAfterSimulation(count: number, consumed: number | un
   return Math.min(Math.max(measured, MIN_COMPUTE_UNITS), allowance);
 }
 
+/** The most account data bytes a transaction may ask to load: the protocol maximum, 64 MiB. */
+export const MAX_LOADED_ACCOUNTS_DATA_BYTES = 67_108_864;
+/** The fewest bytes a measured loaded-accounts limit is set to, so a small simulated figure never starves the transaction. */
+export const MIN_LOADED_ACCOUNTS_DATA_BYTES = 131_072;
+/** The limit when the simulation reports no figure: 16 MiB, far above what any of these shapes loads (a few programs and token accounts), and a fraction of the 64 MiB default, so the limit is still explicit and cannot starve the transaction. */
+export const FALLBACK_LOADED_ACCOUNTS_DATA_BYTES = 16_777_216;
+/** The margin added to the bytes a simulation loaded, as a percentage: accounts can grow between the simulation and the landing. */
+const SIMULATED_BYTES_MARGIN_PERCENT = 125;
+
+/**
+ * The loaded-accounts data size limit, given the bytes the simulation loaded:
+ * that figure plus 25%, never below the floor and never above the protocol
+ * maximum. Without a usable figure it is the fallback.
+ */
+export function loadedAccountsDataBytesAfterSimulation(loaded: number | undefined): number {
+  if (loaded === undefined || !Number.isSafeInteger(loaded) || loaded <= 0) {
+    return FALLBACK_LOADED_ACCOUNTS_DATA_BYTES;
+  }
+  const measured = Math.ceil((loaded * SIMULATED_BYTES_MARGIN_PERCENT) / 100);
+  return Math.min(
+    Math.max(measured, MIN_LOADED_ACCOUNTS_DATA_BYTES),
+    MAX_LOADED_ACCOUNTS_DATA_BYTES,
+  );
+}
+
+const SET_COMPUTE_UNIT_LIMIT = 2;
+const SET_COMPUTE_UNIT_PRICE = 3;
+const SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT = 4;
+
+/** The instruction that caps the account data bytes a transaction loads at `bytes`; web3.js 1.x has no helper for it. */
+function setLoadedAccountsDataSizeLimit(bytes: number): TransactionInstruction {
+  const data = Buffer.alloc(5);
+  data[0] = SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT;
+  data.writeUInt32LE(bytes, 1);
+  return new TransactionInstruction({ programId: ComputeBudgetProgram.programId, keys: [], data });
+}
+
 /**
  * The price per compute unit that follows the recent fees paid by transactions
  * writing the same accounts: the 75th percentile of `fees`, never below the
@@ -83,24 +120,24 @@ export function microLamportsFromFees(fees: number[] | undefined): number {
 /**
  * `instructions` with the transaction's own compute budget in front: the unit
  * limit (`units`, by default the allowance for their count), then the unit
- * price (`microLamports`, by default the fixed price). A transaction that
- * carries both is left alone by the wallet, which adds a priority fee of its
- * own only to one that has none.
+ * price (`microLamports`, by default the fixed price), then, when
+ * `loadedBytes` is given, the loaded-accounts data size limit. A transaction
+ * that carries both is left alone by the wallet, which adds a priority fee of
+ * its own only to one that has none.
  */
 export function withComputeBudget(
   instructions: TransactionInstruction[],
   units: number = computeUnitsFor(instructions.length),
   microLamports: number = MICRO_LAMPORTS_PER_UNIT,
+  loadedBytes?: number,
 ): TransactionInstruction[] {
   return [
     ComputeBudgetProgram.setComputeUnitLimit({ units }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+    ...(loadedBytes === undefined ? [] : [setLoadedAccountsDataSizeLimit(loadedBytes)]),
     ...instructions,
   ];
 }
-
-const SET_COMPUTE_UNIT_LIMIT = 2;
-const SET_COMPUTE_UNIT_PRICE = 3;
 
 function budgetData(
   instruction: TransactionInstruction | undefined,
@@ -123,4 +160,11 @@ export function computeUnitLimitOf(instruction: TransactionInstruction | undefin
 export function computeUnitPriceOf(instruction: TransactionInstruction | undefined): number | null {
   const data = budgetData(instruction, SET_COMPUTE_UNIT_PRICE, 9);
   return data === null ? null : Number(data.readBigUInt64LE(1));
+}
+
+/** The byte limit a `setLoadedAccountsDataSizeLimit` instruction carries, or null when it is anything else. */
+export function loadedAccountsDataLimitOf(
+  instruction: TransactionInstruction | undefined,
+): number | null {
+  return budgetData(instruction, SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT, 5)?.readUInt32LE(1) ?? null;
 }
