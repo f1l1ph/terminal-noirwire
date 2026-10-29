@@ -41,6 +41,7 @@ const AMOUNT = "2.5";
 const RENT_PER_BYTE = 3_480 * 2;
 const rentOf = (accounts: number[]) =>
   accounts.reduce((sum, bytes) => sum + (128 + bytes) * RENT_PER_BYTE, 0);
+const keyOf = (world: World) => world.depositKey.publicKey.toBase58();
 const FEES = BASE_FEE_LAMPORTS + MAX_MOVE_PRIORITY_LAMPORTS;
 const OWN_RENT = rentOf([0]);
 
@@ -458,7 +459,6 @@ describe("resuming a deposit through the deposit key", () => {
 describe("sweeping the deposit key's spare SOL back to the owner", () => {
   const RENT_FREE = 128 * RENT_PER_BYTE;
   const KEPT = RENT_FREE + 2 * MAX_KEY_TRANSFER_FEE_LAMPORTS;
-  const keyOf = (world: World) => world.depositKey.publicKey.toBase58();
 
   /** A deposit that lands in full and leaves the key holding `held` lamports once the seat has the USDC. */
   async function depositLeaving(world: World, held: number) {
@@ -735,7 +735,6 @@ describe("sweeping the deposit key's spare SOL back to the owner", () => {
 });
 
 describe("returning the deposit key's USDC to the wallet", () => {
-  const keyOf = (world: World) => world.depositKey.publicKey.toBase58();
   const returnFor = (world: World, id = "id1", atoms = ATOMS, answer?: string) =>
     returnToWallet(world.env, { intent: { id, atoms: atoms.toString() }, answer });
   /** What the key's payment back does when it lands: its USDC on Solana goes to the wallet. */

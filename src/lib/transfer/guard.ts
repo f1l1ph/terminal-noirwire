@@ -121,8 +121,7 @@ const sameList = (actual: TransactionInstruction[], expected: TransactionInstruc
  * fees, so there the limit may be any figure from the floor up to the expected
  * allowance and the price any figure from the fixed price up to the cap, with
  * an optional loaded-accounts data size limit between its floor and the
- * protocol maximum after them; every
- * other instruction must match exactly.
+ * protocol maximum after them; every other instruction must match exactly.
  */
 function sameBudgeted(actual: TransactionInstruction[], expected: TransactionInstruction[]) {
   const allowance = computeUnitLimitOf(expected[0]);
