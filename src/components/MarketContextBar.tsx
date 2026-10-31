@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { formatDecimal, formatUpdatedAge } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
-import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
+import { priceDecimalsOf } from "@/lib/market-data/precision";
 import { ASSUMED_TAKER_FEE_BPS } from "@/lib/trading/risk";
 import { changePercent, priceRange, rangeStartPrice } from "@/lib/market-data/reference-history";
 import { useReferenceHistory } from "@/lib/market-data/useReferenceHistory";
@@ -90,11 +90,6 @@ function BarStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function hasAmount(value: string | null | undefined): boolean {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0;
-}
-
 /**
  * The full-width bar under the header: one current mark snapshot, shared
  * with the market list and the chart's own last-mark line, so the three
@@ -104,14 +99,11 @@ export function MarketContextBar({
   market,
   mark,
   now,
-  quoteSymbol,
   takerFeeBps = ASSUMED_TAKER_FEE_BPS,
 }: {
   market: MarketInfo | undefined;
   mark: Mark;
   now: number;
-  /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
-  quoteSymbol: string;
   /** The market account's taker fee in basis points; the assumed one until it is known. */
   takerFeeBps?: number;
 }) {
@@ -126,10 +118,7 @@ export function MarketContextBar({
       </div>
     );
   }
-  const sizeDecimals = sizeDecimalsOf(market);
   const priceDecimals = priceDecimalsOf(market);
-  const showVolume = hasAmount(market.volume24h);
-  const showOpenInterest = market.kind === "perp" && hasAmount(market.openInterest);
   const isPerp = market.kind === "perp";
 
   return (
@@ -147,18 +136,6 @@ export function MarketContextBar({
         )}
         {isPerp && <BarStat label="Max leverage" value={`${market.maxLeverage}x`} />}
         {isPerp && <BarStat label="Taker fee" value={`${takerFeeBps / 100}%`} />}
-        {showVolume && (
-          <BarStat
-            label="24h volume"
-            value={`${formatDecimal(market.volume24h, 2)} ${quoteSymbol}`}
-          />
-        )}
-        {showOpenInterest && (
-          <BarStat
-            label="Open interest"
-            value={`${formatDecimal(market.openInterest ?? 0, sizeDecimals)} ${market.base}`}
-          />
-        )}
       </div>
       <button
         type="button"

@@ -987,7 +987,6 @@ export function Terminal() {
       market={market}
       mark={mark}
       now={now}
-      quoteSymbol={quoteSymbol}
       takerFeeBps={trading.marketLimits.get(selectedMarketId)?.takerFeeBps}
       candles={candles}
       tape={tape}
