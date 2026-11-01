@@ -14,7 +14,7 @@ const figtree = Figtree({
 export const metadata: Metadata = {
   title: "NoirWire terminal",
   description: isMainnetBuild()
-    ? "A trading terminal for the NoirWire order book."
+    ? "Trade SOL-PERP on Solana mainnet with USDC. Resting orders, balances and positions stay private from other traders and the public."
     : "A trading terminal for the NoirWire order book, on a test network.",
   robots: { index: false, follow: false },
 };
