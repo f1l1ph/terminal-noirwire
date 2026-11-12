@@ -2,7 +2,7 @@ import type { KeyValueStore } from "../wallet/index";
 import type { QuestStatus } from "./device";
 
 const INVITED_KEY = "noirwire-terminal-quests-invited";
-const DISMISSED_KEY = "noirwire-terminal-quests-dismissed";
+export const DISMISSED_KEY = "noirwire-terminal-quests-dismissed";
 
 export function recordInvite(storage: KeyValueStore, search: string): void {
   try {

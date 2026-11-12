@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { withQuestDialogDismissed } from "./e2e/support/questDialog";
 
 /**
  * Opt-in: `make e2e-devnet` only, never CI and never any other `make e2e*`.
@@ -44,6 +45,7 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL: BASE_URL,
+    storageState: withQuestDialogDismissed(BASE_URL),
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     actionTimeout: 60_000,
