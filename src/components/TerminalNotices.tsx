@@ -2,8 +2,8 @@
 
 import { useDepositInProgress } from "@/components/hooks/useDepositInProgress";
 import { useKeySweepInProgress } from "@/components/hooks/useKeySweepInProgress";
-import { useQuestFlush, useQuestInvite } from "@/components/hooks/useQuests";
-import { QuestOffer } from "@/components/QuestPoints";
+import { useQuestFlush } from "@/components/hooks/useQuests";
+import { QuestInviteDialog } from "@/components/QuestPoints";
 import { shortSignature } from "@/lib/transfer/attention";
 
 export const PRICES_DOWN_NOTICE = "Prices are not loading. Your funds are safe; we keep retrying.";
@@ -52,81 +52,75 @@ export function TerminalNotices({
 }) {
   const depositOpen = useDepositInProgress(owner);
   const sweep = useKeySweepInProgress(owner);
-  const quests = useQuestInvite(owner);
   useQuestFlush(owner);
-  if (
-    !pricesUnreachable &&
-    !depositOpen &&
-    !sweep &&
-    !tradingElsewhere &&
-    !sessionStopped &&
-    !quests.visible
-  ) {
-    return null;
-  }
+  const anyNotice = pricesUnreachable || depositOpen || sweep || tradingElsewhere || sessionStopped;
   return (
-    <div className="flex shrink-0 flex-col gap-1 px-3 sm:px-4">
-      {quests.visible && <QuestOffer owner={owner} onDismiss={quests.dismiss} />}
-      {sessionStopped && (
-        <p
-          role="alert"
-          className="border-line text-warning rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
-        >
-          <span>{SESSION_REFUSED_NOTICE}</span>
-          <button type="button" onClick={onSignInAgain} className="text-ink underline">
-            Sign in again
-          </button>
-        </p>
-      )}
-      {tradingElsewhere && (
-        <p
-          role="status"
-          className="border-line text-warning rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
-        >
-          <span>{TRADING_IN_OTHER_TAB_NOTICE}</span>
-          <button type="button" onClick={onUseThisTab} className="text-ink underline">
-            Use this tab
-          </button>
-        </p>
-      )}
-      {pricesUnreachable && (
-        <p
-          role="status"
-          className="border-line text-warning rounded-tile border px-3 py-1.5 text-[12px]"
-        >
-          {usingKeptSettings ? PRICES_DOWN_KEPT_SETTINGS_NOTICE : PRICES_DOWN_NOTICE}
-        </p>
-      )}
-      {depositOpen && (
-        <p
-          role="status"
-          className="border-line text-warning rounded-tile border px-3 py-1.5 text-[12px]"
-        >
-          {DEPOSIT_IN_PROGRESS_NOTICE}
-        </p>
-      )}
-      {sweep && (
-        <p
-          role="status"
-          className="border-line text-dim rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
-        >
-          <span>{KEY_SWEEP_NOTICE}</span>
-          {sweep.signature && (
-            <>
-              <span className="tnum text-faint" title={sweep.signature}>
-                {shortSignature(sweep.signature)}
-              </span>
-              <button
-                type="button"
-                onClick={() => copySignature(sweep.signature ?? "")}
-                className="text-ink underline"
-              >
-                Copy signature
+    <>
+      <QuestInviteDialog owner={owner} />
+      {anyNotice && (
+        <div className="flex shrink-0 flex-col gap-1 px-3 sm:px-4">
+          {sessionStopped && (
+            <p
+              role="alert"
+              className="border-line text-warning rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
+            >
+              <span>{SESSION_REFUSED_NOTICE}</span>
+              <button type="button" onClick={onSignInAgain} className="text-ink underline">
+                Sign in again
               </button>
-            </>
+            </p>
           )}
-        </p>
+          {tradingElsewhere && (
+            <p
+              role="status"
+              className="border-line text-warning rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
+            >
+              <span>{TRADING_IN_OTHER_TAB_NOTICE}</span>
+              <button type="button" onClick={onUseThisTab} className="text-ink underline">
+                Use this tab
+              </button>
+            </p>
+          )}
+          {pricesUnreachable && (
+            <p
+              role="status"
+              className="border-line text-warning rounded-tile border px-3 py-1.5 text-[12px]"
+            >
+              {usingKeptSettings ? PRICES_DOWN_KEPT_SETTINGS_NOTICE : PRICES_DOWN_NOTICE}
+            </p>
+          )}
+          {depositOpen && (
+            <p
+              role="status"
+              className="border-line text-warning rounded-tile border px-3 py-1.5 text-[12px]"
+            >
+              {DEPOSIT_IN_PROGRESS_NOTICE}
+            </p>
+          )}
+          {sweep && (
+            <p
+              role="status"
+              className="border-line text-dim rounded-tile flex flex-wrap items-center gap-2 border px-3 py-1.5 text-[12px]"
+            >
+              <span>{KEY_SWEEP_NOTICE}</span>
+              {sweep.signature && (
+                <>
+                  <span className="tnum text-faint" title={sweep.signature}>
+                    {shortSignature(sweep.signature)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => copySignature(sweep.signature ?? "")}
+                    className="text-ink underline"
+                  >
+                    Copy signature
+                  </button>
+                </>
+              )}
+            </p>
+          )}
+        </div>
       )}
-    </div>
+    </>
   );
 }

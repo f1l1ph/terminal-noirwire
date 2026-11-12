@@ -173,6 +173,26 @@ export function openWalletMenu() {
   window.dispatchEvent(new Event(OPEN_WALLET_MENU_EVENT));
 }
 
+const WALLET_MENU_CLOSED_EVENT = "noirwire:wallet-menu-closed";
+
+export function onWalletMenuClosed(listener: () => void): () => void {
+  window.addEventListener(WALLET_MENU_CLOSED_EVENT, listener);
+  return () => window.removeEventListener(WALLET_MENU_CLOSED_EVENT, listener);
+}
+
+function useWalletMenuEvents(open: boolean, setOpen: (open: boolean) => void) {
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    const show = () => setOpen(true);
+    window.addEventListener(OPEN_WALLET_MENU_EVENT, show);
+    return () => window.removeEventListener(OPEN_WALLET_MENU_EVENT, show);
+  }, [setOpen]);
+  useEffect(() => {
+    if (wasOpen.current && !open) window.dispatchEvent(new Event(WALLET_MENU_CLOSED_EVENT));
+    wasOpen.current = open;
+  }, [open]);
+}
+
 const endedLine = (ended: SessionEnd) =>
   ended.reason === "locked"
     ? "Your wallet is locked or no longer shares this account with this page. Open it and connect again."
@@ -188,11 +208,7 @@ function ExternalWalletWidget() {
   const containerRef = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useDismissOnOutside(open, containerRef, close);
-  useEffect(() => {
-    const show = () => setOpen(true);
-    window.addEventListener(OPEN_WALLET_MENU_EVENT, show);
-    return () => window.removeEventListener(OPEN_WALLET_MENU_EVENT, show);
-  }, []);
+  useWalletMenuEvents(open, setOpen);
 
   const address = signer?.publicKey.toBase58() ?? null;
 
@@ -406,6 +422,8 @@ function BuiltInWalletWidget({ wallet }: { wallet: WalletHookResult }) {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
+
+  useWalletMenuEvents(open, setOpen);
 
   // A wallet held only in memory, funded or not, is gone after a reload:
   // the browser asks before leaving instead of losing it without a word.

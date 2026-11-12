@@ -6,7 +6,7 @@ import { env } from "@/lib/env";
 import { isMainnetBuild } from "@/lib/network";
 import { mainnetOwnerSigner } from "@/lib/rollup/mainnetOwner";
 import { questStatus, type QuestStatus } from "@/lib/quests/device";
-import { dismissInvite, inviteShown, recordInvite } from "@/lib/quests/invite";
+import { dismissInvite, inviteDismissed, recordInvite } from "@/lib/quests/invite";
 import {
   disableQuests,
   enableQuests,
@@ -43,12 +43,11 @@ export function useQuestSigner(): OwnerSigner | null {
   }, [connected, account]);
 }
 
-export function useQuestInvite(owner: string | null): { visible: boolean; dismiss: () => void } {
-  const signer = useQuestSigner();
-  const invited = useSyncExternalStore(
+export function useQuestInvite(): { dismissed: boolean; dismiss: () => void } {
+  const dismissed = useSyncExternalStore(
     subscribe,
-    () => inviteShown(browserLocalStorage()),
-    () => false,
+    () => inviteDismissed(browserLocalStorage()),
+    () => true,
   );
   useEffect(() => {
     recordInvite(browserLocalStorage(), window.location.search);
@@ -58,7 +57,7 @@ export function useQuestInvite(owner: string | null): { visible: boolean; dismis
     dismissInvite(browserLocalStorage());
     notify();
   }, []);
-  return { visible: invited && owner !== null && signer !== null, dismiss };
+  return { dismissed, dismiss };
 }
 
 export function useQuestFlush(owner: string | null): void {
