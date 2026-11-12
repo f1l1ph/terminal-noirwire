@@ -48,6 +48,7 @@ import { useTradingPause } from "@/components/hooks/useTradingPause";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
+import { QuestToggle } from "@/components/QuestPoints";
 import { TerminalShell } from "@/components/TerminalShell";
 import { TerminalNotices, TRADING_IN_OTHER_TAB_NOTICE } from "@/components/TerminalNotices";
 import { DesktopWorkspace } from "@/components/DesktopWorkspace";
@@ -805,6 +806,7 @@ export function Terminal() {
         >
           Reset layout
         </button>
+        <QuestToggle owner={ownerIdentity?.address ?? null} />
         <PrivacyToolsToggle />
       </span>
     </>

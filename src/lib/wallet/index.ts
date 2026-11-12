@@ -1,5 +1,6 @@
 import { Keypair } from "@solana/web3.js";
 import { isMainnetBuild, refuseOnMainnet } from "../network";
+import { forgetDeviceKey } from "../quests/keyStore";
 import { openSecret, parseSealedSecret, sealSecret } from "./sealedSecret";
 
 export interface KeyValueStore {
@@ -26,6 +27,8 @@ export const ownerDataKeys = {
   unknownHolds: (address: string) => `noirwire-terminal-unknown-orders:${address}`,
   accountOpened: (address: string) => `noirwire-terminal-account-opened:${address}`,
   signInToken: (address: string) => `noirwire-terminal-rollup-token:${address}`,
+  questDevice: (address: string) => `noirwire-terminal-quest-device:${address}`,
+  questQueue: (address: string) => `noirwire-terminal-quest-queue:${address}`,
 };
 
 export function bytesToHex(bytes: Uint8Array): string {
@@ -197,6 +200,7 @@ export function clearWallet(storage: KeyValueStore): void {
   for (const address of addresses) {
     if (!address) continue;
     for (const keyFor of Object.values(ownerDataKeys)) storage.removeItem(keyFor(address));
+    forgetDeviceKey(address);
   }
   storage.removeItem(SEALED_SECRET_KEY);
   storage.removeItem(LEGACY_SECRET_KEY);

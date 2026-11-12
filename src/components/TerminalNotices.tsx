@@ -2,6 +2,8 @@
 
 import { useDepositInProgress } from "@/components/hooks/useDepositInProgress";
 import { useKeySweepInProgress } from "@/components/hooks/useKeySweepInProgress";
+import { useQuestFlush, useQuestInvite } from "@/components/hooks/useQuests";
+import { QuestOffer } from "@/components/QuestPoints";
 import { shortSignature } from "@/lib/transfer/attention";
 
 export const PRICES_DOWN_NOTICE = "Prices are not loading. Your funds are safe; we keep retrying.";
@@ -50,11 +52,21 @@ export function TerminalNotices({
 }) {
   const depositOpen = useDepositInProgress(owner);
   const sweep = useKeySweepInProgress(owner);
-  if (!pricesUnreachable && !depositOpen && !sweep && !tradingElsewhere && !sessionStopped) {
+  const quests = useQuestInvite(owner);
+  useQuestFlush(owner);
+  if (
+    !pricesUnreachable &&
+    !depositOpen &&
+    !sweep &&
+    !tradingElsewhere &&
+    !sessionStopped &&
+    !quests.visible
+  ) {
     return null;
   }
   return (
     <div className="flex shrink-0 flex-col gap-1 px-3 sm:px-4">
+      {quests.visible && <QuestOffer owner={owner} onDismiss={quests.dismiss} />}
       {sessionStopped && (
         <p
           role="alert"
