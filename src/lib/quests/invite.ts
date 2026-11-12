@@ -1,7 +1,8 @@
 import type { KeyValueStore } from "../wallet/index";
+import type { QuestStatus } from "./device";
 
 const INVITED_KEY = "noirwire-terminal-quests-invited";
-const DISMISSED_KEY = "noirwire-terminal-quests-dismissed";
+export const DISMISSED_KEY = "noirwire-terminal-quests-dismissed";
 
 export function recordInvite(storage: KeyValueStore, search: string): void {
   try {
@@ -13,12 +14,22 @@ export function recordInvite(storage: KeyValueStore, search: string): void {
   }
 }
 
-export function inviteShown(storage: KeyValueStore): boolean {
+export function inviteDismissed(storage: KeyValueStore): boolean {
   try {
-    return storage.getItem(INVITED_KEY) === "1" && storage.getItem(DISMISSED_KEY) !== "1";
+    return storage.getItem(DISMISSED_KEY) === "1";
   } catch {
-    return false;
+    return true;
   }
+}
+
+export function shouldOpenQuestDialog({
+  dismissed,
+  status,
+}: {
+  dismissed: boolean;
+  status: QuestStatus;
+}): boolean {
+  return !dismissed && status !== "on";
 }
 
 export function dismissInvite(storage: KeyValueStore): void {

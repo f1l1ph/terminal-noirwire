@@ -3,6 +3,12 @@ import { Keypair } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { generateDeviceKey, loadDevice, questStatus, saveDevice } from "@/lib/quests/device";
 import type { DeviceKeyBackend } from "@/lib/quests/keyStore";
+import {
+  dismissInvite,
+  inviteDismissed,
+  recordInvite,
+  shouldOpenQuestDialog,
+} from "@/lib/quests/invite";
 import { disableQuests, enableQuests } from "@/lib/quests/optIn";
 import { consentText, ordersText, revokeText } from "@/lib/quests/protocol";
 import { createQuestQueue, QUEST_ORDER_MAX_AGE_MS } from "@/lib/quests/queue";
@@ -312,6 +318,41 @@ describe("turning off and removing the wallet", () => {
     clearWallet(storage);
     expect(storage.getItem(ownerDataKeys.questDevice(WALLET_A))).toBeNull();
     expect(storage.getItem(ownerDataKeys.questQueue(WALLET_A))).toBeNull();
+  });
+});
+
+describe("quest dialog", () => {
+  it("opens for a visitor who has not dismissed it unless quest points are on", () => {
+    expect(shouldOpenQuestDialog({ dismissed: false, status: "off" })).toBe(true);
+    expect(shouldOpenQuestDialog({ dismissed: false, status: "renew" })).toBe(true);
+    expect(shouldOpenQuestDialog({ dismissed: false, status: "on" })).toBe(false);
+  });
+
+  it("stays closed once dismissed", () => {
+    expect(shouldOpenQuestDialog({ dismissed: true, status: "off" })).toBe(false);
+    expect(shouldOpenQuestDialog({ dismissed: true, status: "renew" })).toBe(false);
+  });
+
+  it("remembers a dismissal in this browser", () => {
+    const storage = memoryStorage();
+    expect(inviteDismissed(storage)).toBe(false);
+    dismissInvite(storage);
+    expect(inviteDismissed(storage)).toBe(true);
+  });
+
+  it("arriving from the quest board clears an earlier dismissal", () => {
+    const storage = memoryStorage();
+    dismissInvite(storage);
+    recordInvite(storage, "?from=quests");
+    expect(inviteDismissed(storage)).toBe(false);
+  });
+
+  it("keeps a dismissal for other arrivals", () => {
+    const storage = memoryStorage();
+    dismissInvite(storage);
+    recordInvite(storage, "?from=elsewhere");
+    recordInvite(storage, "");
+    expect(inviteDismissed(storage)).toBe(true);
   });
 });
 

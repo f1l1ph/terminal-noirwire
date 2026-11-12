@@ -1,5 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 import { FAKE_SIM_PORT, FAKE_SIM_URL, FAKE_SIM_WS_URL } from "./e2e/support/fakeSim";
+import { withQuestDialogDismissed } from "./e2e/support/questDialog";
 
 // The suite runs against its own production build on its own port, built
 // with NEXT_PUBLIC_SIM_URL / NEXT_PUBLIC_SIM_WS_URL pointing at the fake sim
@@ -39,6 +40,7 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL: BASE_URL,
+    storageState: withQuestDialogDismissed(BASE_URL),
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     actionTimeout: 20_000,
