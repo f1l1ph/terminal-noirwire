@@ -49,6 +49,8 @@ import {
   type UnknownHold,
 } from "../rollup/accountMemory";
 import { trackSecret, untrackSecret } from "../rollup/secretStore";
+import type { QuestQueue } from "../quests/queue";
+import { sharedQuestQueue } from "../quests/shared";
 import {
   buildRealSession,
   looksUnauthorized,
@@ -190,6 +192,7 @@ export interface RollupTradingClientOptions {
   overrides?: DeploymentOverrides;
   marketSettingsLookup: MarketSettingsLookup;
   storage?: KeyValueStore;
+  quests?: QuestQueue;
   fetchFn?: typeof fetch;
   now?: () => number;
   /** Testability seam: a fake session (and so a fake of the package's client) for unit tests. Builds a real one by default. */
@@ -316,6 +319,7 @@ export class RollupTradingClient implements TradingClient {
   private readonly storage: KeyValueStore;
   private readonly fetchFn: typeof fetch;
   private readonly now: () => number;
+  private readonly quests: QuestQueue;
   private readonly buildSession: (
     wallet: WalletIdentity,
     deps: RollupSessionDeps,
@@ -349,6 +353,7 @@ export class RollupTradingClient implements TradingClient {
     this.storage = options.storage ?? browserLocalStorage();
     this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
     this.now = options.now ?? (() => Date.now());
+    this.quests = options.quests ?? sharedQuestQueue(options.simUrl);
     this.buildSession = options.buildSession ?? buildRealSession;
   }
 
@@ -1359,6 +1364,7 @@ export class RollupTradingClient implements TradingClient {
       untrackSecret(this.storage, wallet.address, secret);
       throw new Error("Could not record this order on this device first, so it was not sent.");
     }
+    this.quests.enqueue(wallet.address, order.market, bytesToHex(secret));
     let result: PlaceOrderResult | null = null;
     let placed: Placed | null = null;
     let refusal: number | null = null;
