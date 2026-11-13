@@ -18,6 +18,7 @@ import {
   createJournal,
   indexedDbStorage,
   isKeySweep,
+  isStaged,
   type OperationRecord,
 } from "@/lib/transfer/journal";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
@@ -25,6 +26,8 @@ import { btnGhost, sectionLabel } from "@/components/ui/styles";
 /** What judging and dismissing a record needs: present only in a build with transfers on. */
 export interface RecordsEngine {
   judge(records: OperationRecord[]): Promise<Record<string, SeatJudgement>>;
+  /** The ids of the staged deposits whose move into the rollup is known to have landed, so their tokens cannot be returned from the deposit key. */
+  moved(records: OperationRecord[]): Promise<string[]>;
   dismiss(): Promise<DismissOutcome>;
   /** Carries an open record on with its own flow and says in plain words how it ended. */
   resume(attention: Attention, report: (line: string) => void): Promise<string>;
@@ -125,6 +128,10 @@ export function TransferRecords({
           engine && records.some((record) => record.seat?.state === "pending")
             ? await engine.judge(records).catch(() => ({}) as Record<string, SeatJudgement>)
             : {};
+        const staged = records.filter((record) => record.seat === undefined && isStaged(record));
+        const moved = new Set(
+          engine && staged.length > 0 ? await engine.moved(staged).catch(() => [] as string[]) : [],
+        );
         const leftover =
           engine && records.length === 0 && lookForLeftover
             ? await engine.leftover().catch(() => null)
@@ -132,7 +139,7 @@ export function TransferRecords({
         if (!active) return;
         setItems(
           openTransfers(records).map((record) =>
-            attentionOf(record, judged[record.id] ?? null, records),
+            attentionOf(record, judged[record.id] ?? null, records, moved.has(record.id)),
           ),
         );
         if (records.length > 0) setWaiting(null);

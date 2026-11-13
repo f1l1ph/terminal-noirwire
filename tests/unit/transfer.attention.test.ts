@@ -167,6 +167,24 @@ describe("no record is left without a way forward", () => {
     expect(actionsOf(attentionOf(unsent, null, [unsent]))).toContain("return");
   });
 
+  it("offers a staged deposit whose move landed only to try again, never to return", () => {
+    const staged = record({
+      kind: "deposit",
+      step: "deposit",
+      depositKey: "key",
+      sends: sends.flatMap((send) => [
+        { ...send, signature: "fund", leg: "fund" as const, status: "finalized" as const },
+        { ...send, signature: "move", leg: "move" as const, status: "finalized" as const },
+      ]),
+    });
+    const open = attentionOf(staged, null, [staged]);
+    expect(actionsOf(open)).toContain("return");
+    const moved = attentionOf(staged, null, [staged], true);
+    expect(moved).toMatchObject({ staged: true, resumable: true, returnable: false });
+    expect(actionsOf(moved)).toContain("resume");
+    expect(actionsOf(moved)).not.toContain("return");
+  });
+
   it("offers a deposit that already landed in the seat only to finish, never to return", () => {
     const landed = record({
       kind: "deposit",
@@ -244,6 +262,7 @@ describe("no path offers a resend", () => {
         "depositKeyStore",
         "dismiss",
         "journal",
+        "keyReturn",
         "keySweep",
         "keyedWithdrawal",
         "leftover",

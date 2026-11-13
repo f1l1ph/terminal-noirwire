@@ -37,6 +37,7 @@ import {
 } from "./depositKey";
 import { errorCode, pollUntil, readTokenBalance, type SolanaRpc } from "./solanaRpc";
 import { firstDepositNeeds } from "./amount";
+import { solText } from "./outcomeCopy";
 import { tokenAtoms } from "./verdicts";
 
 const CUSTODY_CAP_REACHED = 6150;
@@ -229,7 +230,32 @@ async function moveFromDepositKey(
     before: held,
     moved: atoms,
   });
-  return "status" in sent ? sent : { broadcastError: sent.broadcastError };
+  if ("status" in sent) {
+    return sent.reason === "simulation-failed"
+      ? ((await keyNeedsSol(env, { first, vaultMissing })) ?? sent)
+      : sent;
+  }
+  return { broadcastError: sent.broadcastError };
+}
+
+/**
+ * The refusal for a move the network would not accept because the deposit key
+ * holds less SOL than the move costs (it is sized once, when the wallet funds
+ * the key, and never topped up): the USDC stays in the key, and returning it
+ * is the way out. Null when the key holds enough, so the simulation's own
+ * refusal stands.
+ */
+async function keyNeedsSol(
+  env: TransferEnv,
+  parts: { first: boolean; vaultMissing: boolean },
+): Promise<Refused | null> {
+  const key = env.depositKey.publicKey;
+  const missing = await keyShortfallLamports(env.solana, key, { ...parts, sealed: env.sealed });
+  if (missing <= 0) return null;
+  return refuse(
+    "key-needs-sol",
+    `The deposit key needs about ${solText(missing)} more SOL for network fees and rent before it can move your USDC into the rollup. Your USDC is safe in the deposit key. Press Return to wallet under transfers that need attention to send it back. Nothing was sent.`,
+  );
 }
 
 /**

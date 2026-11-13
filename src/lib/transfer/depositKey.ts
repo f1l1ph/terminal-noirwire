@@ -75,7 +75,7 @@ export async function moveKeyInstructions(parts: {
   return instructions;
 }
 
-/** The deposit key's payment of `atoms` of its own tokens back to the owner's token account: all it does, signed by the key alone. */
+/** The deposit key's payment of `atoms` of its own tokens back to the owner's token account, which it makes first if it was closed meanwhile: signed and paid by the key alone. */
 export const returnKeyInstructions = (parts: {
   owner: PublicKey;
   key: PublicKey;
@@ -83,6 +83,12 @@ export const returnKeyInstructions = (parts: {
   decimals: number;
   atoms: bigint;
 }): TransactionInstruction[] => [
+  createAssociatedTokenAccountIdempotentIx(
+    parts.key,
+    associatedTokenAddress(parts.owner, parts.mint),
+    parts.owner,
+    parts.mint,
+  ),
   transferCheckedIx(
     depositKeyAccount(parts.key, parts.mint),
     parts.mint,

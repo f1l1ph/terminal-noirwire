@@ -23,9 +23,14 @@ export interface SolanaRpc extends SolanaReader {
     raw: Uint8Array,
     options: { skipPreflight?: boolean; preflightCommitment?: "confirmed" },
   ): Promise<string>;
-  simulateTransaction(
-    transaction: Transaction,
-  ): Promise<{ value: { err: unknown; logs: string[] | null; unitsConsumed?: number } }>;
+  simulateTransaction(transaction: Transaction): Promise<{
+    value: {
+      err: unknown;
+      logs: string[] | null;
+      unitsConsumed?: number;
+      loadedAccountsDataSize?: number;
+    };
+  }>;
   isBlockhashValid(
     blockhash: string,
     config?: { commitment?: "confirmed" },
@@ -83,11 +88,16 @@ export async function simulationError(
 export async function simulation(
   rpc: Pick<SolanaRpc, "simulateTransaction">,
   transaction: Transaction,
-): Promise<{ error: string | null; unitsConsumed: number | undefined }> {
+): Promise<{
+  error: string | null;
+  unitsConsumed: number | undefined;
+  loadedAccountsDataSize: number | undefined;
+}> {
   const { value } = await rpc.simulateTransaction(transaction);
   return {
     error: value.err === null || value.err === undefined ? null : JSON.stringify(value.err),
     unitsConsumed: value.unitsConsumed,
+    loadedAccountsDataSize: value.loadedAccountsDataSize,
   };
 }
 

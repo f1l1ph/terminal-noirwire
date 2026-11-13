@@ -16,9 +16,12 @@ import {
 } from "@solana/web3.js";
 import { programInstructions, type CustodyToken } from "../rollup/sdk";
 import {
+  loadedAccountsDataLimitOf,
+  MAX_LOADED_ACCOUNTS_DATA_BYTES,
   MAX_MICRO_LAMPORTS_PER_UNIT,
   MICRO_LAMPORTS_PER_UNIT,
   MIN_COMPUTE_UNITS,
+  MIN_LOADED_ACCOUNTS_DATA_BYTES,
   computeUnitLimitOf,
   computeUnitPriceOf,
   withComputeBudget,
@@ -116,14 +119,22 @@ const sameList = (actual: TransactionInstruction[], expected: TransactionInstruc
  * Whether `actual` is `expected`. The shapes sent to Solana lead with a unit
  * limit and a unit price that the flow sets from the simulation and the recent
  * fees, so there the limit may be any figure from the floor up to the expected
- * allowance and the price any figure from the fixed price up to the cap; every
- * other instruction must match exactly.
+ * allowance and the price any figure from the fixed price up to the cap, with
+ * an optional loaded-accounts data size limit between its floor and the
+ * protocol maximum after them; every other instruction must match exactly.
  */
 function sameBudgeted(actual: TransactionInstruction[], expected: TransactionInstruction[]) {
   const allowance = computeUnitLimitOf(expected[0]);
   if (allowance === null) return sameList(actual, expected);
   const units = computeUnitLimitOf(actual[0]);
   const price = computeUnitPriceOf(actual[1]);
+  const loaded = loadedAccountsDataLimitOf(actual[2]);
+  if (
+    loaded !== null &&
+    (loaded < MIN_LOADED_ACCOUNTS_DATA_BYTES || loaded > MAX_LOADED_ACCOUNTS_DATA_BYTES)
+  ) {
+    return false;
+  }
   return (
     units !== null &&
     units >= MIN_COMPUTE_UNITS &&
@@ -131,7 +142,7 @@ function sameBudgeted(actual: TransactionInstruction[], expected: TransactionIns
     price !== null &&
     price >= MICRO_LAMPORTS_PER_UNIT &&
     price <= MAX_MICRO_LAMPORTS_PER_UNIT &&
-    sameList(actual.slice(2), expected.slice(2))
+    sameList(actual.slice(loaded === null ? 2 : 3), expected.slice(2))
   );
 }
 

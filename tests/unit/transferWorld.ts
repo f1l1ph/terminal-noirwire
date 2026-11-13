@@ -194,6 +194,8 @@ export class FakeRpc implements SolanaRpc {
 
   /** What the node says the transaction consumed; absent unless a test sets it. */
   unitsConsumed: number | undefined;
+  /** The account data bytes the node says the transaction loaded; absent unless a test sets it. */
+  loadedAccountsDataSize: number | undefined;
   /** The recent fees the node reports; an Error makes the read fail. */
   recentFees: number[] | Error = [];
   /** The accounts the last fee read asked about. */
@@ -205,7 +207,14 @@ export class FakeRpc implements SolanaRpc {
     this.simulations += 1;
     this.simulated.push(transaction);
     const err = this.simulateAnswers.shift() ?? null;
-    return { value: { err, logs: null, unitsConsumed: this.unitsConsumed } };
+    return {
+      value: {
+        err,
+        logs: null,
+        unitsConsumed: this.unitsConsumed,
+        loadedAccountsDataSize: this.loadedAccountsDataSize,
+      },
+    };
   }
 
   async getRecentPrioritizationFees(config?: { lockedWritableAccounts?: PublicKey[] }) {

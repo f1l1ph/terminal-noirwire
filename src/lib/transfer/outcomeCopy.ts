@@ -1,7 +1,7 @@
 import { userMessageLine } from "../userMessage";
 import { atomsText } from "./amount";
 import type { DepositOutcome } from "./deposit";
-import type { Refusal } from "./operation";
+import type { Refusal, Refused } from "./operation";
 import type { WithdrawOutcome } from "./withdraw";
 
 export interface OutcomeLine {
@@ -52,6 +52,10 @@ const REFUSALS: Record<Refusal, string> = {
     "The USDC already moved into the rollup, so it cannot be sent back from here. Use Try the deposit again under transfers that need attention to put it in your account. Nothing was sent.",
   "key-empty":
     "The deposit key holds no USDC on Solana, so there is nothing to send back. Nothing was sent.",
+  "key-short":
+    "The deposit key holds less USDC on Solana than the deposit, so it is not sent back. Nothing was sent.",
+  "key-needs-sol":
+    "The deposit key needs more SOL for network fees. Return to wallet under transfers that need attention sends your USDC back. Nothing was sent.",
   "rollup-short": "Your rollup balance holds less than that. Nothing was sent.",
   "nothing-to-dismiss": "No transfer is waiting to be dismissed.",
   "not-dismissable": "That transfer cannot be dismissed yet. Nothing was changed.",
@@ -87,6 +91,19 @@ function inKeyLine(reason: Refusal): string {
   return `Your USDC left your wallet and is safe in the deposit key. ${stop} Press Try the deposit again, or Return to wallet, under transfers that need attention.`;
 }
 
+/** What a refusal says: the two stops about the deposit key's own holdings carry their figures in their message, whichever step they stopped in. */
+function refusedText(outcome: Refused, feeLamports: number): string {
+  if (outcome.reason === "key-short" || outcome.reason === "key-needs-sol") return outcome.message;
+  if (outcome.inRollup) return inRollupLine(outcome.reason, feeLamports);
+  if (outcome.inKey) return inKeyLine(outcome.reason);
+  if (outcome.reason === "insufficient-sol") {
+    return `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`;
+  }
+  return outcome.reason === "deposit-key-missing" || outcome.reason === "below-seat-minimum"
+    ? outcome.message
+    : REFUSALS[outcome.reason];
+}
+
 /** What a flow's outcome says to the user, in plain words. */
 export function outcomeLine(
   kind: "deposit" | "withdraw",
@@ -114,15 +131,7 @@ export function outcomeLine(
     case "refused":
       return {
         tone: "error",
-        text: outcome.inRollup
-          ? inRollupLine(outcome.reason, feeLamports)
-          : outcome.inKey
-            ? inKeyLine(outcome.reason)
-            : outcome.reason === "insufficient-sol"
-              ? `Your wallet needs about ${solText(feeLamports)} for network fees. Nothing moved.`
-              : outcome.reason === "deposit-key-missing" || outcome.reason === "below-seat-minimum"
-                ? outcome.message
-                : REFUSALS[outcome.reason],
+        text: refusedText(outcome, feeLamports),
       };
     case "waiting":
       return {
