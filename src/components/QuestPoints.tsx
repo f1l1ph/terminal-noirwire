@@ -13,7 +13,7 @@ const RENEWAL_COPY = "Needs renewal. Turn it on again to sign once more.";
 const QUEST_STEPS = [
   "Connect your wallet",
   "Turn on quest points (one signature)",
-  "Make a trade of $50 or more",
+  "Make a trade of $10 or more",
 ] as const;
 
 const QUESTS_HOW_IT_WORKS_URL = "https://quests.magicblock.app";
@@ -135,7 +135,7 @@ export function QuestInviteDialog({ owner }: { owner: string | null }) {
               You are earning quest points
             </h2>
             <p className="text-dim mt-2 text-[13px]">
-              Make one trade of $50 or more to complete Get started on NoirWire. Points arrive with
+              Make one trade of $10 or more to complete Get started on NoirWire. Points arrive with
               the Friday payout.
             </p>
             <QuestStepList current={step} />
