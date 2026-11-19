@@ -67,13 +67,14 @@ export function computeUnitsAfterSimulation(count: number, consumed: number | un
 export const MAX_LOADED_ACCOUNTS_DATA_BYTES = 67_108_864;
 /** The fewest bytes a measured loaded-accounts limit is set to, so a small simulated figure never starves the transaction. */
 export const MIN_LOADED_ACCOUNTS_DATA_BYTES = 131_072;
-/** The limit when the simulation reports no figure: 16 MiB, far above what any of these shapes loads. */
+/** The limit when the simulation reports no figure, and the one a wallet-signed send carries so the assertion program a wallet may add still loads: 16 MiB, far above what any of these shapes loads. */
 export const FALLBACK_LOADED_ACCOUNTS_DATA_BYTES = 16_777_216;
 /** The margin added to the bytes a simulation loaded, as a percentage: accounts can grow between the simulation and the landing. */
 const SIMULATED_BYTES_MARGIN_PERCENT = 125;
 
 /**
- * The loaded-accounts data size limit, given the bytes the simulation loaded:
+ * The loaded-accounts data size limit for a send only the deposit key signs,
+ * given the bytes the simulation loaded:
  * that figure plus 25%, never below the floor and never above the protocol
  * maximum. Without a usable figure it is the fallback.
  */

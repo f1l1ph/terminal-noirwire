@@ -28,6 +28,7 @@ import { judgeSend, recordThenBroadcast, signatureOf } from "./send";
 import { MISSING_RECHECK_MS } from "./verdicts";
 import {
   computeUnitsAfterSimulation,
+  FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
   loadedAccountsDataBytesAfterSimulation,
   microLamportsFromFees,
   withComputeBudget,
@@ -473,7 +474,12 @@ export async function holdsSol(env: TransferEnv, lamports: number): Promise<Refu
  * Signs and sends one transaction on Solana, written to the journal after it
  * is signed and before it is broadcast, and waits for it. A broadcast that
  * fails is not a verdict: the journal holds the send and the next read judges
- * it. Simulated first, so a refusal sends nothing.
+ * it. Simulated first, so a refusal sends nothing. The compute unit limit
+ * follows the simulation. The loaded-accounts data limit does too for a send
+ * only the deposit key signs; a send the owner's wallet signs carries the
+ * generous fallback, because a wallet may append instructions of the
+ * assertion program, whose 424,293 byte program data would not fit a limit
+ * sized to the simulation, and it does not change the fee.
  */
 export async function sendJournaled(
   env: TransferEnv,
@@ -528,7 +534,9 @@ export async function sendJournaled(
   const transaction = built(
     computeUnitsAfterSimulation(plan.instructions.length, simulated.unitsConsumed),
     microLamportsFromFees(await recentPrioritizationFees(env.solana, [...written.values()])),
-    loadedAccountsDataBytesAfterSimulation(simulated.loadedAccountsDataSize),
+    keyed
+      ? loadedAccountsDataBytesAfterSimulation(simulated.loadedAccountsDataSize)
+      : FALLBACK_LOADED_ACCOUNTS_DATA_BYTES,
   );
   let signed = transaction;
   if (keyed) transaction.sign(env.depositKey);

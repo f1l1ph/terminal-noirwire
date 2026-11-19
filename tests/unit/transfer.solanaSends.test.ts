@@ -246,11 +246,21 @@ describe("the compute budget of a Solana send", () => {
     expect(computeUnitsAfterSimulation(4, 300_000)).toBe(330_000);
   });
 
-  it("sets the loaded accounts data limit to the simulated bytes plus 25%", async () => {
+  it("leaves a wallet-signed send room for the assertion program a wallet may add", async () => {
     const world = makeWorld();
     world.solana.loadedAccountsDataSize = 1_000_000;
     await run(world);
-    expect(loadedAccountsDataLimitOf(world.signed[0].instructions[2])).toBe(1_250_000);
+    const limit = loadedAccountsDataLimitOf(world.signed[0].instructions[2]);
+    expect(limit).toBe(FALLBACK_LOADED_ACCOUNTS_DATA_BYTES);
+    expect(limit).toBeGreaterThanOrEqual(1_000_000 + 424_293);
+  });
+
+  it("sets a send only the deposit key signs to the simulated bytes plus 25%", async () => {
+    const world = makeWorld();
+    world.solana.loadedAccountsDataSize = 1_000_000;
+    await run(world);
+    const move = Transaction.from(world.solana.rawSent[1]);
+    expect(loadedAccountsDataLimitOf(move.instructions[2])).toBe(1_250_000);
   });
 
   it("simulates without a loaded accounts data limit", async () => {
