@@ -51,6 +51,21 @@ describe("connect-src", () => {
     expect(connectSources()).toHaveLength(5);
   });
 
+  it("adds exactly the analytics origin when configured, never its path", () => {
+    vi.stubEnv("NEXT_PUBLIC_NETWORK", "");
+    vi.stubEnv("NEXT_PUBLIC_SIM_URL", "http://localhost:4100");
+    vi.stubEnv("NEXT_PUBLIC_SIM_WS_URL", "ws://localhost:4100/v1/stream");
+    vi.stubEnv("NEXT_PUBLIC_ROLLUP_RPC_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_ROLLUP_WS_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_UMAMI_URL", "https://stats.example.com/script.js");
+    expect(connectSources()).toContain("https://stats.example.com");
+    expect(connectSources()).toHaveLength(4);
+    vi.stubEnv("NEXT_PUBLIC_UMAMI_URL", "");
+    expect(connectSources()).toHaveLength(3);
+    vi.stubEnv("NEXT_PUBLIC_UMAMI_URL", "not a url");
+    expect(connectSources()).toHaveLength(3);
+  });
+
   it("pins the rollup origins for a near-miss network name too", () => {
     vi.stubEnv("NEXT_PUBLIC_NETWORK", "Mainnet");
     vi.stubEnv("NEXT_PUBLIC_SIM_URL", "https://book.noirwire.com");

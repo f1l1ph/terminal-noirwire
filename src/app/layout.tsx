@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Figtree } from "next/font/google";
 import { connection } from "next/server";
+import { Analytics } from "@/components/Analytics";
 import { isMainnetBuild } from "@/lib/network";
 import { StandardWalletProvider } from "@/lib/wallet/standardWallet";
 import "./globals.css";
@@ -31,6 +32,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en" className={`${figtree.variable} h-full antialiased`}>
       <body className="bg-base text-ink min-h-full">
         <StandardWalletProvider>{children}</StandardWalletProvider>
+        <Analytics />
       </body>
     </html>
   );

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Keypair } from "@solana/web3.js";
+import { track } from "@/lib/analytics";
 import { env } from "@/lib/env";
 import { isMainnetBuild } from "@/lib/network";
 import { mainnetOwnerSigner } from "@/lib/rollup/mainnetOwner";
@@ -97,7 +98,9 @@ export function useQuestSwitch(owner: string | null): {
     const work =
       status === "on"
         ? disableQuests(deps, owner).then(() => undefined)
-        : enableQuests({ ...deps, signer }).then(() => undefined);
+        : enableQuests({ ...deps, signer }).then((outcome) => {
+            if (outcome === "on") track("quests_enabled");
+          });
     work
       .catch((reason: unknown) =>
         setError(reason instanceof QuestOptInError ? reason.message : QUESTS_UNAVAILABLE),
