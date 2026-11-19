@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { track } from "@/lib/analytics";
 import { formatDecimal, formatMoney, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
@@ -974,7 +975,9 @@ export function OrderEntry({
     setSubmitError(null);
     const { draft: submitted, descriptor } = order;
     try {
+      track("order_submitted", { type: submitted.type });
       const outcome = await placeOrder(submitted);
+      track("order_result", { result: outcome.result.status });
       onOrderPlaced(outcome, descriptor);
       if (outcome.result.status !== "rejected") {
         setAmountText("");
@@ -987,6 +990,7 @@ export function OrderEntry({
       // scroll position mid-panel on the next render.
       containerRef.current?.parentElement?.scrollTo({ top: 0 });
     } catch (error) {
+      track("order_result", { result: "error" });
       if (error instanceof OrderOutcomeUnknownError) {
         onOrderUnknown(descriptor, error.hold);
       } else {

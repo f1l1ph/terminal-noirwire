@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { track, type AnalyticsEvent } from "@/lib/analytics";
 import { formatShortAddress } from "@/lib/format";
 import {
   depositHelp,
@@ -33,6 +34,17 @@ const SEGMENT_CLASS = {
   current: "bg-ink-strong",
   upcoming: "bg-line-subtle",
 } as const;
+
+const SETUP_EVENTS: Record<string, AnalyticsEvent | undefined> = {
+  connect: "wallet_connected",
+  verify: "wallet_verified",
+  open: "account_opened",
+  keys: "keys_ready",
+  deposit: "account_funded",
+};
+
+const sentThisPageLoad = new Set<string>();
+const countedOutcomes = new WeakSet<OpenAccountOutcome>();
 
 const STATE_WORD = { done: "done", current: "current", upcoming: "not started" } as const;
 
@@ -108,6 +120,28 @@ export function AccountSetup({
   const { steps, ready } = setupSteps({ connected: address !== null, status, keys, funded });
   const current = steps.find((step) => step.state === "current")?.id ?? null;
   const walletLamports = useWalletLamports(address, current === "deposit" && depositsOpen);
+  const doneIds = steps
+    .filter((step) => step.state === "done")
+    .map((step) => step.id)
+    .join(",");
+  useEffect(() => {
+    for (const id of doneIds ? doneIds.split(",") : []) {
+      const event = SETUP_EVENTS[id];
+      if (!event || sentThisPageLoad.has(id)) continue;
+      sentThisPageLoad.add(id);
+      track(event);
+    }
+  }, [doneIds]);
+  useEffect(() => {
+    if (!outcome || countedOutcomes.has(outcome)) return;
+    countedOutcomes.add(outcome);
+    track("account_open_result", { result: outcome.kind });
+  }, [outcome]);
+  useEffect(() => {
+    if (!asksForInvite || sentThisPageLoad.has("invite")) return;
+    sentThisPageLoad.add("invite");
+    track("invite_asked");
+  }, [asksForInvite]);
 
   if (ready) {
     return (

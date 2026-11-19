@@ -2,6 +2,7 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { track, type AnalyticsEvent } from "@/lib/analytics";
 import { env } from "@/lib/env";
 import { formatMoney } from "@/lib/format";
 import { isAvailableUnknown, transferableAmount } from "@/lib/trading/balanceDisplay";
@@ -49,6 +50,18 @@ import { TransferRecords, type RecordsEngine } from "@/components/TransferRecord
 type Kind = "deposit" | "withdraw";
 
 const SOL_DECIMALS = 9;
+
+const sentOnce = new Set<AnalyticsEvent>();
+
+/** Counts `event` the first time it mounts in this page load. */
+function CountOnce({ event }: { event: AnalyticsEvent }) {
+  useEffect(() => {
+    if (sentOnce.has(event)) return;
+    sentOnce.add(event);
+    track(event);
+  }, [event]);
+  return null;
+}
 
 interface WalletFunds {
   /** Null while unknown: a read that failed is never shown as zero. */
@@ -279,6 +292,7 @@ export default function FundsSection({
     if (!check.ok) return;
     setResult(null);
     setPhase("preparing");
+    if (kind === "deposit") track("deposit_submitted");
     try {
       if (kind === "deposit") {
         const stored = await checkDepositStorage({
@@ -287,6 +301,7 @@ export default function FundsSection({
         });
         setStorageCaution(stored.ok && !stored.persisted);
         if (!stored.ok) {
+          track("deposit_result", { result: "storage_refused" });
           setResult({ tone: "error", text: stored.reason });
           return;
         }
@@ -301,12 +316,14 @@ export default function FundsSection({
               freeCollateral: freeCollateral ?? 0n,
               intent: { kind: "new" },
             });
+      if (kind === "deposit") track("deposit_result", { result: outcome.status });
       setResult(outcomeLine(kind, outcome, QUOTE_DECIMALS, feeLamports));
       if (outcome.status === "done") {
         setText("");
         onSettled();
       }
     } catch (error) {
+      if (kind === "deposit") track("deposit_result", { result: "error" });
       setResult(failureLine(error));
     } finally {
       setPhase(null);
@@ -380,6 +397,8 @@ export default function FundsSection({
             {!accountOpen && (
               <p className="text-dim mt-1 text-[12px]">Open your account before moving USDC.</p>
             )}
+            {lacksSol && kind === "deposit" && <CountOnce event="deposit_needs_sol" />}
+            {belowFirstMinimum && <CountOnce event="deposit_below_minimum" />}
             {lacksSol && (
               <p role="alert" className="text-danger mt-1 text-[12px]">
                 The network fees for this need about {solText(feeLamports)} in your wallet, and it

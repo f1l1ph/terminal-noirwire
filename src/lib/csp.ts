@@ -49,7 +49,17 @@ export function contentSecurityPolicy(nonce?: string): string {
   // The Solana RPC the owner's network check reads the genesis hash from:
   // exactly its origin, from the build environment alone.
   const solanaOrigin = originOf(process.env.NEXT_PUBLIC_SOLANA_RPC_URL);
-  const connectSources = ["'self'", simUrl, simWsUrl, rollupUrl, rollupWsUrl, solanaOrigin]
+  // The analytics tracker posts its events to this origin and nowhere else.
+  const umamiOrigin = originOf(process.env.NEXT_PUBLIC_UMAMI_URL);
+  const connectSources = [
+    "'self'",
+    simUrl,
+    simWsUrl,
+    rollupUrl,
+    rollupWsUrl,
+    solanaOrigin,
+    umamiOrigin,
+  ]
     .filter(Boolean)
     .join(" ");
   const isDev = process.env.NODE_ENV === "development";

@@ -111,12 +111,41 @@ required. See `.env.example` for the full comments.
 | `NEXT_PUBLIC_ROLLUP_RPC_URL`       | no - override only          | replaces the RPC URL `/v1/deployment` reports (the local query filter), so markets are checked on a rollup the service did not pick; also widens the CSP        |
 | `NEXT_PUBLIC_ROLLUP_WS_URL`        | no - override only          | replaces the websocket URL `/v1/deployment` reports; also widens the CSP                                                                                        |
 | `NEXT_PUBLIC_ORDERBOOK_PROGRAM_ID` | no - override only          | the program id this build signs for (default: the `@noirwire/orderbook` package's own); a `/v1/deployment` naming another program is refused                    |
+| `NEXT_PUBLIC_UMAMI_URL`            | no                          | enables Umami analytics with the website id below; its origin is added to `connect-src`                                                                         |
+| `NEXT_PUBLIC_UMAMI_WEBSITE_ID`     | no                          | the Umami website id (a UUID); unset, no tracker loads                                                                                                          |
 
 No `NEXT_PUBLIC_SOLANA_RPC_URL` and no "private URL" variable: nothing in the
 trading path talks to base-layer Solana directly, and the rollup's query
 filter is one endpoint for both an unsigned read and a signed-in one - sign-in
 is a token appended to the same URL, not a separate address. See
 docs/BUILD-NOTES.md, "Deployment-based rollup config."
+
+## Analytics
+
+With both Umami variables set, the terminal loads the tracker (only on
+`terminal.noirwire.com`, honouring Do Not Track) and counts the funnel steps
+below. Never sent: addresses, signatures, record ids, amounts, balances,
+prices, sizes, order side, positions, invite codes or error text.
+
+| Event                   | Data                                                                    | Fires when                                                               |
+| ----------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `wallet_connected`      |                                                                         | setup step done, once per page load                                      |
+| `wallet_verified`       |                                                                         | setup step done, once per page load                                      |
+| `account_opened`        |                                                                         | setup step done, once per page load                                      |
+| `keys_ready`            |                                                                         | setup step done, once per page load                                      |
+| `account_funded`        |                                                                         | setup step done, once per page load                                      |
+| `invite_asked`          |                                                                         | the gate asked for an invite code, once per page load                    |
+| `account_open_result`   | `result`: `opened`, `alreadyOpen`, `refused`, `notSent`, `notAvailable` | an open-account attempt came back                                        |
+| `deposit_submitted`     |                                                                         | a deposit started                                                        |
+| `deposit_result`        | `result`: a transfer status, `storage_refused` or `error`               | a deposit ended                                                          |
+| `deposit_needs_sol`     |                                                                         | the deposit form showed the add-SOL warning, once per page load          |
+| `deposit_below_minimum` |                                                                         | the typed amount was under the first-deposit minimum, once per page load |
+| `order_submitted`       | `type`: the order type                                                  | a reviewed order was sent                                                |
+| `order_result`          | `result`: the order status or `error`                                   | the order came back                                                      |
+| `quests_enabled`        |                                                                         | quest points were turned on                                              |
+
+A funnel is `wallet_connected` to `wallet_verified` to `account_opened` to
+`keys_ready` to `account_funded` to `order_submitted`.
 
 ## How numbers are labelled
 
