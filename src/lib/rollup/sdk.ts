@@ -4,9 +4,10 @@
  * defined here, so a client package upgrade is an edit to this one file.
  * Mirrors the same discipline sim-noirwire's own `src/rollup/program.ts`
  * follows for the same package (see that repo's docs/DESIGN.md, "The rollup
- * venue"). Currently on 0.9.0: every order-key call names every perp market
- * itself, read from the Exchange account, and a trader's seat is taken by its
- * first collateral deposit, so positions are read with `positionOn`.
+ * venue"). Currently on 0.11.0: every order-key call names the market's
+ * trigger book itself, read from the Exchange account, `setOrderKeys` and its
+ * signed form take no market list, and a trader's seat is taken by its first
+ * collateral deposit, so positions are read with `positionOn`.
  */
 import "../bufferBigInt";
 import { Connection, PublicKey, type Keypair } from "@solana/web3.js";

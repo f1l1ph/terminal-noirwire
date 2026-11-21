@@ -67,7 +67,7 @@ const WALLET: WalletIdentity = {
 };
 
 const USDC = 1_000_000n;
-const noSlot = { base: 0n, quote: 0n, openBidLots: 0n, openAskLots: 0n };
+const noSlot = { generation: 0, slot: null, base: 0n, quote: 0n, openBidLots: 0n, openAskLots: 0n };
 
 interface SlotInput {
   base?: bigint;

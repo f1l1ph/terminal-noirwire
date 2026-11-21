@@ -167,6 +167,7 @@ export type Refusal =
   | "simulation-unavailable"
   | "stale-price"
   | "rollup-refused"
+  | "upgrade-under-way"
   | "rollup-unreadable"
   | "send-failed"
   | "nothing-to-return"
