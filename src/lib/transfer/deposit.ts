@@ -35,6 +35,7 @@ import {
   fundKeyInstructions,
   moveKeyInstructions,
 } from "./depositKey";
+import { PROGRAM_ERROR, UPGRADE_UNDER_WAY, WIRE_ERROR_OFFSET } from "../rollup/refusals";
 import { errorCode, pollUntil, readTokenBalance, type SolanaRpc } from "./solanaRpc";
 import { firstDepositNeeds } from "./amount";
 import { solText } from "./outcomeCopy";
@@ -44,6 +45,7 @@ const CUSTODY_CAP_REACHED = 6150;
 const ACCOUNT_MISSING = 6114;
 const SEAT_TABLE_FULL = 6013;
 const SEAT_DEPOSIT_TOO_SMALL = 6156;
+const LAYOUT_NOT_ACTIVE = WIRE_ERROR_OFFSET + PROGRAM_ERROR.layoutNotActive;
 const DELEGATION_SHOWN_WITHIN_MS = 60_000;
 const FUNDING_SHOWN_WITHIN_MS = 30_000;
 
@@ -452,6 +454,12 @@ async function sendAndSettle(
 async function strand(env: TransferEnv, id: string, error: string): Promise<DepositOutcome> {
   const owner = env.owner.toBase58();
   await env.journal.clearSeatSend(owner, id);
+  if (errorCode(error) === LAYOUT_NOT_ACTIVE) {
+    return refuse(
+      "upgrade-under-way",
+      `${UPGRADE_UNDER_WAY} Your USDC is safe in this browser's deposit key. Press Try the deposit again under transfers that need attention once the upgrade is done.`,
+    );
+  }
   await env.journal.markStranded(owner, id);
   return strandedBy(id, error, !(await finishWhenFinalized(env, id)));
 }

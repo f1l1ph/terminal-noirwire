@@ -5,6 +5,7 @@ import {
   withdrawSpl,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Transaction } from "@solana/web3.js";
+import { PROGRAM_ERROR, UPGRADE_UNDER_WAY, WIRE_ERROR_OFFSET } from "../rollup/refusals";
 import type { KeyWithdrawal } from "../trading/types";
 import {
   POLL_MS,
@@ -54,6 +55,13 @@ import { tokenAtoms } from "./verdicts";
 const STALE_PRICE = 6038;
 /** The program's `NotSeated`: a withdrawal that took everything gives the seat back, so a second one finds the account empty. */
 const NOT_SEATED = 6155;
+
+/** The program's `LayoutNotActive`: the exchange refuses withdrawals until an upgrade is switched on. */
+const LAYOUT_NOT_ACTIVE = WIRE_ERROR_OFFSET + PROGRAM_ERROR.layoutNotActive;
+
+function upgradeUnderWay(): Refused {
+  return refuse("upgrade-under-way", UPGRADE_UNDER_WAY);
+}
 
 function nothingInAccount(): Refused {
   return refuse(
@@ -264,6 +272,7 @@ async function seatWithdrawnByKey(
         );
       default:
         if (result.code === NOT_SEATED) return nothingInAccount();
+        if (result.code === LAYOUT_NOT_ACTIVE) return upgradeUnderWay();
         return result.code === STALE_PRICE
           ? refuse(
               "stale-price",
@@ -335,6 +344,7 @@ async function seatWithdrawn(
   }
   if (failed !== null) {
     if (errorCode(failed) === NOT_SEATED) return nothingInAccount();
+    if (errorCode(failed) === LAYOUT_NOT_ACTIVE) return upgradeUnderWay();
     return errorCode(failed) === STALE_PRICE
       ? refuse(
           "stale-price",

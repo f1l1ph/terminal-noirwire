@@ -68,6 +68,8 @@ export type Fate =
 
 interface Plan {
   fate: Fate;
+  /** The program error a failing transaction carries; the deposit cap's by default. */
+  code?: number;
   effect?: () => void;
   /** How far the node has taken it when it lands; finalized unless said. */
   commitment?: "confirmed" | "finalized";
@@ -184,7 +186,7 @@ export class FakeRpc implements SolanaRpc {
       });
     } else if (plan.fate === "fail") {
       this.statuses.set(signature, {
-        err: { InstructionError: [0, { Custom: 6150 }] },
+        err: { InstructionError: [0, { Custom: plan.code ?? 6150 }] },
         confirmationStatus: "finalized",
       });
     }

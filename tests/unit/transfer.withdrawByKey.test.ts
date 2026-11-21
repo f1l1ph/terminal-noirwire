@@ -118,6 +118,16 @@ describe("a withdrawal signed by an order key", () => {
     expect(world.solana.sent).toEqual([]);
   });
 
+  it("says the exchange is being upgraded when the program is not yet active", async () => {
+    const { world } = keyWorld([{ kind: "refused", code: 6175 }]);
+    refusedAtFinality(world, 1);
+    const outcome = await ask(world);
+    expect(outcome).toMatchObject({ status: "refused", reason: "upgrade-under-way" });
+    expect(outcomeLine("withdraw", outcome, 6, 0).text).toContain("being upgraded");
+    expect(world.record()?.seat).toBeUndefined();
+    expect(world.solana.sent).toEqual([]);
+  });
+
   it("shows an account already emptied by a withdrawal as empty, not as a failure", async () => {
     const { world } = keyWorld([{ kind: "refused", code: 6155 }]);
     refusedAtFinality(world, 1);
