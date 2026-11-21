@@ -86,7 +86,7 @@ export const PROGRAM_ERROR = {
   custodyCapReached: 150,
   notSeated: 155,
   seatDepositTooSmall: 156,
-  layoutNotMigrated: 157,
+  layoutNotActive: 175,
 } as const;
 
 type Sentence = string | ((market: RefusalContext) => string);
@@ -143,7 +143,7 @@ const PRICE_SOURCE_NOT_READY =
   "The exchange's price source is not set up as expected, so it cannot check prices right now. This is on our side. Try again later. No fill occurred.";
 const FEE_ACCOUNT_NOT_READY =
   "The exchange's fee account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
-const UPGRADE_UNDER_WAY =
+export const UPGRADE_UNDER_WAY =
   "The exchange is being upgraded right now, so it takes no new requests. This is on our side. Try again later. Nothing was charged.";
 const INSURANCE_ACCOUNT_NOT_READY =
   "The exchange's insurance account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
@@ -247,7 +247,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
     "Your trading account holds no funds yet. Deposit to start trading. Nothing was charged.",
   [PROGRAM_ERROR.seatDepositTooSmall]:
     "Your first deposit opens your trading account, so it has to be USDC collateral, and at least the exchange's minimum if it sets one. Add more and try again. Nothing moved.",
-  [PROGRAM_ERROR.layoutNotMigrated]: UPGRADE_UNDER_WAY,
+  [PROGRAM_ERROR.layoutNotActive]: UPGRADE_UNDER_WAY,
 };
 
 /**
@@ -260,7 +260,7 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
 export const NOT_RAISED_BY_TRADERS: ReadonlySet<number> = new Set([
   3, 4, 5, 6, 10, 12, 15, 16, 17, 20, 60, 61, 62, 63, 70, 71, 72, 73, 74, 75, 76, 100, 101, 102,
   103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 115, 116, 117, 118, 119, 120, 121, 122, 126,
-  127, 128, 129, 131, 132, 135, 136, 138, 139, 140, 148, 149, 158, 159, 160, 161, 162,
+  127, 128, 129, 131, 132, 135, 136, 138, 139, 140, 148, 149, 159,
 ]);
 
 /** A plain sentence for a program refusal by its number in the program's error list, or null for one this terminal has no sentence for. */
