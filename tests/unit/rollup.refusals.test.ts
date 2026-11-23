@@ -6,7 +6,7 @@ import {
   PROGRAM_ERROR,
   WIRE_ERROR_OFFSET,
 } from "@/lib/rollup/refusals";
-import { LAYOUT_ERROR, SEAT_ERROR } from "@noirwire/orderbook";
+import { LAYOUT_ERROR, SEAT_ERROR, TRIGGER_ERROR } from "@noirwire/orderbook";
 import { ACCESS_ERROR } from "@/lib/rollup/sdk";
 
 /**
@@ -130,6 +130,17 @@ const PROGRAM_ERROR_CODES: Readonly<Record<number, string>> = {
   155: "NotSeated",
   156: "SeatDepositTooSmall",
   159: "LedgerTooLarge",
+  163: "BookInvalid",
+  164: "BookTooSmall",
+  166: "SizeBelowMinimum",
+  167: "PriceInvalid",
+  168: "WouldFireImmediately",
+  169: "WorstPriceInvalid",
+  170: "SizeInvalid",
+  171: "ExpiryInvalid",
+  172: "PairCrossed",
+  173: "KindInvalid",
+  174: "BookCorrupt",
   175: "LayoutNotActive",
 };
 
@@ -184,6 +195,13 @@ describe("the sentence for every refusal a trader can meet", () => {
     );
     expect(PROGRAM_ERROR.layoutNotActive).toBe(LAYOUT_ERROR.layoutNotActive - WIRE_ERROR_OFFSET);
     expect(13).toBe(SEAT_ERROR.seatTableFull - WIRE_ERROR_OFFSET);
+  });
+
+  it("agrees with the package on every trigger code", () => {
+    for (const [name, number] of Object.entries(TRIGGER_ERROR)) {
+      expect(PROGRAM_ERROR[name as keyof typeof PROGRAM_ERROR], name).toBe(number);
+      expect(describeProgramError(number), name).not.toBeNull();
+    }
   });
 
   it("never shows a code, a program error label or a raw address in a sentence", () => {

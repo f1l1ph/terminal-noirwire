@@ -173,6 +173,44 @@ export interface Position {
   maintenanceMarginBps?: number;
 }
 
+/** The two protective orders a position can carry: one of each at most. */
+export type TriggerKind = "takeProfit" | "stopLoss";
+
+/**
+ * What the exchange says about one trigger as of the last refresh of its
+ * market. The prices are sealed, so this is all a trader can read back.
+ * `nextAttemptMs` is the rollup's clock reading, in unix milliseconds.
+ */
+export interface TriggerChainState {
+  state: "armed" | "unfillable" | "blockedByRestingOrders" | "gone";
+  nextAttemptMs?: number;
+}
+
+/** A market's take profit and stop loss as the exchange reported them, and when this device read that. */
+export interface TriggerStatuses {
+  takeProfit: TriggerChainState;
+  stopLoss: TriggerChainState;
+  /** When this device read it: the status is as of this time, not live. */
+  readAtMs: number;
+  /** A later view of the market carried no trigger report, so this one may no longer hold. */
+  stale?: boolean;
+}
+
+/** One trigger to set: every amount is a decimal string. A null `size` is the whole position at the time it fires. */
+export interface TriggerRequest {
+  kind: TriggerKind;
+  price: string;
+  worstPrice: string;
+  size: string | null;
+}
+
+/** What setting or removing a trigger came to; never a bare success the caller has to guess at. */
+export type TriggerResult =
+  | { kind: "ok" }
+  | { kind: "refused"; reason: string }
+  /** Set only while the outcome is not yet certain; see `PendingSettlement`. */
+  | { kind: "pending"; pending: PendingSettlement<TriggerResult> };
+
 export interface OpenOrder {
   orderId: string;
   tag: string;
@@ -201,6 +239,8 @@ export interface TraderState {
   collateral?: Balance;
   positions: Record<string, Position>;
   openOrders: OpenOrder[];
+  /** Rollup mode: each position's take profit and stop loss as last reported, by market. A market with no entry has not been read yet. */
+  triggers?: Record<string, TriggerStatuses>;
   /**
    * Rollup mode: for each spot market id, which `balances` entries hold its
    * base and quote tokens, named as the venue's deployment description
@@ -351,6 +391,16 @@ export interface TradingClient {
    * shows a per-order cancel control only when this is present.
    */
   cancelOrder?(wallet: WalletIdentity, market: string, orderId: string): Promise<CancelResult>;
+  /** Whether this exchange takes take profit and stop loss now (its active layout is live). Optional: dev mode has none. */
+  triggersAvailable?(wallet: WalletIdentity): Promise<boolean>;
+  /** Sets or replaces a take profit or stop loss on an open perpetual position. Optional: dev mode has none. */
+  setTrigger?(
+    wallet: WalletIdentity,
+    market: string,
+    request: TriggerRequest,
+  ): Promise<TriggerResult>;
+  /** Removes a take profit or stop loss. Optional: dev mode has none. */
+  cancelTrigger?(wallet: WalletIdentity, market: string, kind: TriggerKind): Promise<TriggerResult>;
   /**
    * Moves funds between the perpetuals collateral account and the spot
    * balance of the same asset. Optional: dev mode has one balance, not two,
