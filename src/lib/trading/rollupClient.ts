@@ -39,6 +39,13 @@ import {
   transferErrorToResult,
 } from "../rollup/outcome";
 import { PROGRAM_ERROR } from "../rollup/refusals";
+import {
+  TRIGGERS_NOT_LIVE_REASON,
+  TRIGGERS_PERPS_ONLY_REASON,
+  triggerErrorToResult,
+  triggerStatusesFrom,
+  triggerToResult,
+} from "../rollup/triggerOutcome";
 import { pinnedBaseDecimals } from "../rollup/markets";
 import {
   loadHolds,
@@ -48,7 +55,7 @@ import {
   wasAccountOpened,
   type UnknownHold,
 } from "../rollup/accountMemory";
-import { trackSecret, untrackSecret } from "../rollup/secretStore";
+import { trackSecret, unpinTriggerSecrets, untrackSecret } from "../rollup/secretStore";
 import type { QuestQueue } from "../quests/queue";
 import { sharedQuestQueue } from "../quests/shared";
 import {
@@ -67,12 +74,15 @@ import {
   positionOn,
   programAddresses,
   SIDE_CODE,
+  TRIGGER_KIND_CODE,
   randomSecret,
   rollupClockSeconds,
   TransactionFailed,
   VIEW_NOT_READABLE_MESSAGE,
   WithdrawalUnknown,
+  type OrderResult,
   type Placed,
+  type TriggerStatus,
   type View,
 } from "../rollup/sdk";
 import {
@@ -112,6 +122,10 @@ import type {
   TraderState,
   TradingClient,
   TransferResult,
+  TriggerKind,
+  TriggerRequest,
+  TriggerResult,
+  TriggerStatuses,
   WalletIdentity,
 } from "./types";
 import { OrderOutcomeUnknownError } from "./unknownOutcome";
@@ -344,6 +358,11 @@ export class RollupTradingClient implements TradingClient {
   private lastViews = new Map<string, { session: RollupSession; view: View }>();
   /** address -> perp market id -> the resting orders last read from the view, with the slot's open lots at that moment. */
   private restingByMarket = new Map<string, Map<number, RestingRead>>();
+  /** Each wallet's last report on its triggers, by numeric market id: a view carries one market's, and only after a sync. */
+  private triggersByMarket = new Map<
+    string,
+    Map<number, { statuses: TriggerStatuses; resultsWritten: number }>
+  >();
   /** `address:market` -> the secret (hex) of an order that may have reached the venue, until its outcome is proven or released. */
   private unresolvedOrders = new Map<string, UnknownHold>();
   /** session -> how many seconds the rollup's clock runs ahead of this device's (negative when behind), and when that was read. */
@@ -601,6 +620,7 @@ export class RollupTradingClient implements TradingClient {
   closeWallet(wallet: WalletIdentity): void {
     this.lastOrderKeys.delete(wallet.address);
     this.lastViews.delete(wallet.address);
+    this.triggersByMarket.delete(wallet.address);
     const existing = this.sessions.get(wallet.address);
     if (!existing) return;
     if (!existing.settled) {
@@ -1538,6 +1558,218 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
+  /** Whether the exchange runs the active layout, which is when take profit and stop loss exist. */
+  async triggersAvailable(wallet: WalletIdentity): Promise<boolean> {
+    return this.withSession(
+      wallet,
+      async (session) => session.triggersLive === true && !!session.client.setTrigger,
+    );
+  }
+
+  async setTrigger(
+    wallet: WalletIdentity,
+    market: string,
+    request: TriggerRequest,
+  ): Promise<TriggerResult> {
+    return this.withSession(wallet, async (session) => {
+      const send = session.client.setTrigger?.bind(session.client);
+      const unavailable = this.triggerUnavailable(session, market);
+      if (unavailable || !send) return unavailable ?? refusedTrigger(TRIGGERS_NOT_LIVE_REASON);
+      const binding = this.bindings(session).get(market);
+      if (!binding) throw new Error(`${market} was not found on chain`);
+      let triggerPrice: bigint;
+      let worstPrice: bigint;
+      let size: bigint;
+      try {
+        triggerPrice = priceToChainAtoms(binding.units, request.price);
+        worstPrice = priceToChainAtoms(binding.units, request.worstPrice);
+        size = request.size === null ? 0n : sizeToLots(binding.units, request.size);
+      } catch {
+        return refusedTrigger(
+          "That price or size is not a whole step of this market. Nothing was changed.",
+        );
+      }
+      const secret = randomSecret();
+      const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
+      trackSecret(this.storage, wallet.address, market, secret, request.kind);
+      let attempt: KeyedAttempt<TriggerResult>;
+      try {
+        attempt = await this.runWithKeyResync(
+          session,
+          () =>
+            this.sendTrigger(
+              session,
+              expiresAtMs,
+              () =>
+                send(
+                  binding.numericId,
+                  {
+                    kind: TRIGGER_KIND_CODE[request.kind],
+                    triggerPrice,
+                    worstPrice,
+                    size,
+                    expiry: 0n,
+                    secret,
+                  },
+                  DEFAULT_EXPIRY_SECONDS,
+                ),
+              binding,
+            ),
+          () => refusedTrigger(KEYS_IN_USE_ELSEWHERE_REASON),
+        );
+      } catch (error) {
+        untrackSecret(this.storage, wallet.address, secret);
+        throw error;
+      }
+      return whenTriggerSettles(attempt.value, (settled) => {
+        if (settled.kind === "refused") {
+          untrackSecret(this.storage, wallet.address, secret);
+        } else {
+          unpinTriggerSecrets(this.storage, wallet.address, market, request.kind, secret);
+        }
+      });
+    });
+  }
+
+  async cancelTrigger(
+    wallet: WalletIdentity,
+    market: string,
+    kind: TriggerKind,
+  ): Promise<TriggerResult> {
+    return this.withSession(wallet, async (session) => {
+      const send = session.client.cancelTrigger?.bind(session.client);
+      const unavailable = this.triggerUnavailable(session, market);
+      if (unavailable || !send) return unavailable ?? refusedTrigger(TRIGGERS_NOT_LIVE_REASON);
+      const binding = this.bindings(session).get(market);
+      if (!binding) throw new Error(`${market} was not found on chain`);
+      const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
+      const attempt = await this.runWithKeyResync(
+        session,
+        () =>
+          this.sendTrigger(
+            session,
+            expiresAtMs,
+            () => send(binding.numericId, TRIGGER_KIND_CODE[kind], DEFAULT_EXPIRY_SECONDS),
+            binding,
+          ),
+        () => refusedTrigger(KEYS_IN_USE_ELSEWHERE_REASON),
+      );
+      return whenTriggerSettles(attempt.value, (settled) => {
+        if (settled.kind === "ok") unpinTriggerSecrets(this.storage, wallet.address, market, kind);
+      });
+    });
+  }
+
+  /** The refusal to give when triggers cannot be used on this market now, or null when they can. */
+  private triggerUnavailable(session: RollupSession, market: string): TriggerResult | null {
+    if (session.triggersLive !== true) return refusedTrigger(TRIGGERS_NOT_LIVE_REASON);
+    const binding = this.bindings(session).get(market);
+    return binding?.isPerp === false ? refusedTrigger(TRIGGERS_PERPS_ONLY_REASON) : null;
+  }
+
+  /** One trigger instruction and what it came to; a trigger that ran has its market read again so the status shown is the exchange's. */
+  private async sendTrigger(
+    session: RollupSession,
+    expiresAtMs: number,
+    send: () => Promise<OrderResult>,
+    binding: MarketBinding,
+  ): Promise<KeyedAttempt<TriggerResult>> {
+    try {
+      const result = await send();
+      session.saveKeyCheckpoint();
+      const value = triggerToResult(result);
+      if (value.kind === "ok") await this.refreshTriggers(session, binding);
+      return { value, refusal: resultRefusalNumber(result) };
+    } catch (error) {
+      const mapped = triggerErrorToResult(error, expiresAtMs);
+      if (!mapped) throw error;
+      const value =
+        mapped.kind === "pending"
+          ? {
+              ...mapped,
+              pending: {
+                ...mapped.pending,
+                settled: mapped.pending.settled.then(async (settled) => {
+                  if (settled.kind === "ok") await this.refreshTriggers(session, binding);
+                  return settled;
+                }),
+              },
+            }
+          : mapped;
+      return { value, refusal: refusalNumberOf(error) };
+    }
+  }
+
+  /** A `sync_view` for the market, then the view read back: the one way the status of its triggers reaches this device. */
+  private async refreshTriggers(session: RollupSession, binding: MarketBinding): Promise<void> {
+    try {
+      await session.client.syncView(binding.numericId, DEFAULT_EXPIRY_SECONDS);
+      session.saveKeyCheckpoint();
+    } catch {
+      // The read below shows whatever the view holds now.
+    }
+    try {
+      this.emitState(session, await session.client.view());
+    } catch {
+      // The subscription still delivers the new view.
+    }
+  }
+
+  /** A trigger confirmed gone no longer needs its secret kept past the cap. */
+  private releaseGoneTriggerSecrets(
+    address: string,
+    report: TriggerStatus,
+    bindings: Map<string, MarketBinding>,
+  ): void {
+    const binding = bindingByNumericId(bindings, report.marketId);
+    if (!binding) return;
+    for (const kind of ["takeProfit", "stopLoss"] as const) {
+      if (report[kind].state === "gone") {
+        unpinTriggerSecrets(this.storage, address, binding.marketId, kind);
+      }
+    }
+  }
+
+  /** Takes the report on triggers a view carries, once, and answers every market that still has a position and a report. */
+  private triggersOf(
+    address: string,
+    view: View,
+    bindings: Map<string, MarketBinding>,
+    positions: Record<string, Position>,
+  ): Record<string, TriggerStatuses> {
+    const known = this.triggersByMarket.get(address) ?? new Map();
+    this.triggersByMarket.set(address, known);
+    const report = view.snapshot.triggerStatus;
+    if (report) {
+      const held = known.get(report.marketId);
+      if (!held || view.resultsWritten > held.resultsWritten) {
+        known.set(report.marketId, {
+          statuses: triggerStatusesFrom(report, this.now()),
+          resultsWritten: view.resultsWritten,
+        });
+        this.releaseGoneTriggerSecrets(address, report, bindings);
+      }
+    } else {
+      const viewed = known.get(view.snapshot.marketId);
+      if (viewed && view.resultsWritten > viewed.resultsWritten) {
+        known.set(view.snapshot.marketId, {
+          statuses: { ...viewed.statuses, stale: true },
+          resultsWritten: view.resultsWritten,
+        });
+      }
+    }
+    const triggers: Record<string, TriggerStatuses> = {};
+    for (const [numericId, entry] of [...known]) {
+      const binding = bindingByNumericId(bindings, numericId);
+      if (!binding || !positions[binding.marketId]) {
+        known.delete(numericId);
+        continue;
+      }
+      triggers[binding.marketId] = entry.statuses;
+    }
+    return triggers;
+  }
+
   async transferBetweenBalances(
     wallet: WalletIdentity,
     toSpot: boolean,
@@ -1783,6 +2015,7 @@ export class RollupTradingClient implements TradingClient {
     };
 
     const openOrders = this.restingOrders(session.owner.publicKey.toBase58(), view, bindings);
+    const triggers = this.triggersOf(session.owner.publicKey.toBase58(), view, bindings, positions);
 
     return {
       trader: session.owner.publicKey.toBase58(),
@@ -1791,6 +2024,7 @@ export class RollupTradingClient implements TradingClient {
       collateral,
       positions,
       openOrders,
+      triggers,
       spotAssets: spotAssetsOf(session.deployment),
       ...(exposureUnreadable ? { exposureUnreadable: true } : {}),
     };
@@ -1863,6 +2097,29 @@ export class SessionRefusedError extends Error {
     super("The exchange stopped accepting your sign-in. Sign in again to continue.");
     this.name = "SessionRefused";
   }
+}
+
+function refusedTrigger(reason: string): TriggerResult {
+  return { kind: "refused", reason };
+}
+
+type SettledTrigger = Exclude<TriggerResult, { kind: "pending" }>;
+
+function whenTriggerSettles(
+  result: TriggerResult,
+  onSettled: (settled: SettledTrigger) => void,
+): TriggerResult {
+  if (result.kind !== "pending") {
+    onSettled(result);
+    return result;
+  }
+  return {
+    ...result,
+    pending: {
+      ...result.pending,
+      settled: result.pending.settled.then((next) => whenTriggerSettles(next, onSettled)),
+    },
+  };
 }
 
 /** A slot with exposure that cannot be priced: no mark, so the account's margin is unknown rather than guessed. */

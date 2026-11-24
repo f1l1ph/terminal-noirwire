@@ -17,6 +17,9 @@ import type {
   TraderState,
   TradingClient,
   TransferResult,
+  TriggerKind,
+  TriggerRequest,
+  TriggerResult,
   WalletIdentity,
 } from "./types";
 
@@ -184,6 +187,30 @@ export class LazyRollupTradingClient implements TradingClient {
     const client = await this.load();
     if (!client.cancelOrder) throw new Error("Per-order cancel is not available");
     return client.cancelOrder(wallet, market, orderId);
+  }
+
+  async triggersAvailable(wallet: WalletIdentity): Promise<boolean> {
+    return (await (await this.load()).triggersAvailable?.(wallet)) ?? false;
+  }
+
+  async setTrigger(
+    wallet: WalletIdentity,
+    market: string,
+    request: TriggerRequest,
+  ): Promise<TriggerResult> {
+    const client = await this.load();
+    if (!client.setTrigger) throw new Error("Take profit and stop loss are not available");
+    return client.setTrigger(wallet, market, request);
+  }
+
+  async cancelTrigger(
+    wallet: WalletIdentity,
+    market: string,
+    kind: TriggerKind,
+  ): Promise<TriggerResult> {
+    const client = await this.load();
+    if (!client.cancelTrigger) throw new Error("Take profit and stop loss are not available");
+    return client.cancelTrigger(wallet, market, kind);
   }
 
   async transferBetweenBalances(

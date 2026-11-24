@@ -30,6 +30,9 @@ import type {
   PlaceOrderResult,
   TraderState,
   TransferResult,
+  TriggerKind,
+  TriggerRequest,
+  TriggerResult,
   WalletIdentity,
 } from "./types";
 
@@ -62,6 +65,8 @@ interface OwnerFlow {
   deployment: PublicDeployment | null;
   /** Automatic sign-in has stopped because the exchange refused a freshly signed token; the owner has to sign in again. */
   sessionStopped: boolean;
+  /** The exchange runs the active layout, which is when take profit and stop loss exist. */
+  triggersLive: boolean;
 }
 
 /** The rollup's clock is read again this often; the client keeps a reading for 5 minutes. */
@@ -83,6 +88,7 @@ const NO_FLOW: OwnerFlow = {
   limitsState: "loading",
   deployment: null,
   sessionStopped: false,
+  triggersLive: false,
 };
 
 interface AccountRead {
@@ -327,6 +333,12 @@ export function useTrading(
       () => {},
     );
     readLimits(wallet);
+    client.triggersAvailable?.(wallet).then(
+      (triggersLive) => {
+        if (active) patchFlow(wallet.address, { triggersLive });
+      },
+      () => {},
+    );
     client.sessionDeployment?.(wallet).then(
       (deployment) => {
         if (active) patchFlow(wallet.address, { deployment });
@@ -387,6 +399,12 @@ export function useTrading(
         () => {},
       );
       readLimits(wallet);
+      client.triggersAvailable?.(wallet).then(
+        (triggersLive) => {
+          if (currentOwnerRef.current === owner) patchFlow(owner, { triggersLive });
+        },
+        () => {},
+      );
       client.sessionDeployment?.(wallet).then(
         (deployment) => {
           if (currentOwnerRef.current === owner) patchFlow(owner, { deployment });
@@ -687,6 +705,27 @@ export function useTrading(
     [client, wallet],
   );
 
+  const setTrigger = useCallback(
+    async (market: string, request: TriggerRequest): Promise<TriggerResult> => {
+      if (!wallet || !client.setTrigger)
+        throw new Error("Take profit and stop loss are not available");
+      const result = await client.setTrigger(wallet, market, request);
+      setRollupSecrets(readRollupSecrets());
+      return result;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- readRollupSecrets closes over wallet/client, already deps
+    [client, wallet],
+  );
+
+  const cancelTrigger = useCallback(
+    async (market: string, kind: TriggerKind): Promise<TriggerResult> => {
+      if (!wallet || !client.cancelTrigger)
+        throw new Error("Take profit and stop loss are not available");
+      return client.cancelTrigger(wallet, market, kind);
+    },
+    [client, wallet],
+  );
+
   const checkPrivacy = useCallback(
     async (market: string) => {
       if (!wallet || !client.checkPrivacy) return null;
@@ -765,6 +804,10 @@ export function useTrading(
     cancelAllInMarket,
     syncMarket,
     cancelOrder: client.cancelOrder ? cancelOrder : null,
+    /** Whether take profit and stop loss can be used: the client has them and the exchange runs the layout they need. */
+    triggersLive: flow.triggersLive && !!client.setTrigger && !!client.cancelTrigger,
+    setTrigger,
+    cancelTrigger,
     transferBetweenBalances: client.transferBetweenBalances ? transferBetweenBalances : null,
     checkPrivacy: client.checkPrivacy ? checkPrivacy : null,
   };

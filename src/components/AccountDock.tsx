@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { fromFixedPoint, withoutSign } from "@/lib/trading/decimal";
 import {
   accountLeverage,
@@ -37,6 +38,8 @@ import type {
 import type { MarketInfo } from "@/lib/market-data/types";
 import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
+import type { PositionTriggerControls } from "@/components/hooks/usePositionTriggers";
+import { TriggerEditor, TriggerNotice, TriggerRow } from "@/components/PositionTriggers";
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 import { isMainnetBuild } from "@/lib/network";
 import { walletlessDockText } from "@/lib/trading/uiRules";
@@ -98,6 +101,7 @@ export function AccountDock({
   unseated = false,
   transfers = null,
   bordered = true,
+  triggers = null,
 }: {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
@@ -134,6 +138,8 @@ export function AccountDock({
   transfers?: React.ReactNode;
   /** False inside the desktop Account panel frame, which already supplies the border. True (default) on phone, where this renders standalone. */
   bordered?: boolean;
+  /** Take profit and stop loss on each position; null wherever the exchange does not offer them, which shows nothing new. */
+  triggers?: PositionTriggerControls | null;
 }) {
   return (
     <div
@@ -184,6 +190,7 @@ export function AccountDock({
             exposureUnreadable={exposureUnreadable}
             onClose={onClosePosition}
             onReduce={onReducePosition}
+            triggers={triggers}
           />
         )}
         {hasWallet && !unseated && tab === "openOrders" && (
@@ -289,6 +296,7 @@ function PositionsTable({
   exposureUnreadable,
   onClose,
   onReduce,
+  triggers,
 }: {
   positions: Position[];
   collateral: Balance | null;
@@ -300,8 +308,13 @@ function PositionsTable({
   exposureUnreadable: boolean;
   onClose: (position: Position) => void;
   onReduce: (position: Position) => void;
+  triggers: PositionTriggerControls | null;
 }) {
+  const [editingMarket, setEditingMarket] = useState<string | null>(null);
   const open = positions.filter((position) => Number(position.size) !== 0);
+  const editing = triggers ? open.find((position) => position.market === editingMarket) : undefined;
+  const editingSettings = editing ? marketSettings(editing.market) : undefined;
+  const editingMark = editing ? (marksByMarket[editing.market] ?? null) : null;
   if (open.length === 0) {
     return exposureUnreadable ? (
       <UnreadableExposureNote />
@@ -318,6 +331,21 @@ function PositionsTable({
   return (
     <>
       {exposureUnreadable && <UnreadableExposureNote />}
+      {triggers && <TriggerNotice controls={triggers} />}
+      {triggers && editing && editingSettings && (
+        <TriggerEditor
+          key={editing.market}
+          position={editing}
+          settings={editingSettings}
+          mark={
+            editingMark && !isStale(editingMark.time, now, STALE_MARK_MS) ? editingMark.price : null
+          }
+          limits={limits.get(editing.market)}
+          quoteSymbol={quoteSymbol}
+          controls={triggers}
+          onClose={() => setEditingMarket(null)}
+        />
+      )}
       <ul className="flex flex-col gap-2">
         {open.map((position) => {
           const settings = marketSettings(position.market);
@@ -449,6 +477,14 @@ function PositionsTable({
                   />
                 )}
               </dl>
+              {triggers && (
+                <TriggerRow
+                  position={position}
+                  settings={settings}
+                  controls={triggers}
+                  onEdit={() => setEditingMarket(position.market)}
+                />
+              )}
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"

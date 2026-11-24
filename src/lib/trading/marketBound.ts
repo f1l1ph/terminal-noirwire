@@ -2,7 +2,7 @@ import { fromFixedPoint, toFixedPoint } from "./decimal";
 import type { Side } from "./types";
 
 /** How far past the mark a market order's worst price sits by default. */
-const DEFAULT_SLIPPAGE_BPS = 100;
+export const DEFAULT_SLIPPAGE_BPS = 100;
 const BPS = 10_000n;
 
 function floorToTick(value: bigint, tick: bigint): bigint {

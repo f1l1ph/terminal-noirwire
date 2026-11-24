@@ -57,6 +57,8 @@ export const PROGRAM_ERROR = {
   insuranceSeatNotOpen: 47,
   positionCapExceeded: 48,
   orderNotFound: 50,
+  notPerpMarket: 60,
+  noPosition: 63,
   shortfallOutstanding: 64,
   oracleDislocated: 77,
   oracleIncident: 78,
@@ -86,6 +88,17 @@ export const PROGRAM_ERROR = {
   custodyCapReached: 150,
   notSeated: 155,
   seatDepositTooSmall: 156,
+  bookInvalid: 163,
+  bookTooSmall: 164,
+  sizeBelowMinimum: 166,
+  priceInvalid: 167,
+  wouldFireImmediately: 168,
+  worstPriceInvalid: 169,
+  sizeInvalid: 170,
+  expiryInvalid: 171,
+  pairCrossed: 172,
+  kindInvalid: 173,
+  bookCorrupt: 174,
   layoutNotActive: 175,
 } as const;
 
@@ -145,6 +158,8 @@ const FEE_ACCOUNT_NOT_READY =
   "The exchange's fee account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
 export const UPGRADE_UNDER_WAY =
   "The exchange is being upgraded right now, so it takes no new requests. This is on our side. Try again later. Nothing was charged.";
+const TRIGGER_LIST_NOT_READY =
+  "This market's take profit and stop loss list is not ready, so none can be set right now. This is on our side. Nothing was changed. Try again later.";
 const INSURANCE_ACCOUNT_NOT_READY =
   "The exchange's insurance account is not set up, so it takes no orders right now. This is on our side. Try again later. No fill occurred.";
 
@@ -199,6 +214,10 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.positionCapExceeded]: positionCapReason,
   [PROGRAM_ERROR.orderNotFound]:
     "That order is not open any more: it has probably filled, expired or been cancelled. Check your open orders and positions.",
+  [PROGRAM_ERROR.notPerpMarket]:
+    "Take profit and stop loss work on perpetual markets only. Nothing was changed.",
+  [PROGRAM_ERROR.noPosition]:
+    "You have no open position in this market, so there is nothing to protect. Nothing was changed.",
   [PROGRAM_ERROR.shortfallOutstanding]:
     "A market has an unpaid loss on record, so withdrawing collateral is paused for everyone until it is covered. Your funds are safe and nothing moved. You can still trade and cancel orders. Try again later.",
   [PROGRAM_ERROR.oracleDislocated]:
@@ -247,6 +266,24 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
     "Your trading account holds no funds yet. Deposit to start trading. Nothing was charged.",
   [PROGRAM_ERROR.seatDepositTooSmall]:
     "Your first deposit opens your trading account, so it has to be USDC collateral, and at least the exchange's minimum if it sets one. Add more and try again. Nothing moved.",
+  [PROGRAM_ERROR.bookInvalid]: TRIGGER_LIST_NOT_READY,
+  [PROGRAM_ERROR.bookTooSmall]: TRIGGER_LIST_NOT_READY,
+  [PROGRAM_ERROR.bookCorrupt]: TRIGGER_LIST_NOT_READY,
+  [PROGRAM_ERROR.sizeBelowMinimum]:
+    "That size is below this market's minimum order, so it could never be closed. Raise the size or use the whole position. Nothing was changed.",
+  [PROGRAM_ERROR.priceInvalid]:
+    "That trigger price is not accepted. Check that it sits on the market's tick and on the right side of the mark price. Nothing was changed.",
+  [PROGRAM_ERROR.wouldFireImmediately]:
+    "The mark price has already passed that trigger price, so it would fire straight away. Move it further from the mark. Nothing was changed.",
+  [PROGRAM_ERROR.worstPriceInvalid]:
+    "The worst price is not accepted. Check the slippage and try again. Nothing was changed.",
+  [PROGRAM_ERROR.sizeInvalid]:
+    "That size is not accepted. Use the whole position or an amount within it. Nothing was changed.",
+  [PROGRAM_ERROR.expiryInvalid]: "The expiry time is not accepted. Try again. Nothing was changed.",
+  [PROGRAM_ERROR.pairCrossed]:
+    "Take profit and stop loss cannot cross. The take profit belongs on the profit side of the mark and the stop loss on the loss side. Nothing was changed.",
+  [PROGRAM_ERROR.kindInvalid]:
+    "This kind of trigger is not recognised. Reload the page and try again. Nothing was changed.",
   [PROGRAM_ERROR.layoutNotActive]: UPGRADE_UNDER_WAY,
 };
 
@@ -258,9 +295,9 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
  * to account checks on accounts this terminal derives itself.
  */
 export const NOT_RAISED_BY_TRADERS: ReadonlySet<number> = new Set([
-  3, 4, 5, 6, 10, 12, 15, 16, 17, 20, 60, 61, 62, 63, 70, 71, 72, 73, 74, 75, 76, 100, 101, 102,
-  103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 115, 116, 117, 118, 119, 120, 121, 122, 126,
-  127, 128, 129, 131, 132, 135, 136, 138, 139, 140, 148, 149, 159,
+  3, 4, 5, 6, 10, 12, 15, 16, 17, 20, 61, 62, 70, 71, 72, 73, 74, 75, 76, 100, 101, 102, 103, 104,
+  105, 106, 107, 108, 109, 110, 111, 112, 115, 116, 117, 118, 119, 120, 121, 122, 126, 127, 128,
+  129, 131, 132, 135, 136, 138, 139, 140, 148, 149, 159,
 ]);
 
 /** A plain sentence for a program refusal by its number in the program's error list, or null for one this terminal has no sentence for. */

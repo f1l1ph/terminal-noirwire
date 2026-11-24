@@ -24,6 +24,7 @@ export const ownerDataKeys = {
   orderSecrets: (address: string) => `noirwire-terminal-rollup-secrets-${address}`,
   keyCheckpoint: (address: string) => `noirwire-terminal-rollup-checkpoint-${address}`,
   grantUsed: (address: string) => `noirwire-terminal-grant-used:${address}`,
+  triggerPrices: (address: string) => `noirwire-terminal-trigger-prices:${address}`,
   unknownHolds: (address: string) => `noirwire-terminal-unknown-orders:${address}`,
   accountOpened: (address: string) => `noirwire-terminal-account-opened:${address}`,
   signInToken: (address: string) => `noirwire-terminal-rollup-token:${address}`,

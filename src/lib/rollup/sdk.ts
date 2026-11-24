@@ -30,6 +30,7 @@ import {
   RESULT_STATUS,
   ROLE,
   SIDE,
+  TRIGGER_KIND,
   TraderClient as SdkTraderClient,
   TransactionFailed as SdkTransactionFailed,
   WithdrawalUnknown as SdkWithdrawalUnknown,
@@ -52,12 +53,16 @@ import {
   type Settled,
   type SignMessage,
   type Timing,
+  type TriggerState,
+  type TriggerStatus,
   type View,
   type WithdrawalUndetermined,
   type Withdrawn,
 } from "@noirwire/orderbook";
 
 export type {
+  TriggerState,
+  TriggerStatus,
   CustodyToken,
   View,
   OrderResult,
@@ -351,6 +356,35 @@ export class TraderClient {
     return this.inner.cancelAll(marketId, undefined, expirySeconds);
   }
 
+  /**
+   * Sets or replaces one take profit or stop loss. A refusal that depends on
+   * the position comes back as a refused result, not a thrown error. May
+   * throw `OutcomeUnknown`; see `cancelOrder`.
+   */
+  setTrigger(
+    marketId: number,
+    trigger: {
+      kind: number;
+      triggerPrice: bigint;
+      worstPrice: bigint;
+      size: bigint;
+      expiry?: bigint;
+      secret: Uint8Array;
+    },
+    expirySeconds?: number,
+  ): Promise<OrderResult & Timing & { secret: Uint8Array }> {
+    return this.inner.setTrigger(marketId, trigger, expirySeconds);
+  }
+
+  /** Removes the take profit or stop loss `kind` names. May throw `OutcomeUnknown`; see `cancelOrder`. */
+  cancelTrigger(
+    marketId: number,
+    kind: number,
+    expirySeconds?: number,
+  ): Promise<OrderResult & Timing> {
+    return this.inner.cancelTrigger(marketId, kind, expirySeconds);
+  }
+
   /** May throw `OutcomeUnknown`; see `cancelOrder`. */
   syncView(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing> {
     return this.inner.syncView(marketId, expirySeconds);
@@ -398,6 +432,10 @@ export const ORDER_TYPE_CODE = {
 export const isMakersListed = (access: number): boolean =>
   (access & MARKET_ACCESS.makersListed) !== 0;
 export const RESULT_STATUS_CODE = RESULT_STATUS;
+export const TRIGGER_KIND_CODE = {
+  takeProfit: TRIGGER_KIND.takeProfit,
+  stopLoss: TRIGGER_KIND.stopLoss,
+} as const;
 
 export function decodeExchangeAccount(data: Uint8Array) {
   return decodeExchange(data);

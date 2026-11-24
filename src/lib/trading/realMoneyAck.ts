@@ -3,7 +3,7 @@ import type { KeyValueStore } from "../wallet/index";
 /** The statements the trader accepts before the first order from a device. */
 export const REAL_MONEY_STATEMENTS = [
   "This is real money on Solana mainnet, and you can lose what you deposit.",
-  "Filled trades are final, there is no stop-loss, and only your wallet can withdraw your funds (it needs a little SOL for fees).",
+  "Filled trades are final, a stop loss can fail to fill when the market moves fast, and only your wallet can withdraw your funds (it needs a little SOL for fees).",
   "Positions can be closed automatically (liquidated) when your margin runs out, with a penalty, and funding is paid or received while a position is open.",
 ] as const;
 

@@ -45,6 +45,7 @@ import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { useTradingTabGuard } from "@/components/hooks/useTradingTabGuard";
 import { useTradingPause } from "@/components/hooks/useTradingPause";
+import { usePositionTriggers } from "@/components/hooks/usePositionTriggers";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
@@ -575,6 +576,17 @@ export function Terminal() {
   // Either sync below is asked again, ever more slowly up to once a minute,
   // for as long as the account is open and it has not gone through.
   const accountOpen = trading.accountStatus === "open" && trading.accountLoaded;
+  const positionTriggers = usePositionTriggers({
+    owner: ownerIdentity?.address ?? null,
+    live: trading.triggersLive,
+    accountLoaded: trading.accountLoaded,
+    positions: trading.state.positions,
+    statuses: trading.state.triggers,
+    blocked: tabGuard.elsewhere ? TRADING_IN_OTHER_TAB_NOTICE : null,
+    setTrigger: trading.setTrigger,
+    cancelTrigger: trading.cancelTrigger,
+    syncMarket,
+  });
   useEffect(() => {
     const synced = syncedMakerFillsRef.current;
     const unsynced = makerFillSequences.split(",").filter((seq) => seq && !synced.has(seq));
@@ -980,6 +992,7 @@ export function Terminal() {
         )
       }
       bordered={!isDesktop}
+      triggers={positionTriggers}
     />
   );
 
