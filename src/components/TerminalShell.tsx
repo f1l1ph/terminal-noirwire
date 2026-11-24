@@ -5,9 +5,12 @@ import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { WalletWidget } from "@/components/WalletWidget";
 import { FunModeToggle } from "@/components/FunModeToggle";
 import { FunMoodOverlay } from "@/components/FunMoodOverlay";
-import { FunWizard } from "@/components/FunWizard";
-import { FunWizardCallout } from "@/components/FunWizardCallout";
-import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
+import {
+  FunWizard,
+  HIDE_FROM_SPOT_WIDTH,
+  WizardSpot,
+  type WizardSpotData,
+} from "@/components/FunWizard";
 import type { FunModeSettings } from "@/lib/layout/funMode";
 import type { Mood } from "@/lib/trading/positionMood";
 import type { ConnectionState } from "@/lib/market-data/socket";
@@ -29,13 +32,16 @@ export function TerminalShell({
   notices,
   funMode,
   mood,
+  wizard,
   wizardInHeader,
   children,
 }: {
   /** The trader's Fun mode choices; the visuals only appear while it is on. */
   funMode: FunModeSettings;
   mood: Mood;
-  /** The wizard sits in the header on a wide screen and in a strip under it on a phone. */
+  /** The wizard's line and risk range; absent while Fun mode or the Wizard setting is off. */
+  wizard: WizardSpotData | null;
+  /** The compact wizard sits in the header on a desktop layout (until the market card has room for his spot) and in a fixed row under it on a phone. */
   wizardInHeader: boolean;
   connectionState: ConnectionState;
   wallet: WalletHookResult;
@@ -47,12 +53,9 @@ export function TerminalShell({
   notices?: ReactNode;
   children: ReactNode;
 }) {
-  const showWizard = funMode.enabled && funMode.wizard;
-  const speech = useWizardSpeech(mood);
   return (
     <div className="bg-base isolate flex h-dvh min-h-0 flex-col overflow-hidden">
       {funMode.enabled && funMode.tint && <FunMoodOverlay mood={mood} />}
-      {showWizard && <FunWizardCallout speech={speech} />}
       <header className="relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Mark size={18} title="NoirWire" />
@@ -61,8 +64,12 @@ export function TerminalShell({
           </span>
           <NetworkBadge />
         </div>
-        {showWizard && wizardInHeader && (
-          <FunWizard mood={mood} speech={speech} className="min-w-0 flex-1" />
+        {wizard && wizardInHeader && (
+          <FunWizard
+            mood={wizard.mood}
+            speech={wizard.speech}
+            className={`min-w-0 flex-1 ${HIDE_FROM_SPOT_WIDTH}`}
+          />
         )}
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {onResetLayout && (
@@ -79,8 +86,8 @@ export function TerminalShell({
           <WalletWidget wallet={wallet} />
         </div>
       </header>
-      {showWizard && !wizardInHeader && (
-        <FunWizard mood={mood} speech={speech} className="h-10 shrink-0 px-3" />
+      {wizard && !wizardInHeader && (
+        <WizardSpot data={wizard} variant="phone" className="h-14 shrink-0 px-3" />
       )}
       {notices}
       <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 pb-2 sm:px-4">

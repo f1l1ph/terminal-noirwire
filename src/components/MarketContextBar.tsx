@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { SHOW_FROM_SPOT_WIDTH, WizardSpot, type WizardSpotData } from "@/components/FunWizard";
 import { formatDecimal, formatUpdatedAge } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
@@ -81,7 +82,7 @@ export function PriceHeadline({
   );
 }
 
-function BarStat({ label, value }: { label: string; value: string }) {
+export function BarStat({ label, value }: { label: string; value: string }) {
   return (
     <span className="flex flex-col gap-0.5">
       <span className="text-faint text-[11px]">{label}</span>
@@ -106,7 +107,10 @@ export function MarketContextBar({
   now,
   quoteSymbol,
   takerFeeBps = ASSUMED_TAKER_FEE_BPS,
+  wizard,
 }: {
+  /** The wizard's spot between the price and the stats; absent while Fun mode or the Wizard setting is off. */
+  wizard?: WizardSpotData | null;
   market: MarketInfo | undefined;
   mark: Mark;
   now: number;
@@ -133,33 +137,34 @@ export function MarketContextBar({
   const isPerp = market.kind === "perp";
 
   return (
-    <div className={`${panel} relative flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-3`}>
-      <div className="flex min-w-0 flex-col gap-2">
-        <span className="text-dim text-[12px] font-medium">SOL Perpetual</span>
-        <PriceHeadline market={market} mark={mark} now={now} />
-      </div>
-      <div className="tnum mt-6 ml-auto flex flex-wrap items-start justify-end gap-x-8 gap-y-2 text-right">
-        {dayRange && (
-          <BarStat
-            label="SOL/USD 24h range"
-            value={`${formatDecimal(dayRange.low, priceDecimals)} - ${formatDecimal(dayRange.high, priceDecimals)}`}
-          />
-        )}
-        {isPerp && <BarStat label="Max leverage" value={`${market.maxLeverage}x`} />}
-        {isPerp && <BarStat label="Taker fee" value={`${takerFeeBps / 100}%`} />}
-        {showVolume && (
-          <BarStat
-            label="24h volume"
-            value={`${formatDecimal(market.volume24h, 2)} ${quoteSymbol}`}
-          />
-        )}
-        {showOpenInterest && (
-          <BarStat
-            label="Open interest"
-            value={`${formatDecimal(market.openInterest ?? 0, sizeDecimals)} ${market.base}`}
-          />
-        )}
-      </div>
+    <MarketBarFrame
+      price={<PriceHeadline market={market} mark={mark} now={now} />}
+      wizard={wizard}
+      stats={
+        <>
+          {dayRange && (
+            <BarStat
+              label="SOL/USD 24h range"
+              value={`${formatDecimal(dayRange.low, priceDecimals)} - ${formatDecimal(dayRange.high, priceDecimals)}`}
+            />
+          )}
+          {isPerp && <BarStat label="Max leverage" value={`${market.maxLeverage}x`} />}
+          {isPerp && <BarStat label="Taker fee" value={`${takerFeeBps / 100}%`} />}
+          {showVolume && (
+            <BarStat
+              label="24h volume"
+              value={`${formatDecimal(market.volume24h, 2)} ${quoteSymbol}`}
+            />
+          )}
+          {showOpenInterest && (
+            <BarStat
+              label="Open interest"
+              value={`${formatDecimal(market.openInterest ?? 0, sizeDecimals)} ${market.base}`}
+            />
+          )}
+        </>
+      }
+    >
       <button
         type="button"
         className="text-faint tnum absolute top-3 right-5 text-[11px] underline"
@@ -174,6 +179,43 @@ export function MarketContextBar({
           <span className="text-dim">Lot {market.lotSize}</span>
         </div>
       )}
+    </MarketBarFrame>
+  );
+}
+
+/**
+ * The card's layout: price on the left, stats on the right, and between them
+ * the wizard's spot where there is room for it (it never wraps the row, and
+ * its text truncates before it can touch either neighbour).
+ */
+export function MarketBarFrame({
+  price,
+  stats,
+  wizard,
+  children,
+}: {
+  price: ReactNode;
+  stats: ReactNode;
+  wizard?: WizardSpotData | null;
+  children?: ReactNode;
+}) {
+  return (
+    <div
+      className={`${panel} relative flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-3 min-[1360px]:flex-nowrap`}
+    >
+      <div className="flex min-w-0 flex-col gap-2 min-[1360px]:shrink-0">
+        <span className="text-dim text-[12px] font-medium">SOL Perpetual</span>
+        {price}
+      </div>
+      {wizard && (
+        <div className={`${SHOW_FROM_SPOT_WIDTH} min-w-[300px] flex-1`}>
+          <WizardSpot data={wizard} variant="desktop" />
+        </div>
+      )}
+      <div className="tnum mt-6 ml-auto flex flex-wrap items-start justify-end gap-x-8 gap-y-2 text-right min-[1360px]:shrink-0 min-[1360px]:flex-nowrap">
+        {stats}
+      </div>
+      {children}
     </div>
   );
 }

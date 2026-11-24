@@ -48,6 +48,8 @@ import { useTradingPause } from "@/components/hooks/useTradingPause";
 import { usePositionTriggers } from "@/components/hooks/usePositionTriggers";
 import { useFunMode } from "@/components/hooks/useFunMode";
 import { usePositionMood } from "@/components/hooks/usePositionMood";
+import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
+import type { WizardSpotData } from "@/components/FunWizard";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
@@ -607,7 +609,7 @@ export function Terminal() {
     },
     [marketSettings, marketLimits],
   );
-  const mood = usePositionMood({
+  const { mood, gauge } = usePositionMood({
     entryLiquidation,
     owner,
     enabled: funMode.enabled,
@@ -618,6 +620,11 @@ export function Terminal() {
     now,
     triggers: positionTriggers,
   });
+  const speech = useWizardSpeech(mood);
+  const wizard = useMemo<WizardSpotData | null>(
+    () => (funMode.enabled && funMode.wizard ? { mood, speech, gauge } : null),
+    [funMode.enabled, funMode.wizard, mood, speech, gauge],
+  );
   useEffect(() => {
     const synced = syncedMakerFillsRef.current;
     const unsynced = makerFillSequences.split(",").filter((seq) => seq && !synced.has(seq));
@@ -1030,6 +1037,7 @@ export function Terminal() {
   const content = isDesktop ? (
     <DesktopWorkspace
       layoutResetSignal={layoutResetSignal}
+      wizard={wizard}
       market={market}
       mark={mark}
       now={now}
@@ -1090,6 +1098,7 @@ export function Terminal() {
       onResetLayout={isDesktop && !mainnet ? resetLayout : undefined}
       funMode={funMode}
       mood={mood}
+      wizard={wizard}
       wizardInHeader={isDesktop}
       notices={
         <TerminalNotices

@@ -5,8 +5,10 @@ import type { PositionTriggerControls } from "@/components/hooks/usePositionTrig
 import {
   CALM_MOOD,
   nextMood,
+  positionGauge,
   rawMood,
   sameMood,
+  type Gauge,
   type LocalTriggerReading,
   type Mood,
   type MoodInput,
@@ -44,8 +46,14 @@ function readingFrom(
   };
 }
 
+/** The mood, and the risk range of the position the wizard's bar follows (none when there is nothing to draw). */
+export interface PositionMoodReading {
+  mood: Mood;
+  gauge: Gauge | null;
+}
+
 /** How close the open positions are to liquidation, stop loss or take profit, from data the terminal already holds. */
-export function usePositionMood(source: Source): Mood {
+export function usePositionMood(source: Source): PositionMoodReading {
   const {
     owner,
     enabled,
@@ -57,10 +65,10 @@ export function usePositionMood(source: Source): Mood {
     triggers,
     entryLiquidation,
   } = source;
-  const raw = useMemo(
+  const moodInput = useMemo<MoodInput | null>(
     () =>
       enabled
-        ? rawMood({
+        ? {
             positions: Object.values(positions),
             collateral,
             exposureUnreadable,
@@ -68,13 +76,19 @@ export function usePositionMood(source: Source): Mood {
             now,
             trigger: (market, kind) => readingFrom(triggers, market, kind),
             entryLiquidation,
-          })
+          }
         : null,
     [enabled, positions, collateral, exposureUnreadable, marks, now, triggers, entryLiquidation],
   );
+  const raw = useMemo(() => (moodInput ? rawMood(moodInput) : null), [moodInput]);
   const [shown, setShown] = useState({ owner, mood: CALM_MOOD });
   const previous = shown.owner === owner ? shown.mood : CALM_MOOD;
   const next = raw === null ? CALM_MOOD : nextMood(previous, raw);
   if (shown.owner !== owner || !sameMood(shown.mood, next)) setShown({ owner, mood: next });
-  return next;
+  const unknown = next.state === "unknown";
+  const gauge = useMemo(
+    () => (moodInput && !unknown ? positionGauge(moodInput) : null),
+    [moodInput, unknown],
+  );
+  return { mood: next, gauge };
 }

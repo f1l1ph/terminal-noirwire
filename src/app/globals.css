@@ -82,7 +82,9 @@ textarea:focus-visible,
     animation-iteration-count: 1 !important;
   }
 
-  .fun-callout,
+  .fun-hop,
+  .fun-hat-tilt,
+  .fun-blink,
   .fun-shake,
   .fun-sparkle,
   .fun-breathe {
@@ -143,25 +145,51 @@ textarea:focus-visible,
   }
 }
 
-.fun-callout {
-  animation: fun-callout 5s ease-out both;
-  transform-origin: 50% 0;
+.fun-hop {
+  animation: fun-hop 0.4s ease-out;
 }
 
-@keyframes fun-callout {
-  0% {
-    opacity: 0;
-    transform: translateY(-8px) scale(0.85);
+@keyframes fun-hop {
+  35% {
+    transform: translateY(-4px);
   }
-  5% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
+  70% {
+    transform: translateY(0);
   }
-  92% {
-    opacity: 1;
+  85% {
+    transform: translateY(-1px);
   }
+}
+
+.fun-hat-tilt {
+  animation: fun-hat-tilt 0.4s ease-out;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+
+@keyframes fun-hat-tilt {
+  30% {
+    transform: rotate(-9deg);
+  }
+  65% {
+    transform: rotate(4deg);
+  }
+}
+
+.fun-blink {
+  animation: fun-blink 4.5s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes fun-blink {
+  0%,
+  94%,
   100% {
-    opacity: 0;
+    transform: scaleY(1);
+  }
+  97% {
+    transform: scaleY(0.1);
   }
 }
 

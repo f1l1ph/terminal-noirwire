@@ -101,9 +101,17 @@ function nearest<T extends { bps: number }>(current: T | null, candidate: T): T 
   return current === null || candidate.bps < current.bps ? candidate : current;
 }
 
-export function rawMood(input: MoodInput): RawMood {
+interface PositionReading {
+  danger: { bps: number; reason: "liquidation" | "stopLoss" } | null;
+  profit: { bps: number } | null;
+}
+
+function readPositions(input: MoodInput): {
+  unknown: RawMood["unknown"];
+  readings: PositionReading[];
+} {
   const open = input.positions.filter((position) => Number(position.size) !== 0);
-  if (open.length === 0) return { unknown: null, danger: null, profit: null };
+  if (open.length === 0) return { unknown: null, readings: [] };
 
   const freshMark = (market: string): bigint | null => {
     const mark = input.marks[market];
@@ -121,8 +129,7 @@ export function rawMood(input: MoodInput): RawMood {
     ? unknownPositionRisks(open)
     : positionRisks(open, input.collateral, markOf);
 
-  let danger: RawMood["danger"] = null;
-  let profit: RawMood["profit"] = null;
+  const readings: PositionReading[] = [];
 
   for (const position of open) {
     const mark = freshMark(position.market);
@@ -133,6 +140,9 @@ export function rawMood(input: MoodInput): RawMood {
     }
     const long = size > 0n;
     const side = long ? 1n : -1n;
+
+    let danger: PositionReading["danger"] = null;
+    let profit: PositionReading["profit"] = null;
 
     const liquidation = risks
       ? risks.get(position.market)?.liquidation
@@ -162,10 +172,71 @@ export function rawMood(input: MoodInput): RawMood {
     }
     const takeProfit = usable("takeProfit");
     if (takeProfit !== null) {
-      profit = nearest(profit, { bps: bpsAway(mark, takeProfit, side, true) });
+      profit = { bps: bpsAway(mark, takeProfit, side, true) };
     }
+    readings.push({ danger, profit });
+  }
+  return { unknown, readings };
+}
+
+export function rawMood(input: MoodInput): RawMood {
+  const { unknown, readings } = readPositions(input);
+  let danger: RawMood["danger"] = null;
+  let profit: RawMood["profit"] = null;
+  for (const reading of readings) {
+    if (reading.danger) danger = nearest(danger, reading.danger);
+    if (reading.profit) profit = nearest(profit, reading.profit);
   }
   return { unknown, danger, profit };
+}
+
+/** Basis points of room that fill the whole risk bar when only one end is known. */
+export const GAUGE_ROOM_BPS = 1000;
+
+/** The distance to each end of one position's risk range, for the bar under the wizard's line. */
+export interface Gauge {
+  dangerBps: number | null;
+  dangerReason: "liquidation" | "stopLoss" | null;
+  profitBps: number | null;
+}
+
+function lowest<T>(items: T[], bpsOf: (item: T) => number): T {
+  return items.reduce((best, item) => (bpsOf(item) < bpsOf(best) ? item : best));
+}
+
+/**
+ * The risk range of the position nearest its danger target (or, when none has
+ * one, nearest its take profit), with that position's own take profit. Null
+ * when there is nothing to draw.
+ */
+export function positionGauge(input: MoodInput): Gauge | null {
+  const { readings } = readPositions(input);
+  const withDanger = readings.filter((reading) => reading.danger !== null);
+  if (withDanger.length > 0) {
+    const chosen = lowest(withDanger, (reading) => reading.danger!.bps);
+    return {
+      dangerBps: chosen.danger!.bps,
+      dangerReason: chosen.danger!.reason,
+      profitBps: chosen.profit?.bps ?? null,
+    };
+  }
+  const withProfit = readings.filter((reading) => reading.profit !== null);
+  if (withProfit.length === 0) return null;
+  const chosen = lowest(withProfit, (reading) => reading.profit!.bps);
+  return { dangerBps: null, dangerReason: null, profitBps: chosen.profit!.bps };
+}
+
+/** Where the mark sits between the danger end (0) and the take-profit end (1). Null when neither end is known. */
+export function gaugeMarker(gauge: Gauge): number | null {
+  const clamp = (value: number) => Math.min(Math.max(value, 0), 1);
+  const danger = gauge.dangerBps === null ? null : Math.max(gauge.dangerBps, 0);
+  const profit = gauge.profitBps === null ? null : Math.max(gauge.profitBps, 0);
+  if (danger !== null && profit !== null) {
+    return danger + profit === 0 ? 0 : clamp(danger / (danger + profit));
+  }
+  if (danger !== null) return clamp(danger / GAUGE_ROOM_BPS);
+  if (profit !== null) return clamp(1 - profit / GAUGE_ROOM_BPS);
+  return null;
 }
 
 function quantize(score: number): number {

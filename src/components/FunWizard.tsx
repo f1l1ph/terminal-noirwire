@@ -1,6 +1,6 @@
 "use client";
 
-import type { Mood, MoodState } from "@/lib/trading/positionMood";
+import { gaugeMarker, type Gauge, type Mood, type MoodState } from "@/lib/trading/positionMood";
 import { moodFact, type Speech } from "@/components/wizardSpeech";
 
 const EYE_LEFT = 17.5;
@@ -52,7 +52,7 @@ function Eyes({ state }: { state: MoodState }) {
       );
     case "calm":
       return (
-        <g>
+        <g className="fun-blink">
           <Pill x={EYE_LEFT} y={EYE_Y} />
           <Pill x={EYE_RIGHT} y={EYE_Y} />
         </g>
@@ -156,18 +156,21 @@ const GLOW: Partial<Record<MoodState, string>> = {
 export function WizardFigure({
   state,
   size,
+  entry,
   className,
 }: {
   state: MoodState;
-  /** Rendered height and width in px. */
+  /** Rendered height and width in px; a change of size eases over a moment. */
   size: number;
+  /** The speech entry; each new one makes the wizard hop once and tilt his hat. */
+  entry?: number;
   className?: string;
 }) {
   const glow = GLOW[state];
   return (
     <span
       aria-hidden="true"
-      className={`relative inline-flex shrink-0 ${className ?? ""}`}
+      className={`relative inline-flex shrink-0 transition-[width,height] duration-300 ease-out ${className ?? ""}`}
       style={{ width: size, height: size }}
       data-pose={state}
     >
@@ -177,48 +180,91 @@ export function WizardFigure({
           style={{ background: glow }}
         />
       )}
-      <svg
-        viewBox="0 0 48 48"
-        width={size}
-        height={size}
-        className={`relative ${state === "atDanger" ? "fun-shake" : ""}`}
-      >
-        <g fill="var(--color-ink-strong)" stroke="var(--color-ink-strong)" strokeLinejoin="round">
-          <polygon points="10,26 38,26 38,37 24,44.5 10,37" strokeWidth="4" />
-        </g>
-        <polygon points="24,32 38,26 38,37 24,44.5" fill="var(--color-base)" opacity="0.1" />
-        <g transform={HAT_POSE[state]}>
-          <ellipse
-            cx="23"
-            cy="25.2"
-            rx="20.4"
-            ry="4.6"
-            transform="rotate(-9 23 25.2)"
-            fill="var(--color-base)"
-          />
+      <span key={entry} className="fun-hop relative block h-full w-full">
+        <svg
+          viewBox="0 0 48 48"
+          className={`block h-full w-full ${state === "atDanger" ? "fun-shake" : ""}`}
+        >
           <g fill="var(--color-ink-strong)" stroke="var(--color-ink-strong)" strokeLinejoin="round">
-            <ellipse
-              cx="23"
-              cy="23.5"
-              rx="20"
-              ry="4.3"
-              transform="rotate(-9 23 23.5)"
-              strokeWidth="0"
-            />
-            <path d="M12 24.5L33 20.5L8 4z" strokeWidth="2" />
+            <polygon points="10,26 38,26 38,37 24,44.5 10,37" strokeWidth="4" />
           </g>
-        </g>
-        <Eyes state={state} />
-        <Extras state={state} />
-      </svg>
+          <polygon points="24,32 38,26 38,37 24,44.5" fill="var(--color-base)" opacity="0.1" />
+          <g className="fun-hat-tilt">
+            <g transform={HAT_POSE[state]}>
+              <ellipse
+                cx="23"
+                cy="25.2"
+                rx="20.4"
+                ry="4.6"
+                transform="rotate(-9 23 25.2)"
+                fill="var(--color-base)"
+              />
+              <g
+                fill="var(--color-ink-strong)"
+                stroke="var(--color-ink-strong)"
+                strokeLinejoin="round"
+              >
+                <ellipse
+                  cx="23"
+                  cy="23.5"
+                  rx="20"
+                  ry="4.3"
+                  transform="rotate(-9 23 23.5)"
+                  strokeWidth="0"
+                />
+                <path d="M12 24.5L33 20.5L8 4z" strokeWidth="2" />
+              </g>
+            </g>
+          </g>
+          <Eyes state={state} />
+          <Extras state={state} />
+        </svg>
+      </span>
     </span>
   );
 }
 
+/** Everything the wizard's own spot needs to draw; absent while Fun mode or the Wizard setting is off. */
+export interface WizardSpotData {
+  mood: Mood;
+  speech: Speech;
+  gauge: Gauge | null;
+}
+
 /**
- * The header wizard and its one speech line. The line comes from the shared
- * speech so the pop-out shows the same words, and the text carries the same
- * fact as the colour.
+ * The viewport width from which the market card has room for the wizard's
+ * spot beside the price and the stats. Below it the compact header wizard
+ * stays; from it only the market card's spot shows.
+ */
+export const HIDE_FROM_SPOT_WIDTH = "min-[1360px]:hidden";
+export const SHOW_FROM_SPOT_WIDTH = "hidden min-[1360px]:block";
+
+const SPOT_FIGURE_SIZE: Record<MoodState, number> = {
+  calm: 48,
+  unknown: 48,
+  nearProfit: 56,
+  nearDanger: 56,
+  atProfit: 64,
+  atDanger: 64,
+};
+
+function WizardLine({ mood, speech }: { mood: Mood; speech: Speech }) {
+  const fact = moodFact(mood);
+  return (
+    <p role="status" aria-live="polite" className="text-dim min-w-0 truncate text-[12px]">
+      {fact && (
+        <span className="border-line text-ink mr-2 inline-block rounded-full border px-2 py-px text-[11px]">
+          {fact}
+        </span>
+      )}
+      {speech.line}
+    </p>
+  );
+}
+
+/**
+ * The compact header wizard and its one speech line, for where the market
+ * card has no room for his spot. The text carries the same fact as the colour.
  */
 export function FunWizard({
   mood,
@@ -229,21 +275,120 @@ export function FunWizard({
   speech: Speech;
   className?: string;
 }) {
-  const fact = moodFact(mood);
   return (
     <div
       data-testid="fun-wizard"
       className={`flex min-w-0 items-center gap-2 overflow-hidden ${className ?? ""}`}
     >
-      <WizardFigure state={mood.state} size={34} />
-      <p role="status" aria-live="polite" className="text-dim min-w-0 truncate text-[12px]">
-        {fact && (
-          <span className="border-line text-ink mr-2 inline-block rounded-full border px-2 py-px text-[11px]">
-            {fact}
-          </span>
-        )}
-        {speech.line}
-      </p>
+      <WizardFigure state={mood.state} size={34} entry={speech.entry} />
+      <WizardLine mood={mood} speech={speech} />
+    </div>
+  );
+}
+
+const HAT_MARKER_PATH = "M2.5 9.2L9.5 8.2L3.2 1z";
+
+function dangerLabel(reason: Gauge["dangerReason"]): string | null {
+  if (reason === "liquidation") return "Liq. est.";
+  if (reason === "stopLoss") return "Stop";
+  return null;
+}
+
+/**
+ * A thin track from the danger target (left) to the take profit (right), with
+ * a small hat where the mark is. It is a picture of distance only; the line
+ * above it states the same fact in words.
+ */
+export function RiskBar({
+  mood,
+  gauge,
+  maxWidth,
+}: {
+  mood: Mood;
+  gauge: Gauge | null;
+  /** Widest the track may grow, in px. */
+  maxWidth: number;
+}) {
+  const position = gauge ? gaugeMarker(gauge) : null;
+  if (!gauge || position === null) return null;
+  const dangerous = mood.state === "nearDanger" || mood.state === "atDanger";
+  const profitable = mood.state === "nearProfit" || mood.state === "atProfit";
+  const percent = position * 100;
+  const markerColor = dangerous
+    ? "var(--color-danger)"
+    : profitable
+      ? "var(--color-safe)"
+      : "var(--color-ink-strong)";
+  const left = dangerLabel(gauge.dangerReason);
+  return (
+    <div
+      aria-hidden="true"
+      data-testid="risk-bar"
+      data-marker={position.toFixed(3)}
+      className="text-faint flex min-w-0 items-center gap-3 text-[10px] leading-none"
+    >
+      {left && <span className="shrink-0">{left}</span>}
+      <span className="bg-line relative block h-1 min-w-0 flex-1 rounded-full" style={{ maxWidth }}>
+        <span
+          className="bg-danger absolute inset-y-0 left-0 rounded-full transition-[width,opacity] duration-300"
+          style={{ width: `${percent}%`, opacity: dangerous ? mood.intensity : 0 }}
+        />
+        <span
+          className="bg-safe absolute inset-y-0 right-0 rounded-full transition-[width,opacity] duration-300"
+          style={{ width: `${100 - percent}%`, opacity: profitable ? mood.intensity : 0 }}
+        />
+        <svg
+          viewBox="0 0 12 12"
+          width="10"
+          height="10"
+          className="absolute top-1/2 -translate-x-1/2 -translate-y-[78%] transition-[left] duration-[320ms] ease-out"
+          style={{ left: `${percent}%`, color: markerColor }}
+        >
+          <ellipse cx="6" cy="9.4" rx="5.4" ry="1.7" fill="currentColor" />
+          <path d={HAT_MARKER_PATH} fill="currentColor" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+      </span>
+      {gauge.profitBps !== null && <span className="shrink-0">TP</span>}
+    </div>
+  );
+}
+
+/**
+ * The wizard's own place in the layout: a box that holds him, then one line
+ * of words and the risk bar under it. On a phone the box is smaller and the
+ * figure does not grow with the mood.
+ */
+export function WizardSpot({
+  data,
+  variant,
+  className,
+}: {
+  data: WizardSpotData;
+  variant: "desktop" | "phone";
+  className?: string;
+}) {
+  const { mood, speech, gauge } = data;
+  const desktop = variant === "desktop";
+  return (
+    <div
+      data-testid={`wizard-spot-${variant}`}
+      className={`flex min-w-0 items-center ${desktop ? "gap-3" : "gap-2"} ${className ?? ""}`}
+    >
+      <span
+        className={`flex shrink-0 justify-center overflow-hidden ${
+          desktop ? "h-[72px] w-[72px] items-end" : "h-12 w-12 items-center"
+        }`}
+      >
+        <WizardFigure
+          state={mood.state}
+          size={desktop ? SPOT_FIGURE_SIZE[mood.state] : 40}
+          entry={speech.entry}
+        />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <WizardLine mood={mood} speech={speech} />
+        <RiskBar mood={mood} gauge={gauge} maxWidth={desktop ? 220 : 160} />
+      </div>
     </div>
   );
 }

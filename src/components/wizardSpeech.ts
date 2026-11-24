@@ -115,15 +115,3 @@ export function advanceSpeech(
   }
   return previous.reason === mood.reason ? previous : { ...previous, reason: mood.reason };
 }
-
-const CALLOUT_STATES: ReadonlySet<MoodState> = new Set([
-  "nearProfit",
-  "atProfit",
-  "nearDanger",
-  "atDanger",
-]);
-
-/** A pop-out is for a greeting or a state that has something to warn or cheer about, never for calm or unknown. */
-export function wantsCallout(speech: Speech): boolean {
-  return speech.greeting || CALLOUT_STATES.has(speech.state);
-}

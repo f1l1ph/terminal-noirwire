@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { STALE_MARK_MS } from "@/lib/market-data/selectors";
 import {
   CALM_MOOD,
+  gaugeMarker,
   nextMood,
+  positionGauge,
   rawMood,
   type LocalTriggerReading,
   type Mood,
@@ -326,5 +328,134 @@ describe("mood hysteresis", () => {
   it("quantizes intensity to tenths", () => {
     const { intensity } = nextMood(CALM_MOOD, danger(200));
     expect(Math.round(intensity * 10)).toBe(intensity * 10);
+  });
+});
+
+describe("risk gauge", () => {
+  function markerOf(overrides: Partial<MoodInput> & { triggers?: Triggers }): number | null {
+    const gauge = positionGauge(input(overrides));
+    return gauge === null ? null : gaugeMarker(gauge);
+  }
+
+  it("places a long between its stop loss and take profit", () => {
+    const overrides = {
+      triggers: { "A-PERP": { stopLoss: armed("98", true), takeProfit: armed("104", true) } },
+    };
+    expect(positionGauge(input(overrides))).toEqual({
+      dangerBps: 200,
+      dangerReason: "stopLoss",
+      profitBps: 400,
+    });
+    expect(markerOf(overrides)).toBeCloseTo(1 / 3, 6);
+  });
+
+  it("places a short between its stop loss and take profit", () => {
+    const marker = markerOf({
+      positions: [position("A-PERP", "-1")],
+      triggers: { "A-PERP": { stopLoss: armed("102", false), takeProfit: armed("96", false) } },
+    });
+    expect(marker).toBeCloseTo(1 / 3, 6);
+  });
+
+  it("fills the bar with 1000 bps of room when only the danger end is known", () => {
+    expect(markerOf({ triggers: { "A-PERP": { stopLoss: armed("98", true) } } })).toBeCloseTo(
+      0.2,
+      6,
+    );
+    expect(markerOf({ triggers: { "A-PERP": { stopLoss: armed("80", true) } } })).toBe(1);
+  });
+
+  it("fills the bar with 1000 bps of room when only the take profit is known", () => {
+    const gauge = positionGauge(
+      input({ triggers: { "A-PERP": { takeProfit: armed("104", true) } } }),
+    );
+    expect(gauge).toEqual({ dangerBps: null, dangerReason: null, profitBps: 400 });
+    expect(markerOf({ triggers: { "A-PERP": { takeProfit: armed("104", true) } } })).toBeCloseTo(
+      0.6,
+      6,
+    );
+    expect(markerOf({ triggers: { "A-PERP": { takeProfit: armed("200", true) } } })).toBe(0);
+  });
+
+  it("sits at the danger end once the danger target is reached", () => {
+    expect(
+      markerOf({
+        marks: { "A-PERP": freshMark("97") },
+        triggers: { "A-PERP": { stopLoss: armed("98", true), takeProfit: armed("104", true) } },
+      }),
+    ).toBe(0);
+    expect(
+      markerOf({
+        marks: { "A-PERP": freshMark("97") },
+        triggers: { "A-PERP": { stopLoss: armed("98", true) } },
+      }),
+    ).toBe(0);
+  });
+
+  it("sits at the profit end once the take profit is reached", () => {
+    expect(
+      markerOf({
+        marks: { "A-PERP": freshMark("105") },
+        triggers: { "A-PERP": { stopLoss: armed("98", true), takeProfit: armed("104", true) } },
+      }),
+    ).toBe(1);
+    expect(
+      markerOf({
+        marks: { "A-PERP": freshMark("105") },
+        triggers: { "A-PERP": { takeProfit: armed("104", true) } },
+      }),
+    ).toBe(1);
+  });
+
+  it("follows the position nearest its danger, with that position's own take profit", () => {
+    const gauge = positionGauge(
+      input({
+        positions: [position("A-PERP", "1"), position("B-PERP", "1")],
+        marks: { "A-PERP": freshMark("100"), "B-PERP": freshMark("100") },
+        triggers: {
+          "A-PERP": { stopLoss: armed("98", true), takeProfit: armed("101", true) },
+          "B-PERP": { stopLoss: armed("99", true), takeProfit: armed("110", true) },
+        },
+      }),
+    );
+    expect(gauge).toEqual({ dangerBps: 100, dangerReason: "stopLoss", profitBps: 1000 });
+    expect(gaugeMarker(gauge!)).toBeCloseTo(100 / 1100, 6);
+  });
+
+  it("follows the nearest take profit when no position has a danger target", () => {
+    const gauge = positionGauge(
+      input({
+        positions: [position("A-PERP", "1"), position("B-PERP", "1")],
+        marks: { "A-PERP": freshMark("100"), "B-PERP": freshMark("100") },
+        triggers: {
+          "A-PERP": { takeProfit: armed("110", true) },
+          "B-PERP": { takeProfit: armed("102", true) },
+        },
+      }),
+    );
+    expect(gauge).toEqual({ dangerBps: null, dangerReason: null, profitBps: 200 });
+  });
+
+  it("names the liquidation estimate as the danger when it is the nearer one", () => {
+    const gauge = positionGauge(
+      input({
+        entryLiquidation: () => "97",
+        triggers: { "A-PERP": { stopLoss: armed("90", true) } },
+      }),
+    );
+    expect(gauge).toMatchObject({ dangerBps: 300, dangerReason: "liquidation" });
+  });
+
+  it("draws no bar with no open position, no target, or no fresh price", () => {
+    expect(positionGauge(input({ positions: [position("A-PERP", "0")] }))).toBeNull();
+    expect(positionGauge(input({}))).toBeNull();
+    expect(
+      positionGauge(
+        input({
+          marks: { "A-PERP": null },
+          triggers: { "A-PERP": { stopLoss: armed("98", true) } },
+        }),
+      ),
+    ).toBeNull();
   });
 });

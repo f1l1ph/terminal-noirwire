@@ -4,7 +4,6 @@ import {
   firstSpeech,
   GREETING_LINES,
   pickLine,
-  wantsCallout,
   WIZARD_LINES,
 } from "@/components/wizardSpeech";
 import { CALM_MOOD, type Mood } from "@/lib/trading/positionMood";
@@ -36,14 +35,6 @@ describe("wizard speech", () => {
   const danger: Mood = { state: "atDanger", intensity: 1, reason: "liquidation" };
   const near: Mood = { state: "nearDanger", intensity: 0.5, reason: "stopLoss" };
 
-  it("asks for a pop-out on entering a notable state, not calm or unknown", () => {
-    const calm = firstSpeech(CALM_MOOD, 0);
-    expect(wantsCallout(calm)).toBe(false);
-    expect(wantsCallout(advanceSpeech(calm, danger, 0))).toBe(true);
-    expect(wantsCallout(firstSpeech(danger, 0))).toBe(true);
-    expect(wantsCallout(firstSpeech({ ...CALM_MOOD, state: "unknown" }, 0))).toBe(false);
-  });
-
   it("picks a new line, and a new entry, on every state change", () => {
     const first = advanceSpeech(firstSpeech(CALM_MOOD, 0), near, 0);
     const second = advanceSpeech(first, danger, 0);
@@ -58,9 +49,9 @@ describe("wizard speech", () => {
 
   it("greets when Fun mode is switched on, and not otherwise", () => {
     const calm = firstSpeech(CALM_MOOD, 0);
-    expect(wantsCallout(advanceSpeech(calm, CALM_MOOD, 0))).toBe(false);
+    expect(advanceSpeech(calm, CALM_MOOD, 0).greeting).toBe(false);
     const greeted = advanceSpeech(calm, CALM_MOOD, 1);
-    expect(wantsCallout(greeted)).toBe(true);
+    expect(greeted.greeting).toBe(true);
     expect(GREETING_LINES).toContain(greeted.line);
   });
 });
