@@ -223,6 +223,14 @@ button:disabled {
 }
 
 /*
+ * The library puts its sashes at z-index 99. Keep that stacking inside the
+ * dock, so a dialog portalled to the body is never painted over by a grip.
+ */
+.dv-theme-noirwire {
+  isolation: isolate;
+}
+
+/*
  * Widen the sash's hit area to 8px via a transparent, pointer-accepting
  * `::before` that bleeds 2px past the library's own 4px box on each side -
  * the same technique dockview's base stylesheet already uses for coarse
