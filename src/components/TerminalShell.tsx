@@ -3,6 +3,11 @@ import { Mark } from "@/components/ui/Mark";
 import { NetworkBadge } from "@/components/ui/NetworkBadge";
 import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { WalletWidget } from "@/components/WalletWidget";
+import { FunModeToggle } from "@/components/FunModeToggle";
+import { FunMoodOverlay } from "@/components/FunMoodOverlay";
+import { FunWizard } from "@/components/FunWizard";
+import type { FunModeSettings } from "@/lib/layout/funMode";
+import type { Mood } from "@/lib/trading/positionMood";
 import type { ConnectionState } from "@/lib/market-data/socket";
 import type { WalletHookResult } from "@/lib/wallet/useWallet";
 
@@ -20,8 +25,16 @@ export function TerminalShell({
   footer,
   onResetLayout,
   notices,
+  funMode,
+  mood,
+  wizardInHeader,
   children,
 }: {
+  /** The trader's Fun mode choices; the visuals only appear while it is on. */
+  funMode: FunModeSettings;
+  mood: Mood;
+  /** The wizard sits in the header on a wide screen and in a strip under it on a phone. */
+  wizardInHeader: boolean;
   connectionState: ConnectionState;
   wallet: WalletHookResult;
   /** The quiet line under the workspace; absent where it would add nothing. */
@@ -32,14 +45,19 @@ export function TerminalShell({
   notices?: ReactNode;
   children: ReactNode;
 }) {
+  const showWizard = funMode.enabled && funMode.wizard;
   return (
-    <div className="bg-base flex h-dvh min-h-0 flex-col overflow-hidden">
-      <header className="relative z-20 flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
+    <div className="bg-base isolate flex h-dvh min-h-0 flex-col overflow-hidden">
+      {funMode.enabled && funMode.tint && <FunMoodOverlay mood={mood} />}
+      <header className="relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Mark size={18} title="NoirWire" />
-          <span className="text-ink-strong text-[13px] font-semibold tracking-tight">NoirWire</span>
+          <span className="text-ink-strong text-[13px] font-semibold tracking-tight max-sm:sr-only">
+            NoirWire
+          </span>
           <NetworkBadge />
         </div>
+        {showWizard && wizardInHeader && <FunWizard mood={mood} className="min-w-0 flex-1" />}
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {onResetLayout && (
             <button
@@ -50,10 +68,12 @@ export function TerminalShell({
               Reset layout
             </button>
           )}
+          <FunModeToggle />
           <ConnectionStatus state={connectionState} />
           <WalletWidget wallet={wallet} />
         </div>
       </header>
+      {showWizard && !wizardInHeader && <FunWizard mood={mood} className="h-8 shrink-0 px-3" />}
       {notices}
       <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 pb-2 sm:px-4">
         {children}

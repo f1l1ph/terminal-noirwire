@@ -97,6 +97,29 @@ textarea:focus-visible,
   }
 }
 
+.fun-breathe {
+  animation: fun-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes fun-breathe {
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.fun-sparkle {
+  animation: fun-sparkle 1.6s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes fun-sparkle {
+  50% {
+    opacity: 0.2;
+    transform: scale(0.5);
+  }
+}
+
 .live-dot {
   animation: breathe 2.4s ease-in-out infinite;
 }

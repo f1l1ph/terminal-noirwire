@@ -46,6 +46,8 @@ import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { useTradingTabGuard } from "@/components/hooks/useTradingTabGuard";
 import { useTradingPause } from "@/components/hooks/useTradingPause";
 import { usePositionTriggers } from "@/components/hooks/usePositionTriggers";
+import { useFunMode } from "@/components/hooks/useFunMode";
+import { usePositionMood } from "@/components/hooks/usePositionMood";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
 import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
@@ -587,6 +589,17 @@ export function Terminal() {
     cancelTrigger: trading.cancelTrigger,
     syncMarket,
   });
+  const [funMode] = useFunMode();
+  const mood = usePositionMood({
+    owner,
+    enabled: funMode.enabled,
+    positions: trading.state.positions,
+    collateral: trading.state.collateral?.total ?? null,
+    exposureUnreadable: trading.state.exposureUnreadable === true,
+    marks: data.marksByMarket,
+    now,
+    triggers: positionTriggers,
+  });
   useEffect(() => {
     const synced = syncedMakerFillsRef.current;
     const unsynced = makerFillSequences.split(",").filter((seq) => seq && !synced.has(seq));
@@ -1057,6 +1070,9 @@ export function Terminal() {
       wallet={wallet}
       footer={footer}
       onResetLayout={isDesktop && !mainnet ? resetLayout : undefined}
+      funMode={funMode}
+      mood={mood}
+      wizardInHeader={isDesktop}
       notices={
         <TerminalNotices
           owner={ownerIdentity?.address ?? null}
