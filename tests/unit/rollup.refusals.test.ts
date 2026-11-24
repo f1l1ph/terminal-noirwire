@@ -6,7 +6,7 @@ import {
   PROGRAM_ERROR,
   WIRE_ERROR_OFFSET,
 } from "@/lib/rollup/refusals";
-import { SEAT_ERROR } from "@noirwire/orderbook";
+import { LAYOUT_ERROR, SEAT_ERROR } from "@noirwire/orderbook";
 import { ACCESS_ERROR } from "@/lib/rollup/sdk";
 
 /**
@@ -129,12 +129,8 @@ const PROGRAM_ERROR_CODES: Readonly<Record<number, string>> = {
   150: "CustodyCapReached",
   155: "NotSeated",
   156: "SeatDepositTooSmall",
-  157: "LayoutNotMigrated",
-  158: "AlreadyMigrated",
   159: "LedgerTooLarge",
-  160: "RelayoutOutOfOrder",
-  161: "RelayoutMismatch",
-  162: "RelayoutIncomplete",
+  175: "LayoutNotActive",
 };
 
 const NUMBERS = Object.keys(PROGRAM_ERROR_CODES).map(Number);
@@ -186,7 +182,7 @@ describe("the sentence for every refusal a trader can meet", () => {
     expect(PROGRAM_ERROR.seatDepositTooSmall).toBe(
       SEAT_ERROR.seatDepositTooSmall - WIRE_ERROR_OFFSET,
     );
-    expect(PROGRAM_ERROR.layoutNotMigrated).toBe(SEAT_ERROR.layoutNotMigrated - WIRE_ERROR_OFFSET);
+    expect(PROGRAM_ERROR.layoutNotActive).toBe(LAYOUT_ERROR.layoutNotActive - WIRE_ERROR_OFFSET);
     expect(13).toBe(SEAT_ERROR.seatTableFull - WIRE_ERROR_OFFSET);
   });
 
@@ -264,8 +260,8 @@ describe("the sentences the issue calls out", () => {
     expect(sentence).toMatch(/Nothing moved/);
   });
 
-  it("says the exchange is being upgraded while its seats move to the new ledger (157)", () => {
-    expect(describeProgramError(157)).toMatch(/being upgraded/);
+  it("says the exchange is being upgraded while the new layout is not active yet (175)", () => {
+    expect(describeProgramError(175)).toMatch(/being upgraded/);
   });
 
   it("says withdrawals are blocked while a shortfall is recorded (64), and that funds are safe", () => {

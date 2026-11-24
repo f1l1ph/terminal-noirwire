@@ -93,6 +93,28 @@ describe("a deposit the program refused while its move into the rollup is only c
   });
 });
 
+describe("a deposit refused while the exchange is being upgraded", () => {
+  it("is not stranded: it says so, stays on record and goes through when tried again", async () => {
+    const world = makeWorld();
+    world.stagedLanding(ATOMS);
+    world.rollup.script({ fate: "fail", code: 6175 });
+    const outcome = await deposit(world.env, { amount: AMOUNT, intent: { kind: "new" } });
+    expect(outcome).toMatchObject({ status: "refused", reason: "upgrade-under-way" });
+    expect(outcomeLine("deposit", outcome, 6, 1).text).toContain("being upgraded");
+    const record = world.record()!;
+    expect(record.stranded).toBeUndefined();
+    expect(record.seat).toBeUndefined();
+    expect(attentionOf(record, null, [record])).toMatchObject({ resumable: true });
+    world.rollup.script({ fate: "land", effect: world.depositEffect(ATOMS) });
+    const again = await deposit(world.env, {
+      amount: AMOUNT,
+      intent: { kind: "resume", id: record.id, atoms: record.atoms },
+    });
+    expect(again).toMatchObject({ status: "done" });
+    expect(world.solana.sent).toHaveLength(2);
+  });
+});
+
 describe("a deposit the program refused once its move into the rollup is final", () => {
   it("leaves no record, and the leftover button handles the key's balance", async () => {
     const world = makeWorld();

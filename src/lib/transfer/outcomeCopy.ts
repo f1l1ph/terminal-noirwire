@@ -1,3 +1,4 @@
+import { UPGRADE_UNDER_WAY } from "../rollup/refusals";
 import { userMessageLine } from "../userMessage";
 import { atomsText } from "./amount";
 import type { DepositOutcome } from "./deposit";
@@ -38,6 +39,7 @@ const REFUSALS: Record<Refusal, string> = {
     "Prices are not fresh enough to withdraw right now. Try again in a few minutes. Nothing moved.",
   "rollup-refused":
     "The exchange refused the transfer, so nothing moved. Your free collateral may be lower than that, or withdrawals may be paused while a price problem or an unpaid loss is cleared. Your funds are safe. Try again later.",
+  "upgrade-under-way": UPGRADE_UNDER_WAY,
   "rollup-unreadable": "Your rollup balance could not be read, so nothing was sent.",
   "send-failed":
     "The transaction did not go through and can no longer. Nothing moved. You can start again.",
@@ -93,7 +95,13 @@ function inKeyLine(reason: Refusal): string {
 
 /** What a refusal says: the two stops about the deposit key's own holdings carry their figures in their message, whichever step they stopped in. */
 function refusedText(outcome: Refused, feeLamports: number): string {
-  if (outcome.reason === "key-short" || outcome.reason === "key-needs-sol") return outcome.message;
+  if (
+    outcome.reason === "key-short" ||
+    outcome.reason === "key-needs-sol" ||
+    outcome.reason === "upgrade-under-way"
+  ) {
+    return outcome.message;
+  }
   if (outcome.inRollup) return inRollupLine(outcome.reason, feeLamports);
   if (outcome.inKey) return inKeyLine(outcome.reason);
   if (outcome.reason === "insufficient-sol") {
