@@ -9,6 +9,7 @@ import {
   sameMood,
   type LocalTriggerReading,
   type Mood,
+  type MoodInput,
 } from "@/lib/trading/positionMood";
 import type { Position, TriggerKind } from "@/lib/trading/types";
 
@@ -23,6 +24,8 @@ interface Source {
   marks: Record<string, { price: string; time: number } | null>;
   now: number;
   triggers: PositionTriggerControls | null;
+  /** Keep this identity stable between renders; a new one recomputes the mood. */
+  entryLiquidation: MoodInput["entryLiquidation"];
 }
 
 function readingFrom(
@@ -43,8 +46,17 @@ function readingFrom(
 
 /** How close the open positions are to liquidation, stop loss or take profit, from data the terminal already holds. */
 export function usePositionMood(source: Source): Mood {
-  const { owner, enabled, positions, collateral, exposureUnreadable, marks, now, triggers } =
-    source;
+  const {
+    owner,
+    enabled,
+    positions,
+    collateral,
+    exposureUnreadable,
+    marks,
+    now,
+    triggers,
+    entryLiquidation,
+  } = source;
   const raw = useMemo(
     () =>
       enabled
@@ -55,9 +67,10 @@ export function usePositionMood(source: Source): Mood {
             marks,
             now,
             trigger: (market, kind) => readingFrom(triggers, market, kind),
+            entryLiquidation,
           })
         : null,
-    [enabled, positions, collateral, exposureUnreadable, marks, now, triggers],
+    [enabled, positions, collateral, exposureUnreadable, marks, now, triggers, entryLiquidation],
   );
   const [shown, setShown] = useState({ owner, mood: CALM_MOOD });
   const previous = shown.owner === owner ? shown.mood : CALM_MOOD;

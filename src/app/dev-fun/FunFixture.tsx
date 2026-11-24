@@ -4,6 +4,8 @@ import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { FunModeToggle } from "@/components/FunModeToggle";
 import { FunMoodOverlay } from "@/components/FunMoodOverlay";
 import { FunWizard } from "@/components/FunWizard";
+import { FunWizardCallout } from "@/components/FunWizardCallout";
+import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { Mark } from "@/components/ui/Mark";
 import { NetworkBadge } from "@/components/ui/NetworkBadge";
@@ -20,9 +22,11 @@ export function FunFixture({
   wallet: "plain" | "locked" | "unsaved";
 }) {
   const wide = useMediaQuery("(min-width: 900px)");
+  const speech = useWizardSpeech(mood);
   return (
     <div className="bg-base isolate flex h-dvh min-h-0 flex-col overflow-hidden">
       <FunMoodOverlay mood={mood} />
+      <FunWizardCallout speech={speech} />
       <header className="relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Mark size={18} title="NoirWire" />
@@ -31,7 +35,7 @@ export function FunFixture({
           </span>
           <NetworkBadge />
         </div>
-        {wide && <FunWizard mood={mood} className="min-w-0 flex-1" />}
+        {wide && <FunWizard mood={mood} speech={speech} className="min-w-0 flex-1" />}
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           <FunModeToggle />
           <ConnectionStatus state="open" />
@@ -44,7 +48,7 @@ export function FunFixture({
           </span>
         </div>
       </header>
-      {!wide && <FunWizard mood={mood} className="h-8 shrink-0 px-3" />}
+      {!wide && <FunWizard mood={mood} speech={speech} className="h-10 shrink-0 px-3" />}
       <main className="flex min-h-0 flex-1 gap-2 px-3 pb-2 sm:px-4">
         <section className="bg-surface rounded-panel flex-1 p-4">
           <p className="text-ink-strong tnum text-[20px]">150.42</p>

@@ -10,6 +10,7 @@ import {
 
 const listeners = new Set<() => void>();
 let current: FunModeSettings | null = null;
+let switchedOnCount = 0;
 
 function browserStorage(): Storage | null {
   try {
@@ -33,9 +34,19 @@ function subscribe(onChange: () => void): () => void {
 export function useFunMode(): [FunModeSettings, (patch: Partial<FunModeSettings>) => void] {
   const settings = useSyncExternalStore(subscribe, read, () => DEFAULT_FUN_MODE);
   const update = useCallback((patch: Partial<FunModeSettings>) => {
+    if (patch.enabled === true && !read().enabled) switchedOnCount += 1;
     current = { ...read(), ...patch };
     saveFunMode(browserStorage(), current);
     for (const listener of listeners) listener();
   }, []);
   return [settings, update];
+}
+
+/** How many times the trader has switched Fun mode on in this session; a stored "on" at page load does not count. */
+export function useFunSwitchedOnCount(): number {
+  return useSyncExternalStore(
+    subscribe,
+    () => switchedOnCount,
+    () => 0,
+  );
 }

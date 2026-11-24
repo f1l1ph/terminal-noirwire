@@ -70,6 +70,7 @@ import { holdClearableAtMs, type UnknownHold } from "@/lib/rollup/accountMemory"
 import { formatClockTime, formatDecimal } from "@/lib/format";
 import { userMessageLine } from "@/lib/userMessage";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
+import { positionEntryEstimate } from "@/lib/trading/entryEstimate";
 
 /**
  * The deposit and withdraw controls and everything they move money with. The
@@ -590,7 +591,24 @@ export function Terminal() {
     syncMarket,
   });
   const [funMode] = useFunMode();
+  const marketLimits = trading.marketLimits;
+  const entryLiquidation = useCallback(
+    (position: Position) => {
+      const settings = marketSettings(position.market);
+      if (!settings) return null;
+      return (
+        positionEntryEstimate(
+          position,
+          settings,
+          marketLimits.get(position.market),
+          priceDecimalsOf(settings),
+        )?.liquidationPrice ?? null
+      );
+    },
+    [marketSettings, marketLimits],
+  );
   const mood = usePositionMood({
+    entryLiquidation,
     owner,
     enabled: funMode.enabled,
     positions: trading.state.positions,

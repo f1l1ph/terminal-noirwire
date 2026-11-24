@@ -36,6 +36,7 @@ function input(overrides: Partial<MoodInput> & { triggers?: Triggers }): MoodInp
     marks: { "A-PERP": freshMark("100") },
     now: NOW,
     trigger: (market, kind) => triggers[market]?.[kind] ?? null,
+    entryLiquidation: () => null,
     ...rest,
   };
 }
@@ -226,6 +227,59 @@ describe("mood from the estimated liquidation", () => {
     expect(
       moodOf({ positions: [long], collateral: null, marks: { "A-PERP": freshMark("0.09") } }),
     ).toEqual(CALM_MOOD);
+  });
+});
+
+describe("mood from the entry liquidation estimate", () => {
+  const longEstimate = (position: Position) => (Number(position.size) > 0 ? "90" : null);
+  const shortEstimate = (position: Position) => (Number(position.size) < 0 ? "110" : null);
+  const longAt = (price: string) =>
+    moodOf({ entryLiquidation: longEstimate, marks: { "A-PERP": freshMark(price) } });
+  const shortAt = (price: string) =>
+    moodOf({
+      positions: [position("A-PERP", "-1")],
+      entryLiquidation: shortEstimate,
+      marks: { "A-PERP": freshMark(price) },
+    });
+
+  it("warns a long near the estimate and a short near its own", () => {
+    expect(longAt("92")).toMatchObject({ state: "nearDanger", reason: "liquidation" });
+    expect(shortAt("108")).toMatchObject({ state: "nearDanger", reason: "liquidation" });
+  });
+
+  it("stays calm while the mark is far from the estimate", () => {
+    expect(longAt("100")).toEqual(CALM_MOOD);
+    expect(shortAt("100")).toEqual(CALM_MOOD);
+  });
+
+  it("is at danger once the mark is past the estimate", () => {
+    expect(longAt("89")).toEqual({ state: "atDanger", intensity: 1, reason: "liquidation" });
+    expect(shortAt("111")).toEqual({ state: "atDanger", intensity: 1, reason: "liquidation" });
+  });
+
+  it("ignores the estimate when the account carries its own liquidation", () => {
+    const withQuote = {
+      ...position("A-PERP", "100", "0.1"),
+      quote: "-10",
+      maintenanceMarginBps: 500,
+    };
+    expect(
+      moodOf({
+        positions: [withQuote],
+        collateral: "1",
+        marks: { "A-PERP": freshMark("0.1") },
+        entryLiquidation: () => "0.0999",
+      }),
+    ).toEqual(CALM_MOOD);
+  });
+
+  it("ignores the estimate when the account exposure is unreadable", () => {
+    expect(
+      moodOf({
+        exposureUnreadable: true,
+        entryLiquidation: () => "99.9",
+      }).reason,
+    ).toBe("accountUnreadable");
   });
 });
 

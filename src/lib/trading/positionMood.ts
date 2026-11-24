@@ -61,6 +61,12 @@ export interface MoodInput {
   marks: Record<string, { price: string; time: number } | null>;
   now: number;
   trigger: (market: string, kind: TriggerKind) => LocalTriggerReading | null;
+  /**
+   * The liquidation price the account panel shows for a position from its
+   * entry alone. Used only while the account carries no collateral to
+   * compute a liquidation from, so the tint follows the number on screen.
+   */
+  entryLiquidation: (position: Position) => string | null;
 }
 
 function parseFixed(value: string): bigint | null {
@@ -79,6 +85,16 @@ function parseFixed(value: string): bigint | null {
 function bpsAway(mark: bigint, target: bigint, side: 1n | -1n, towardsHigher: boolean): number {
   const gap = towardsHigher ? target - mark : mark - target;
   return Number((side * gap * BPS * BPS_RESOLUTION) / mark) / Number(BPS_RESOLUTION);
+}
+
+function entryLiquidationOf(
+  input: MoodInput,
+  position: Position,
+): { kind: "price"; price: bigint } | null {
+  if (input.exposureUnreadable) return null;
+  const text = input.entryLiquidation(position);
+  const price = text === null ? null : parseFixed(text);
+  return price !== null && price > 0n ? { kind: "price", price } : null;
 }
 
 function nearest<T extends { bps: number }>(current: T | null, candidate: T): T {
@@ -118,7 +134,9 @@ export function rawMood(input: MoodInput): RawMood {
     const long = size > 0n;
     const side = long ? 1n : -1n;
 
-    const liquidation = risks?.get(position.market)?.liquidation;
+    const liquidation = risks
+      ? risks.get(position.market)?.liquidation
+      : entryLiquidationOf(input, position);
     if (liquidation?.kind === "now") {
       danger = nearest(danger, { bps: 0, reason: "liquidation" as const });
     } else if (liquidation?.kind === "price") {

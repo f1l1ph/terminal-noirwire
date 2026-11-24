@@ -6,6 +6,8 @@ import { WalletWidget } from "@/components/WalletWidget";
 import { FunModeToggle } from "@/components/FunModeToggle";
 import { FunMoodOverlay } from "@/components/FunMoodOverlay";
 import { FunWizard } from "@/components/FunWizard";
+import { FunWizardCallout } from "@/components/FunWizardCallout";
+import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
 import type { FunModeSettings } from "@/lib/layout/funMode";
 import type { Mood } from "@/lib/trading/positionMood";
 import type { ConnectionState } from "@/lib/market-data/socket";
@@ -46,9 +48,11 @@ export function TerminalShell({
   children: ReactNode;
 }) {
   const showWizard = funMode.enabled && funMode.wizard;
+  const speech = useWizardSpeech(mood);
   return (
     <div className="bg-base isolate flex h-dvh min-h-0 flex-col overflow-hidden">
       {funMode.enabled && funMode.tint && <FunMoodOverlay mood={mood} />}
+      {showWizard && <FunWizardCallout speech={speech} />}
       <header className="relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Mark size={18} title="NoirWire" />
@@ -57,7 +61,9 @@ export function TerminalShell({
           </span>
           <NetworkBadge />
         </div>
-        {showWizard && wizardInHeader && <FunWizard mood={mood} className="min-w-0 flex-1" />}
+        {showWizard && wizardInHeader && (
+          <FunWizard mood={mood} speech={speech} className="min-w-0 flex-1" />
+        )}
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {onResetLayout && (
             <button
@@ -73,7 +79,9 @@ export function TerminalShell({
           <WalletWidget wallet={wallet} />
         </div>
       </header>
-      {showWizard && !wizardInHeader && <FunWizard mood={mood} className="h-8 shrink-0 px-3" />}
+      {showWizard && !wizardInHeader && (
+        <FunWizard mood={mood} speech={speech} className="h-10 shrink-0 px-3" />
+      )}
       {notices}
       <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 pb-2 sm:px-4">
         {children}

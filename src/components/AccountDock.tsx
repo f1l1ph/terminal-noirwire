@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { fromFixedPoint, withoutSign } from "@/lib/trading/decimal";
+import { fromFixedPoint } from "@/lib/trading/decimal";
+import { positionEntryEstimate } from "@/lib/trading/entryEstimate";
 import {
   accountLeverage,
   formatLeverage,
@@ -20,12 +21,7 @@ import {
 import { isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { marketDisplayName } from "@/lib/market-data/displayName";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
-import {
-  ASSUMED_TAKER_FEE_BPS,
-  displayOrderCost,
-  estimateOrderCost,
-  MAINTENANCE_MARGIN_BPS,
-} from "@/lib/trading/risk";
+import { ASSUMED_TAKER_FEE_BPS, MAINTENANCE_MARGIN_BPS } from "@/lib/trading/risk";
 import type { OwnFillRecord } from "@/lib/trading/tags";
 import type {
   Balance,
@@ -33,9 +29,7 @@ import type {
   MarketSettingsLookup,
   OpenOrder,
   Position,
-  Side,
 } from "@/lib/trading/types";
-import type { MarketInfo } from "@/lib/market-data/types";
 import { availableLabel, isAvailableUnknown } from "@/lib/trading/balanceDisplay";
 import { btnGhost, sectionLabel } from "@/components/ui/styles";
 import type { PositionTriggerControls } from "@/components/hooks/usePositionTriggers";
@@ -45,25 +39,6 @@ import { isMainnetBuild } from "@/lib/network";
 import { walletlessDockText } from "@/lib/trading/uiRules";
 
 const NO_LIMITS: ReadonlyMap<string, MarketLimits> = new Map();
-
-/** An existing position's cost at the market's maximum leverage, from the market account's own ratios once they are known. */
-function positionCost(
-  side: Side,
-  quantity: string,
-  price: string,
-  settings: MarketInfo,
-  limits: MarketLimits | undefined,
-) {
-  return estimateOrderCost({
-    side,
-    quantity,
-    price,
-    leverage: limits ? 10_000 / limits.imBps : settings.maxLeverage,
-    maxLeverage: settings.maxLeverage,
-    takerFeeBps: limits?.takerFeeBps,
-    maintenanceBps: limits?.mmBps,
-  });
-}
 
 const percentOfBps = (bps: number): string => `${bps / 100}%`;
 
@@ -366,17 +341,15 @@ function PositionsTable({
 
           let marginUsed: string | null = null;
           let liquidation: string | null = null;
-          if (settings && settings.kind === "perp") {
-            const estimate = positionCost(
-              long ? "buy" : "sell",
-              withoutSign(position.size),
-              position.entryPrice,
-              settings,
-              limits.get(position.market),
-            );
-            const display = displayOrderCost(estimate, priceDecimals);
-            marginUsed = display.initialMargin;
-            liquidation = display.liquidationPrice;
+          const entryEstimate = positionEntryEstimate(
+            position,
+            settings,
+            limits.get(position.market),
+            priceDecimals,
+          );
+          if (entryEstimate) {
+            marginUsed = entryEstimate.initialMargin;
+            liquidation = entryEstimate.liquidationPrice;
           }
           const liquidationShown = risks
             ? liquidationCell(risk, priceDecimals)
@@ -807,19 +780,17 @@ function MarginTable({
           {perpPositions.map((position) => {
             const settings = marketSettings(position.market);
             if (!settings) return null;
-            const size = Number(position.size);
             // sim-noirwire does not report the margin actually posted for an
             // existing position, only its size and entry price, so the
             // leverage behind it is unknown; this shows the closest
             // (most conservative) estimate, at the market's maximum leverage.
-            const estimate = positionCost(
-              size > 0 ? "buy" : "sell",
-              withoutSign(position.size),
-              position.entryPrice,
+            const display = positionEntryEstimate(
+              position,
               settings,
               limits.get(position.market),
+              priceDecimalsOf(settings),
             );
-            const display = displayOrderCost(estimate, priceDecimalsOf(settings));
+            if (!display) return null;
             return (
               <tr key={position.market} className="border-line-subtle border-t">
                 <td className="py-1.5">{marketDisplayName(position.market)}</td>
