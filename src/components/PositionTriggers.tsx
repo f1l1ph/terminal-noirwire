@@ -239,6 +239,7 @@ export function TriggerEditor({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [completed, setCompleted] = useState<string[]>([]);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const titleId = useId();
   const fieldId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -381,12 +382,9 @@ export function TriggerEditor({
                 Take profit and stop loss
               </h2>
               <p className="tnum text-faint mt-1 text-[12px]">
-                {long ? "Long" : "Short"} {formatDecimal(heldSize, sizeDecimals)} {settings.base} ·{" "}
-                {marketDisplayName(position.market)}
-              </p>
-              <p className="tnum text-faint text-[12px]">
+                {long ? "Long" : "Short"} {formatDecimal(heldSize, sizeDecimals)} {settings.base} ·
                 Mark {mark !== null ? formatDecimal(mark, priceDecimals) : "unavailable"} ·
-                Break-even {formatDecimal(position.entryPrice, priceDecimals)} {quoteSymbol}
+                Break-even {formatDecimal(position.entryPrice, priceDecimals)}
               </p>
             </div>
 
@@ -400,7 +398,6 @@ export function TriggerEditor({
                   : null;
               const above = kind === "takeProfit" ? long : !long;
               const chain = statuses && !statuses.stale ? statuses[kind] : null;
-              const remembered = local[kind];
               return (
                 <div key={kind} className="flex flex-col gap-2">
                   <div className="flex items-center justify-between gap-2">
@@ -481,16 +478,6 @@ export function TriggerEditor({
                         {long ? "Below" : "Above"} your entry price, so it would close at a loss.
                       </p>
                     )}
-                    {remembered && !remove[kind] && (
-                      <p className="text-faint">
-                        Price remembered on this device, set {clockMinutes(remembered.setAtMs)}.
-                      </p>
-                    )}
-                    {exists[kind] && !remembered && !remove[kind] && (
-                      <p className="text-faint">
-                        Set elsewhere: the exchange keeps its price sealed, so it is not shown here.
-                      </p>
-                    )}
                     {chain?.state === "unfillable" && (
                       <p className="text-warning">
                         {describeUnfillable(kind, chain, clockMinutes)}
@@ -553,12 +540,7 @@ export function TriggerEditor({
                   </button>
                 ))}
               </div>
-              {draft.whole ? (
-                <p className="text-faint text-[12px]">
-                  Tries to close up to your whole position when it fires, with a reduce-only order.
-                  It may fill only part, or not at all, if the book is thin or the market is paused.
-                </p>
-              ) : (
+              {!draft.whole && (
                 <>
                   <div className="relative">
                     <input
@@ -570,7 +552,7 @@ export function TriggerEditor({
                       placeholder={`Up to ${formatDecimal(heldSize, sizeDecimals)}`}
                       value={draft.size}
                       aria-invalid={errors.size ? true : undefined}
-                      aria-describedby={`${fieldId}-size-note`}
+                      aria-describedby={errors.size ? `${fieldId}-size-note` : undefined}
                       onChange={(event) => {
                         setDraft((prev) => ({ ...prev, size: event.target.value }));
                         setFailure(null);
@@ -580,24 +562,30 @@ export function TriggerEditor({
                       {settings.base}
                     </span>
                   </div>
-                  <p
-                    id={`${fieldId}-size-note`}
-                    role={errors.size ? "alert" : undefined}
-                    className={`text-[12px] ${errors.size ? "text-danger" : "text-faint"}`}
-                  >
-                    {errors.size
-                      ? describeTriggerError(errors.size, null, errorContext)
-                      : "Tries to close up to this amount when it fires, with a reduce-only order. It may fill only part, or not at all, if the book is thin or the market is paused."}
-                  </p>
+                  {errors.size && (
+                    <p id={`${fieldId}-size-note`} role="alert" className="text-danger text-[12px]">
+                      {describeTriggerError(errors.size, null, errorContext)}
+                    </p>
+                  )}
                 </>
               )}
             </fieldset>
 
-            <div className="flex flex-col gap-2">
-              <label htmlFor={`${fieldId}-slippage`} className="text-ink text-[13px]">
+            <details
+              className="group flex flex-col gap-2"
+              open={advancedOpen || Boolean(errors.slippage)}
+              onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+            >
+              <summary
+                className="text-dim hover:text-ink min-h-11 cursor-pointer content-center text-[13px]"
+                onClick={(event) => errors.slippage && event.preventDefault()}
+              >
+                Advanced
+              </summary>
+              <label htmlFor={`${fieldId}-slippage`} className="text-ink block text-[13px]">
                 Slippage
               </label>
-              <div className="relative">
+              <div className="relative mt-2">
                 <input
                   id={`${fieldId}-slippage`}
                   className={`${input} tnum min-h-11 pr-10 ${errors.slippage ? "border-danger" : ""}`}
@@ -615,7 +603,10 @@ export function TriggerEditor({
                   %
                 </span>
               </div>
-              <div id={`${fieldId}-slippage-note`} className="tnum text-[12px]">
+              <div
+                id={`${fieldId}-slippage-note`}
+                className="tnum mt-2 flex flex-col gap-1 text-[12px]"
+              >
                 {errors.slippage ? (
                   <p role="alert" className="text-danger">
                     {describeTriggerError(errors.slippage, null, errorContext)}
@@ -629,19 +620,18 @@ export function TriggerEditor({
                           `${TRIGGER_SHORT[entry.kind]} worst price ${formatDecimal(entry.worst!, priceDecimals)}`,
                       )
                       .join(" · ") ||
-                      "The worst price a trigger may fill at, set from its trigger price. Applies to every trigger you save here."}
+                      "The worst price a trigger may fill at, set from its trigger price."}
                   </p>
                 )}
+                <p className="text-faint">Fires on the mark price as a reduce-only market order.</p>
               </div>
-            </div>
-
-            <p className="text-faint text-[12px]">
-              Fires on the mark price and tries to close at market, never at a price worse than the
-              worst price. Both are removed when the position closes. No margin is held.
-            </p>
+            </details>
           </div>
 
           <div className="border-line-subtle flex shrink-0 flex-col gap-3 border-t p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5">
+            <p className="text-faint text-[12px]">
+              Not a guaranteed exit: it may fill only part, or not at all.
+            </p>
             {failure && (
               <div role="alert" className="flex flex-col gap-1 text-[12px]">
                 {completed.map((line) => (

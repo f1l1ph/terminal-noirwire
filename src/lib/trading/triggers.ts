@@ -388,7 +388,7 @@ export function describeUnfillable(
     chain.nextAttemptMs !== undefined && chain.nextAttemptMs > 0
       ? ` It tries again at ${formatTime(chain.nextAttemptMs)}.`
       : "";
-  return `This ${TRIGGER_NAME[kind].toLowerCase()} cannot place an order at its size right now. The size may be under the market minimum, or larger than what is left of the position. Choosing the whole position, or a different amount, fixes it.${retry}`;
+  return `This ${TRIGGER_NAME[kind].toLowerCase()} cannot close at its size. Choose Whole position or another amount.${retry}`;
 }
 
 const NOTHING_CHANGED = /\s*Nothing was changed\./g;
@@ -430,12 +430,6 @@ export function describeSaveScope(params: {
   );
   const untouched = TRIGGER_KINDS.filter((kind) => !sets.includes(kind) && !cancels.includes(kind));
   const lines: string[] = [];
-  if (sets.length > 0) {
-    const unchanged = untouched.filter((kind) => exists[kind]);
-    lines.push(
-      `Saving updates: ${names(sets)}.${unchanged.length > 0 ? ` ${capitalise(names(unchanged))} unchanged.` : ""}`,
-    );
-  }
   if (cancels.length > 0) lines.push(`Removing: ${names(cancels)}.`);
   const unknown = untouched.filter((kind) => exists[kind] && !local[kind]);
   for (const kind of unknown) {
@@ -444,10 +438,6 @@ export function describeSaveScope(params: {
     );
   }
   return lines;
-}
-
-function capitalise(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** Whether a trigger of this kind is on the exchange, as far as this device can tell: reported live, or set here and not yet contradicted. */

@@ -457,9 +457,8 @@ describe("what the exchange's report is shown as", () => {
       { state: "unfillable", nextAttemptMs: 5 },
       formatTime,
     );
-    expect(scheduled).toContain("cannot place an order at its size right now");
-    expect(scheduled).toContain("under the market minimum");
-    expect(scheduled).toContain("whole position, or a different amount");
+    expect(scheduled).toContain("cannot close at its size");
+    expect(scheduled).toContain("Whole position or another amount");
     expect(scheduled).toContain("tries again at t5");
     const unscheduled = describeUnfillable("stopLoss", { state: "unfillable" }, formatTime);
     expect(unscheduled).not.toContain("tries again");
@@ -499,14 +498,14 @@ describe("which triggers a save updates", () => {
   const exists = { takeProfit: true, stopLoss: true };
   const entry = { price: "1", size: null, slippageBps: 100, long: true, setAtMs: 1 };
 
-  it("names the ones it sets and says the other is unchanged", () => {
+  it("says nothing for plain sets, since the Save button already says it", () => {
     expect(
       describeSaveScope({
         changes: [{ op: "set", kind: "stopLoss" }],
         exists,
         local: { takeProfit: entry, stopLoss: entry },
       }),
-    ).toEqual(["Saving updates: stop loss. Take profit unchanged."]);
+    ).toEqual([]);
     expect(
       describeSaveScope({
         changes: [
@@ -516,7 +515,7 @@ describe("which triggers a save updates", () => {
         exists,
         local: { takeProfit: entry, stopLoss: entry },
       }),
-    ).toEqual(["Saving updates: take profit, stop loss."]);
+    ).toEqual([]);
   });
 
   it("says a trigger set elsewhere has a size and slippage unknown here", () => {
@@ -526,10 +525,7 @@ describe("which triggers a save updates", () => {
         exists,
         local: { stopLoss: entry },
       }),
-    ).toEqual([
-      "Saving updates: stop loss. Take profit unchanged.",
-      "Take profit was set on another device: its size and slippage are unknown here.",
-    ]);
+    ).toEqual(["Take profit was set on another device: its size and slippage are unknown here."]);
   });
 
   it("lists removals and says nothing when nothing is saved", () => {
