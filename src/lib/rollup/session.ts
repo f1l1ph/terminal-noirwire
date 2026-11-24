@@ -76,6 +76,24 @@ export interface TraderClientLike {
     expirySeconds?: number,
   ): Promise<OrderResult & Timing>;
   cancelAll(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
+  /** Optional: only the real SDK client (0.11.0+) has these; a unit-test fake may omit them. */
+  setTrigger?(
+    marketId: number,
+    trigger: {
+      kind: number;
+      triggerPrice: bigint;
+      worstPrice: bigint;
+      size: bigint;
+      expiry?: bigint;
+      secret: Uint8Array;
+    },
+    expirySeconds?: number,
+  ): Promise<OrderResult & Timing & { secret: Uint8Array }>;
+  cancelTrigger?(
+    marketId: number,
+    kind: number,
+    expirySeconds?: number,
+  ): Promise<OrderResult & Timing>;
   syncView(marketId: number, expirySeconds?: number): Promise<OrderResult & Timing>;
   /** Whether the view holds a seat right now: a `sync_view` read back. Optional: only the real SDK client has it; a unit-test fake may omit it. */
   confirmSeat?(expirySeconds?: number): Promise<{ seated: boolean; view: View }>;
@@ -123,6 +141,8 @@ export interface RollupSession {
   collateralToken: CustodyToken;
   /** The gate that pays for opening an account, read from the Exchange account and never from the service. */
   gate: PublicKey;
+  /** The exchange runs the active seat layout when this session was built, which is when take profit and stop loss exist. A test fake may omit it. */
+  triggersLive?: boolean;
   /** Market id -> the oldest mark, in seconds, its account accepts an order against (`maxPriceAge`). A test fake may omit it. */
   maxPriceAgeSeconds?: ReadonlyMap<number, number>;
   /** Market id -> its account's maintenance margin ratio in basis points, which decides when a position is liquidated. A test fake may omit it. */
@@ -198,6 +218,8 @@ interface ExchangeTokens {
   collateral: CustodyToken;
   /** The gate that is the fee payer of an account opening. */
   gate: PublicKey;
+  /** The exchange's layout word says the active layout is live. */
+  layoutLive: boolean;
 }
 
 /**
@@ -217,6 +239,7 @@ async function readExchangeTokens(
     mints: exchange.tokens.map((token) => token.mint.toBase58()),
     collateral: { mint: collateral.mint, custodyNonce: collateral.custodyNonce },
     gate: exchange.gate,
+    layoutLive: exchange.layoutState === "live",
   };
 }
 
@@ -552,6 +575,7 @@ async function buildSession(
     tokenIndexBySymbol: tokenIndicesBySymbol(exchangeMints, deployment),
     collateralToken: exchangeTokens.collateral,
     gate: exchangeTokens.gate,
+    triggersLive: exchangeTokens.layoutLive,
     maxPriceAgeSeconds: matching.maxPriceAgeSeconds,
     maintenanceMarginBps: matching.maintenanceMarginBps,
     limits: matching.limits,
