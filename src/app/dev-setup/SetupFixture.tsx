@@ -41,6 +41,19 @@ const KEYS_FAILED: Scene = {
     seedPersisted: true,
   },
 };
+const KEYS_ELSEWHERE: Scene = {
+  ...OPEN,
+  keys: { stage: "elsewhere", cancelsStops: false, seedPersisted: true },
+};
+const KEYS_ELSEWHERE_STOPS: Scene = {
+  ...OPEN,
+  keys: { stage: "elsewhere", cancelsStops: true, seedPersisted: true },
+};
+const KEYS_MOVED: Scene = {
+  ...OPEN,
+  keys: { stage: "moved", cancelsStops: true, seedPersisted: true },
+};
+const KEYS_INSTALLING: Scene = { ...OPEN, keys: { stage: "installing", seedPersisted: true } };
 const KEYS_READY: Scene = { ...OPEN, keys: { stage: "ready", seedPersisted: true } };
 const DEPOSIT: Scene = { ...KEYS_READY, funded: false };
 
@@ -51,6 +64,10 @@ const SCENES: readonly { label: string; scene: Scene }[] = [
   { label: "Scene: absent, invite needed", scene: ABSENT },
   { label: "Scene: open refused, not invited", scene: REFUSED },
   { label: "Scene: open", scene: OPEN },
+  { label: "Scene: keys elsewhere", scene: KEYS_ELSEWHERE },
+  { label: "Scene: keys elsewhere, stops", scene: KEYS_ELSEWHERE_STOPS },
+  { label: "Scene: keys moved", scene: KEYS_MOVED },
+  { label: "Scene: keys installing", scene: KEYS_INSTALLING },
   { label: "Scene: keys failed", scene: KEYS_FAILED },
   { label: "Scene: keys ready", scene: KEYS_READY },
   { label: "Scene: deposit step", scene: DEPOSIT },
@@ -70,7 +87,7 @@ export function SetupFixture() {
         onOpen={() => setScene(REFUSED)}
         onRecheck={async () => {}}
         keys={scene.keys}
-        now={0}
+        onMoveHere={() => setScene(KEYS_INSTALLING)}
         funded={scene.funded}
         depositsOpen
       />

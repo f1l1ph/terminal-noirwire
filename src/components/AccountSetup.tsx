@@ -11,15 +11,17 @@ import {
   gateAsksForInvite,
   KEYS_NOT_PERSISTED_NOTE,
   keysMayNotPersist,
+  CANCELS_STOPS_NOTE,
+  KEYS_ELSEWHERE_TITLE,
+  KEYS_MOVED_TITLE,
   keysNotice,
-  keysSettleFraction,
+  MOVE_TRADING_HERE,
   OPEN_RECHECK_ATTEMPTS,
   OPEN_RECHECK_EVERY_MS,
   recheckOffer,
   setupSteps,
   type SetupStep,
 } from "@/lib/trading/openCopy";
-import { SETTLE_WAIT_MS } from "@/lib/rollup/orderKeySetup";
 import { SetupFunnel } from "@/lib/setupFunnel";
 import type {
   AccountStatus,
@@ -67,7 +69,7 @@ export function AccountSetup({
   onOpen,
   onRecheck,
   keys,
-  now,
+  onMoveHere,
   ownerAuth = "transaction",
   funded = null,
   depositsOpen,
@@ -83,7 +85,8 @@ export function AccountSetup({
   /** Runs the account check (and any key setup a failed attempt left undone) again; `fresh` reads it through a new session. */
   onRecheck: (options?: { fresh?: boolean }) => Promise<void>;
   keys: OrderKeyState | null;
-  now: number;
+  /** Takes over trading from the device that holds the keys: one wallet signature, no fee. */
+  onMoveHere: () => void;
   /** How the deployment has the owner consent to opening: by a message, or by a transaction in the wallet. */
   ownerAuth?: OwnerAuth;
   /** Whether the trading account holds USDC; null while that is not known. */
@@ -92,7 +95,7 @@ export function AccountSetup({
   depositsOpen: boolean;
 }) {
   const notice = outcome ? describeOpenOutcome(outcome, status) : null;
-  const keyStep = keysNotice(keys, now);
+  const keyStep = keysNotice(keys);
   const offer = recheckOffer(status, keys);
   const [checking, setChecking] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
@@ -204,8 +207,43 @@ export function AccountSetup({
     </button>
   );
 
-  const settleFraction =
-    keyStep?.kind === "settling" ? keysSettleFraction(keyStep.secondsLeft, SETTLE_WAIT_MS) : 0;
+  if (
+    current === "keys" &&
+    (keyStep?.kind === "elsewhere" || keyStep?.kind === "moved" || keyStep?.kind === "installing")
+  ) {
+    return (
+      <section aria-label="Trading device" className="border-line-subtle border-b pb-2">
+        {keyStep.kind === "installing" ? (
+          <div role="status">
+            <h2 className="text-ink-strong text-[13px] font-medium">Moving trading here</h2>
+            <p className="text-dim mt-0.5 text-[12px]">Approve in your wallet.</p>
+          </div>
+        ) : (
+          <>
+            <h2 className="text-ink-strong text-[13px] font-medium">
+              {keyStep.kind === "moved" ? KEYS_MOVED_TITLE : KEYS_ELSEWHERE_TITLE}
+            </h2>
+            {keyStep.cancelsStops && (
+              <p className="text-warning mt-1 text-[11px]">{CANCELS_STOPS_NOTE}</p>
+            )}
+            <button
+              type="button"
+              className={`${keyStep.kind === "moved" ? btnGhost : btnPrimary} mt-1.5 min-h-11 w-full`}
+              onClick={() => {
+                funnel.acted("keys");
+                onMoveHere();
+              }}
+            >
+              {MOVE_TRADING_HERE}
+            </button>
+          </>
+        )}
+        {keysMayNotPersist(keys) && (
+          <p className="text-faint mt-1 text-[11px]">{KEYS_NOT_PERSISTED_NOTE}</p>
+        )}
+      </section>
+    );
+  }
 
   function detail(step: SetupStep): ReactNode {
     if (step.state === "upcoming") return null;
@@ -297,29 +335,6 @@ export function AccountSetup({
         if (step.state === "done") return null;
         return (
           <>
-            {keyStep?.kind === "settling" && (
-              <div role="status">
-                <p>Setting up trading on this device. Ready in about {keyStep.secondsLeft}s.</p>
-                <div
-                  className="bg-line-subtle mt-1 h-1.5 w-full overflow-hidden rounded-full"
-                  role="progressbar"
-                  aria-label="Trading key setup"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(settleFraction * 100)}
-                >
-                  <div
-                    className="bg-ink-strong h-full rounded-full transition-[width] duration-700"
-                    style={{ width: `${settleFraction * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
-            {keyStep?.kind === "installing" && (
-              <p role="status">
-                Setting up trading on this device. Approve the request in your wallet.
-              </p>
-            )}
             {keyStep?.kind === "failed" && (
               <>
                 <p role="alert" className="text-danger">

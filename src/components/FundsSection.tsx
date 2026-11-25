@@ -42,6 +42,7 @@ import { movedDeposits } from "@/lib/transfer/keyReturn";
 import { sweepKeySol } from "@/lib/transfer/keySweep";
 import { finishCompleted, withdraw } from "@/lib/transfer/withdraw";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
+import { MOVING_FUNDS_AWAY_NOTE } from "@/lib/trading/openCopy";
 import { needsAcknowledgement, recordAcknowledgement } from "@/lib/trading/realMoneyAck";
 import { browserLocalStorage } from "@/lib/wallet";
 import { RealMoneyDialog } from "@/components/OrderDialogs";
@@ -97,9 +98,12 @@ export default function FundsSection({
   ownerAuthKnown,
   accountOpen,
   accountKnown,
+  tradingAway = false,
   collateral,
   onSettled,
 }: {
+  /** Trading is on another device: no new deposit or withdrawal starts here, while pending records and their recovery stay. */
+  tradingAway?: boolean;
   identity: WalletIdentity | null;
   rollupReader: (() => Promise<Connection>) | null;
   /** Asks the exchange whether the account holds a seat right now; the first deposit takes one. */
@@ -340,13 +344,21 @@ export default function FundsSection({
       />
       <div className="border-line-subtle border-b p-3">
         {!open ? (
-          <button
-            type="button"
-            className={`${btnGhost} w-full px-3 text-[12px]`}
-            onClick={() => setOpen(true)}
-          >
-            Add or withdraw USDC
-          </button>
+          <>
+            <button
+              type="button"
+              className={`${btnGhost} w-full px-3 text-[12px]`}
+              disabled={tradingAway}
+              onClick={() => setOpen(true)}
+            >
+              Add or withdraw USDC
+            </button>
+            {tradingAway && (
+              <p role="status" className="text-dim mt-1 text-[12px]">
+                {MOVING_FUNDS_AWAY_NOTE}
+              </p>
+            )}
+          </>
         ) : (
           <div>
             <p className={sectionLabel}>Move USDC</p>
@@ -391,7 +403,12 @@ export default function FundsSection({
                 new one cannot start until then.
               </p>
             )}
-            {!accountOpen && (
+            {tradingAway && (
+              <p role="status" className="text-dim mt-1 text-[12px]">
+                {MOVING_FUNDS_AWAY_NOTE}
+              </p>
+            )}
+            {!accountOpen && !tradingAway && (
               <p className="text-dim mt-1 text-[12px]">Open your account before moving USDC.</p>
             )}
             {lacksSol && kind === "deposit" && <CountOnce event="deposit_needs_sol" />}
@@ -461,6 +478,7 @@ export default function FundsSection({
                 type="button"
                 className={`${btnPrimary} flex-1 text-[12px]`}
                 disabled={
+                  tradingAway ||
                   !canStartTransfer({
                     running: busy,
                     blocked,

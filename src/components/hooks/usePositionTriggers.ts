@@ -53,6 +53,8 @@ export interface PositionTriggerControls {
   refresh(market: string, positionSize: string, force?: boolean): void;
   notice: TriggerNoticeState | null;
   dismissNotice(): void;
+  /** Why changes are off right now, or null. While set, an unread trigger status stays unread. */
+  blocked: string | null;
 }
 
 interface Source {
@@ -129,7 +131,7 @@ export function usePositionTriggers(source: Source): PositionTriggerControls | n
 
   const refresh = useCallback(
     (market: string, positionSize: string, force = false) => {
-      if (syncing.current.has(market)) return;
+      if (blocked || syncing.current.has(market)) return;
       if (!force && synced.current.get(market) === positionSize) return;
       synced.current.set(market, positionSize);
       syncing.current.set(
@@ -140,7 +142,7 @@ export function usePositionTriggers(source: Source): PositionTriggerControls | n
         ),
       );
     },
-    [syncMarket],
+    [syncMarket, blocked],
   );
 
   const apply = useCallback(
@@ -207,5 +209,5 @@ export function usePositionTriggers(source: Source): PositionTriggerControls | n
   const dismissNotice = useCallback(() => setNotice(null), []);
 
   if (!live) return null;
-  return { statusesFor, localFor, apply, refresh, notice, dismissNotice };
+  return { statusesFor, localFor, apply, refresh, notice, dismissNotice, blocked };
 }

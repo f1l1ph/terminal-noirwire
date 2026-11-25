@@ -37,6 +37,7 @@ import { TriggerEditor, TriggerNotice, TriggerRow } from "@/components/PositionT
 import { TransferControl, type TransferFn } from "@/components/TransferControl";
 import { isMainnetBuild } from "@/lib/network";
 import { walletlessDockText } from "@/lib/trading/uiRules";
+import { ACCOUNT_NOT_SHOWN_AWAY } from "@/lib/trading/openCopy";
 
 const NO_LIMITS: ReadonlyMap<string, MarketLimits> = new Map();
 
@@ -77,7 +78,10 @@ export function AccountDock({
   transfers = null,
   bordered = true,
   triggers = null,
+  figuresAway = false,
 }: {
+  /** Trading is on another device, so the lists are not loaded here: each tab says so instead of showing an empty state that would claim there is nothing. */
+  figuresAway?: boolean;
   tab: Tab;
   onTabChange: (tab: Tab) => void;
   positions: Position[];
@@ -147,13 +151,18 @@ export function AccountDock({
             <p className="text-dim text-[13px]">{walletlessDockText(isMainnetBuild())}</p>
           </div>
         )}
-        {hasWallet && unseated && (
+        {hasWallet && figuresAway && (
+          <div className="flex h-full min-h-[96px] flex-col items-center justify-center gap-1 text-center">
+            <p className="text-dim text-[13px]">{ACCOUNT_NOT_SHOWN_AWAY}</p>
+          </div>
+        )}
+        {hasWallet && !figuresAway && unseated && (
           <EmptyState
             title="Deposit to start trading"
             hint="Your trading account holds nothing yet. Your first deposit opens it."
           />
         )}
-        {hasWallet && !unseated && tab === "positions" && (
+        {hasWallet && !figuresAway && !unseated && tab === "positions" && (
           <PositionsTable
             positions={positions}
             collateral={collateral}
@@ -168,7 +177,7 @@ export function AccountDock({
             triggers={triggers}
           />
         )}
-        {hasWallet && !unseated && tab === "openOrders" && (
+        {hasWallet && !figuresAway && !unseated && tab === "openOrders" && (
           <OpenOrdersTable
             openOrders={openOrders}
             marketSettings={marketSettings}
@@ -177,10 +186,10 @@ export function AccountDock({
             cancellingOrderIds={cancellingOrderIds}
           />
         )}
-        {hasWallet && !unseated && tab === "fills" && (
+        {hasWallet && !figuresAway && !unseated && tab === "fills" && (
           <FillsTable fills={ownFills} marketSettings={marketSettings} />
         )}
-        {hasWallet && !unseated && tab === "balances" && (
+        {hasWallet && !figuresAway && !unseated && tab === "balances" && (
           <BalancesTable
             balances={balances}
             collateral={collateral}
@@ -189,7 +198,7 @@ export function AccountDock({
             now={now}
           />
         )}
-        {hasWallet && !unseated && tab === "margin" && (
+        {hasWallet && !figuresAway && !unseated && tab === "margin" && (
           <MarginTable
             positions={positions}
             collateral={collateral}
