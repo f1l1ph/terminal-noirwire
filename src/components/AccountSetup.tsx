@@ -30,6 +30,7 @@ import type {
 import { useWalletLamports } from "@/components/hooks/useWalletLamports";
 import { btnGhost, btnPrimary, input } from "@/components/ui/styles";
 import { openWalletMenu } from "@/components/WalletWidget";
+import { StopReasonAsk } from "@/components/StopReasonAsk";
 
 const TONE_CLASS = { ok: "text-dim", wait: "text-warning", error: "text-danger" } as const;
 const SEGMENT_CLASS = {
@@ -334,7 +335,12 @@ export function AccountSetup({
           </>
         );
       case "deposit":
-        return depositHelp(depositsOpen, walletLamports);
+        return (
+          <>
+            <p>{depositHelp(depositsOpen, walletLamports)}</p>
+            <StopReasonAsk active={depositsOpen} />
+          </>
+        );
     }
   }
 
