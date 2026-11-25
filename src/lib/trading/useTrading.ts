@@ -463,7 +463,14 @@ export function useTrading(
   }, [client, wallet]);
 
   const flow = (wallet ? flows[wallet.address] : undefined) ?? NO_FLOW;
-  const currentRead = wallet ? reads[wallet.address] : undefined;
+  // While trading is on another device, or being moved here, nothing can be
+  // confirmed on this one: the account reads as not loaded, never as the last
+  // positions this device saw.
+  const accountHidden =
+    flow.keys?.stage === "elsewhere" ||
+    flow.keys?.stage === "moved" ||
+    flow.keys?.stage === "installing";
+  const currentRead = wallet && !accountHidden ? reads[wallet.address] : undefined;
   const effectiveState = currentRead?.state ?? EMPTY_STATE;
   const effectiveLastSyncedAtMs = currentRead?.syncedAtMs ?? null;
 
@@ -546,6 +553,12 @@ export function useTrading(
     await client.signInAgain(wallet);
     void recheckAccount();
   }, [client, wallet, recheckAccount]);
+
+  /** The owner's press of Move trading here; a no-op without a wallet or a client that has order keys to move. */
+  const moveTradingHere = useCallback(async (): Promise<void> => {
+    if (!wallet || !client.moveTradingHere) return;
+    await client.moveTradingHere(wallet);
+  }, [client, wallet]);
 
   // A newer live mark for a market the account has exposure in re-values it
   // from the last view held, with no read: the available figure then moves
@@ -786,8 +799,10 @@ export function useTrading(
     ownerAuthKnown,
     /** Withdraws free collateral by an order key, with no wallet signature; null unless the deployment takes signed messages. */
     withdrawByKey,
-    /** Where the order keys stand on this device (waiting to replace old keys, installing, ready); null until known. */
+    /** Where the order keys stand on this device (on another device, moved, installing, ready); null until known. */
     orderKeys: flow.keys,
+    /** Replaces the account's order keys with this device's, after the owner's press; a no-op without a wallet. */
+    moveTradingHere,
     /** Symbols of the markets where only listed makers may rest orders; a Limit there is sent as immediate-or-cancel. */
     makersListed: flow.makersListed,
     /** Each market's trading limits as its account states them, by symbol; empty until the session has read them. */

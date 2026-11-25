@@ -79,7 +79,13 @@ export const UNREADABLE_EXPOSURE_ORDERS_NOTICE =
   "This account holds exposure in a market this terminal cannot read, so orders that could add risk are off. You can still close positions here.";
 
 export type TradeGate =
-  "needsAccount" | "accountUnknown" | "keysNotReady" | "keysFailed" | "otherTab" | "signInStopped";
+  | "keysElsewhere"
+  | "needsAccount"
+  | "accountUnknown"
+  | "keysNotReady"
+  | "keysFailed"
+  | "otherTab"
+  | "signInStopped";
 
 /**
  * Why an order cannot be placed yet on a mainnet build. Fails closed: null
@@ -92,6 +98,7 @@ export function tradeGate(
   keys: OrderKeyState | null,
 ): TradeGate | null {
   if (!mainnet) return null;
+  if (keys?.stage === "elsewhere" || keys?.stage === "moved") return "keysElsewhere";
   if (status === "absent") return "needsAccount";
   if (status !== "open") return "accountUnknown";
   if (keys?.stage === "failed") return "keysFailed";
@@ -100,6 +107,7 @@ export function tradeGate(
 }
 
 const GATE_LABELS: Record<TradeGate, string> = {
+  keysElsewhere: "Trading is on another device",
   keysFailed: "Trading keys not set up",
   needsAccount: "Open your account to trade",
   accountUnknown: "Checking your account…",

@@ -295,10 +295,8 @@ describe("the sentences the issue calls out", () => {
     expect(sentence).toMatch(/funds are safe/);
   });
 
-  it("says another device took the order keys (123) and what to do", () => {
-    const sentence = describeProgramError(123) ?? "";
-    expect(sentence).toMatch(/another device set up trading/);
-    expect(sentence).toMatch(/Set up trading again on this device/);
+  it("says trading moved to another device (123) and that nothing was charged", () => {
+    expect(describeProgramError(123)).toBe("Trading moved to another device. Nothing was charged.");
   });
 
   it("tells a deposit past the custody cap (150) that trading and withdrawing still work", () => {

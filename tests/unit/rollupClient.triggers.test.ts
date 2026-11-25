@@ -29,6 +29,7 @@ import {
 import { KEYS_IN_USE_ELSEWHERE_REASON } from "@/lib/rollup/outcome";
 import { TRIGGERS_NOT_LIVE_REASON } from "@/lib/rollup/triggerOutcome";
 import { describeProgramError, PROGRAM_ERROR } from "@/lib/rollup/refusals";
+import { programRefusal } from "./support/rollupFixtures";
 
 const PERP: MarketInfo = {
   id: "NSOL-PERP",
@@ -133,10 +134,7 @@ function result(overrides: Partial<OrderResult> = {}): SentResult {
 
 const refused = (code: number) => result({ status: RESULT_STATUS_CODE.refused, code });
 
-const notOrderKey = () =>
-  new TransactionFailed("sig", {
-    InstructionError: [0, { Custom: 6000 + PROGRAM_ERROR.notOrderKey }],
-  });
+const notOrderKey = () => programRefusal(PROGRAM_ERROR.notOrderKey);
 
 function setup(
   overrides: Partial<TraderClientLike>,

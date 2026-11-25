@@ -15,7 +15,7 @@ import { isWalletDecline } from "../wallet/declined";
 import { failureReasonOf } from "../failureReason";
 import { userMessage } from "../userMessage";
 import { orderSeedPersisted } from "../rollup/orderSeedStore";
-import type { OrderKeyStatus } from "../rollup/orderKeySetup";
+import { cancelsStops, type OrderKeyStatus } from "../rollup/orderKeySetup";
 import { redactToken, scrubError } from "../rollup/redact";
 import { clearSignInToken, TOKEN_REFRESH_MARGIN_MS } from "../rollup/signInToken";
 import {
@@ -30,7 +30,9 @@ import { openAndFund } from "../rollup/fundingClient";
 import {
   cancelErrorToResult,
   cancelToResult,
+  KEYS_AWAY_REASON,
   KEYS_IN_USE_ELSEWHERE_REASON,
+  KEYS_REBUILD_FAILED_REASON,
   placedToResult,
   placeUnknownToResult,
   POSITION_ALREADY_REDUCED_REASON,
@@ -67,6 +69,7 @@ import {
   trustedProgramId,
   type RollupSession,
   type RollupSessionDeps,
+  type TraderClientLike,
 } from "../rollup/session";
 import {
   connectionTo,
@@ -225,6 +228,67 @@ interface MarketBinding {
   quoteTokenSymbol: string;
 }
 
+/** What reading the view after a NotOrderKey refusal found: this client's keys back in step, another device's keys, this device's keys further along than the session reaches, or no answer. */
+type KeyResync = "resynced" | "moved" | "behind" | "unreadable";
+
+/**
+ * A session whose keys are not the view's: `elsewhere` when it never held
+ * them, `moved` when another device took them while it was live. `keys` is
+ * the view's key set (joined base58) the decision was made on, so an
+ * unchanged foreign key set is not searched again on the next push.
+ */
+interface AwayState {
+  stage: "elsewhere" | "moved";
+  keys: string;
+}
+
+/** What a view found out about its session: shown as it is, dropped (the session is away), or in doubt and to be checked against a fresh read. */
+type Screened = "show" | "drop" | "suspect";
+
+/** Thrown by a read that needs this device's keys while the session is away. */
+class KeysAwayError extends Error {
+  constructor() {
+    super(KEYS_AWAY_REASON);
+    this.name = "KeysAwayError";
+  }
+}
+
+const keySetOf = (view: Pick<View, "orderKeys">): string =>
+  view.orderKeys.map((key) => key.toBase58()).join(",");
+
+/** An order that was not placed, with its reason; what the attempt carried (its tag, say) is kept. */
+const orderRefusedWith = (reason: string, attempted?: PlaceOrderResult): PlaceOrderResult => ({
+  ...(attempted ?? {
+    orderId: "",
+    tag: "",
+    status: "rejected",
+    filledSize: "0",
+    remainingSize: "0",
+  }),
+  reason,
+});
+
+/** A cancel that did not go through, with its reason; what the attempt carried is kept. */
+const cancelRefusedWith = (reason: string, attempted?: CancelResult): CancelResult => ({
+  ...(attempted ?? { cancelled: 0 }),
+  reason,
+});
+
+/** The session's trigger send, bound to its client; throws the ordinary reason when the session has none. */
+function triggerSenderOf<K extends "setTrigger" | "cancelTrigger">(
+  live: RollupSession,
+  name: K,
+): NonNullable<TraderClientLike[K]> {
+  const method = live.client[name];
+  if (!method) throw new Error(TRIGGERS_NOT_LIVE_REASON);
+  return method.bind(live.client) as NonNullable<TraderClientLike[K]>;
+}
+
+/** Runs one key-signed call in a keyed path, recovering from a refusal of the key, and says which session it ended on. */
+type KeyedSend<T> = (
+  run: (live: RollupSession) => Promise<KeyedAttempt<T>>,
+) => Promise<KeyedAttempt<T> & { session: RollupSession }>;
+
 /** One keyed call's result with the program's refusal number when the call was refused, so a refusal that ran nothing can be told from the rest. */
 interface KeyedAttempt<T> {
   value: T;
@@ -244,6 +308,8 @@ interface OpenSession {
   /** The signer the session was built for; a wallet that comes back with another is not served by this session. */
   signer: WalletIdentity["signer"];
   stopWatching: Promise<() => void>;
+  /** The session once it is built; set before its view is watched, so a pushed view always finds it. */
+  built?: RollupSession;
   /** The build has finished, one way or the other. */
   settled: boolean;
   /** The wallet was closed while this was still being built: close it as soon as it lands. */
@@ -368,6 +434,21 @@ export class RollupTradingClient implements TradingClient {
   private unresolvedOrders = new Map<string, UnknownHold>();
   /** session -> how many seconds the rollup's clock runs ahead of this device's (negative when behind), and when that was read. */
   private clocks = new WeakMap<RollupSession, { offsetSeconds: number; readAtMs: number }>();
+  /** Sessions whose keys are not the view's: they send nothing and show no account until trading is moved here. */
+  private away = new WeakMap<RollupSession, AwayState>();
+  /** Sessions with a check of a suspect view running, so a burst of pushes reads the view once. */
+  private verifying = new WeakSet<RollupSession>();
+  /** Sessions with a move running: a second press shares it rather than installing twice. */
+  private moving = new WeakMap<RollupSession, Promise<void>>();
+  /** session -> the owner nonce of the view that proved its move landed; a view with a lower one predates the move. */
+  private movedAtNonce = new WeakMap<RollupSession, number>();
+  /**
+   * session -> the key set (joined base58) of a view that derives from this
+   * device's seed but that the session's keys could not be brought in step
+   * with: another tab of this browser traded further than they reach. Such a
+   * view is shown, and the next key-signed call rebuilds the session.
+   */
+  private outOfStep = new WeakMap<RollupSession, string>();
 
   constructor(private readonly options: RollupTradingClientOptions) {
     this.storage = options.storage ?? browserLocalStorage();
@@ -390,6 +471,201 @@ export class RollupTradingClient implements TradingClient {
       now: this.now,
       onOrderKeys: (status) => this.emitOrderKeys(wallet.address, status),
     };
+  }
+
+  /**
+   * The owner's press of Move trading here, on the session as it stands (a
+   * build still running is simply waited for). Replaces the account's keys
+   * with one owner signature, unless the stops this would cancel were not
+   * what the trader was warned about: then the warning is shown again and
+   * nothing is installed. Resolves once the move has finished or stopped; the
+   * key status stream shows how it went.
+   */
+  async moveTradingHere(wallet: WalletIdentity): Promise<void> {
+    await this.withSession(wallet, (session) => {
+      const running = this.moving.get(session);
+      if (running) return running;
+      const move = this.moveSession(session).finally(() => this.moving.delete(session));
+      this.moving.set(session, move);
+      return move;
+    });
+  }
+
+  private async moveSession(session: RollupSession): Promise<void> {
+    const address = session.owner.publicKey.toBase58();
+    if (!this.away.has(session)) return;
+    if (!session.moveKeysHere) {
+      this.emitFailed(address, new Error("This session cannot move trading here"));
+      return;
+    }
+    const shown = this.lastOrderKeys.get(address);
+    const warnedOfStops = shown !== undefined && "cancelsStops" in shown && shown.cancelsStops;
+    let fresh: View;
+    try {
+      fresh = await session.client.view();
+    } catch (error) {
+      this.emitFailed(address, error);
+      return;
+    }
+    await this.admit(session, fresh, true);
+    if (!this.away.has(session)) return;
+    if (cancelsStops(fresh) && !warnedOfStops) {
+      this.emitAway(session, fresh);
+      return;
+    }
+    this.emitOrderKeys(address, { stage: "installing" });
+    let thrown: unknown = null;
+    try {
+      await session.moveKeysHere();
+    } catch (error) {
+      if (isWalletDecline(error)) {
+        this.emitAway(session, fresh);
+        return;
+      }
+      thrown = error;
+    }
+    const held = await this.viewHoldingKeys(session);
+    if (!held) {
+      this.emitFailed(address, thrown ?? new Error("The new trading keys were not found."));
+      return;
+    }
+    if (typeof held.ownerNonce === "number") this.movedAtNonce.set(session, held.ownerNonce);
+    this.clearAway(session);
+    this.emitState(session, held);
+  }
+
+  /**
+   * The view read now when it holds this session's keys, else null: the way
+   * to settle a move whose outcome is not known, since an install may have
+   * landed although the call that made it failed. Keys that derive from this
+   * device's seed are brought in step first.
+   */
+  private async viewHoldingKeys(session: RollupSession): Promise<View | null> {
+    try {
+      const view = await session.client.view();
+      if (!session.holdsKeysOf || session.holdsKeysOf(view)) return view;
+      if (!session.keysFromThisSeed?.(view)) return null;
+      this.bringInStep(session, view);
+      return view;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Brings the session's idle keys in line with a view whose keys derive from
+   * this device's seed. When they cannot be reached (another tab traded
+   * further than the manager looks) the view is still this account's: it is
+   * recorded as out of step, for the next key-signed call to rebuild on.
+   */
+  private bringInStep(session: RollupSession, view: View): void {
+    try {
+      session.resyncKeys?.(view);
+      this.outOfStep.delete(session);
+    } catch {
+      this.outOfStep.set(session, keySetOf(view));
+    }
+  }
+
+  /** Whether `view` is older than the view that proved this session's move landed: owner key resets only ever raise the nonce. */
+  private predatesMove(session: RollupSession, view: View): boolean {
+    const proof = this.movedAtNonce.get(session);
+    return proof !== undefined && typeof view.ownerNonce === "number" && view.ownerNonce < proof;
+  }
+
+  private emitFailed(address: string, error: unknown): void {
+    this.emitOrderKeys(address, {
+      stage: "failed",
+      reason: userMessage(error).text,
+      failure: failureReasonOf(error),
+    });
+  }
+
+  private isAway(session: RollupSession): boolean {
+    return this.away.has(session);
+  }
+
+  /** The status for a session that is away, with the warning about stops taken from `view`. Only the wallet's current session changes what the wallet shows. */
+  private emitAway(session: RollupSession, view: View): void {
+    const state = this.away.get(session);
+    if (!state || !this.isCurrent(session)) return;
+    this.emitOrderKeys(session.owner.publicKey.toBase58(), {
+      stage: state.stage,
+      cancelsStops: cancelsStops(view),
+    });
+  }
+
+  private markAway(session: RollupSession, view: View, stage: AwayState["stage"]): void {
+    this.away.set(session, { stage, keys: keySetOf(view) });
+    if (!this.isCurrent(session)) return;
+    this.triggersByMarket.delete(session.owner.publicKey.toBase58());
+    this.emitAway(session, view);
+  }
+
+  /** The session holds the account's keys again (or never lost them): it trades, and its seat is confirmed afresh with the keys now live. */
+  private clearAway(session: RollupSession): void {
+    if (!this.away.delete(session)) return;
+    this.confirmedSessions.delete(session);
+    if (this.isCurrent(session)) {
+      this.emitOrderKeys(session.owner.publicKey.toBase58(), { stage: "ready" });
+    }
+  }
+
+  /**
+   * What a view says about its session, without a read: an away session
+   * drops a view whose keys it has already judged; a session whose keys the
+   * view holds trades (and is no longer away); anything else is in doubt. A
+   * session that is no longer the wallet's current one never changes the
+   * wallet's status, so its views are shown as they come.
+   */
+  private screen(session: RollupSession, view: View): Screened {
+    const known = this.away.get(session);
+    if (known && known.keys === keySetOf(view)) return "drop";
+    if (!session.holdsKeysOf || session.holdsKeysOf(view)) {
+      this.outOfStep.delete(session);
+      this.clearAway(session);
+      return "show";
+    }
+    if (this.outOfStep.get(session) === keySetOf(view)) return "show";
+    return !known && !this.isCurrent(session) ? "show" : "suspect";
+  }
+
+  /**
+   * A view in doubt is decided by a fresh read, never by one push: a stale or
+   * replayed push that the fresh view contradicts changes nothing. Foreign
+   * keys that derive from this device's seed are another tab of this browser:
+   * the view is shown and the session is not away, whether or not its keys
+   * can be brought in step (see `bringInStep`). Any other foreign keys are
+   * another device's: the session is away (moved, or still elsewhere when it
+   * never held them). A read older than the view that proved a move landed
+   * decides nothing. Returns the view to use, or null.
+   */
+  private async verify(session: RollupSession, pushed: View, fresh: boolean): Promise<View | null> {
+    let view = pushed;
+    try {
+      if (!fresh) view = await session.client.view();
+      if (this.predatesMove(session, view)) return null;
+      const verdict = this.screen(session, view);
+      if (verdict === "show") return view;
+      if (verdict === "drop") return null;
+      if (session.keysFromThisSeed?.(view)) {
+        this.bringInStep(session, view);
+        this.clearAway(session);
+        return view;
+      }
+    } catch {
+      return null;
+    }
+    this.markAway(session, view, this.away.get(session)?.stage ?? "moved");
+    return null;
+  }
+
+  /** The view to show for `view`, or null when the session is away. */
+  private async admit(session: RollupSession, view: View, fresh = false): Promise<View | null> {
+    const verdict = this.screen(session, view);
+    if (verdict === "show") return view;
+    if (verdict === "drop") return null;
+    return this.verify(session, view, fresh);
   }
 
   private emitOrderKeys(address: string, status: OrderKeyStatus): void {
@@ -461,7 +737,11 @@ export class RollupTradingClient implements TradingClient {
     const opened: OpenSession = {
       session,
       signer: wallet.signer,
-      stopWatching: session.then((built) => this.watchView(built)),
+      stopWatching: session.then((built) => {
+        opened.built = built;
+        if (built.heldAtBuild === false) this.away.set(built, { stage: "elsewhere", keys: "" });
+        return this.watchView(built);
+      }),
       settled: false,
       closeWhenSettled: false,
     };
@@ -485,6 +765,10 @@ export class RollupTradingClient implements TradingClient {
     return opened;
   }
 
+  private isCurrent(session: RollupSession): boolean {
+    return this.sessions.get(session.owner.publicKey.toBase58())?.built === session;
+  }
+
   /** Pushes this session's view to the wallet's listeners: once now, then on every change the rollup reports. */
   private async watchView(session: RollupSession): Promise<() => void> {
     const stop = session.client.subscribeView((view) => this.emitState(session, view));
@@ -495,6 +779,8 @@ export class RollupTradingClient implements TradingClient {
       if (!view) throw new Error(VIEW_NOT_READABLE_MESSAGE);
       this.emitState(session, view);
     } catch (error) {
+      // An away session shows no account; its status already says why.
+      if (error instanceof KeysAwayError) return () => void stop();
       const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
       if (notReadable && !wasAccountOpened(this.storage, address)) {
         // This wallet has never been seen with an account: no view yet means
@@ -537,6 +823,12 @@ export class RollupTradingClient implements TradingClient {
   private emitState(session: RollupSession, view: View): void {
     const address = session.owner.publicKey.toBase58();
     if (view.resultsWritten < (this.newestResultsWritten.get(address) ?? 0)) return;
+    const screened = this.screen(session, view);
+    if (screened === "drop") return;
+    if (screened === "suspect") {
+      this.checkSuspect(session, view);
+      return;
+    }
     if (this.needsConfirmation(session, view)) {
       this.refreshOldSnapshot(session);
       return;
@@ -545,6 +837,17 @@ export class RollupTradingClient implements TradingClient {
     markAccountOpened(this.storage, address);
     const state = this.mapViewFrom(session, view);
     for (const listener of this.listeners.get(address) ?? []) listener(state);
+  }
+
+  /** Decides a view in doubt from a fresh read, one at a time per session, and shows the view it settles on. */
+  private checkSuspect(session: RollupSession, pushed: View): void {
+    if (this.verifying.has(session)) return;
+    this.verifying.add(session);
+    void this.verify(session, pushed, false)
+      .then((view) => {
+        if (view) this.emitState(session, view);
+      })
+      .finally(() => this.verifying.delete(session));
   }
 
   /**
@@ -585,13 +888,17 @@ export class RollupTradingClient implements TradingClient {
 
   /** The view as the rollup shows it, confirmed first when it must not be shown as it stands. A confirmation that fails throws: the old figures are never shown in its place. */
   private async currentView(session: RollupSession): Promise<View> {
-    const view = await session.client.view();
-    if (!view || !this.needsConfirmation(session, view)) return view;
+    const read = await session.client.view();
+    if (!read) return read;
+    const view = await this.admit(session, read);
+    if (!view) throw new KeysAwayError();
+    if (!this.needsConfirmation(session, view)) return view;
     return (await this.confirmedSeat(session)).view;
   }
 
-  /** A `sync_view` read back: whether the seat is held, and the view as it left the program. */
+  /** A `sync_view` read back: whether the seat is held, and the view as it left the program. Throws while the session is away: nothing can be confirmed without this device's keys. */
   private async confirmedSeat(session: RollupSession): Promise<{ seated: boolean; view: View }> {
+    if (this.isAway(session)) throw new KeysAwayError();
     if (!session.client.confirmSeat) throw new Error("This session cannot confirm a seat");
     const confirmed = await session.client.confirmSeat(DEFAULT_EXPIRY_SECONDS);
     this.confirmedSessions.add(session);
@@ -788,6 +1095,7 @@ export class RollupTradingClient implements TradingClient {
     onSigned: ((raw: Uint8Array) => Promise<void>) | undefined,
     count: DispatchCount,
   ): Promise<KeyWithdrawal> {
+    if (this.isAway(session)) return { kind: "refused", code: PROGRAM_ERROR.notOrderKey };
     let restore = () => {};
     if (onSigned) {
       if (typeof session.reader?.sendRawTransaction !== "function") {
@@ -1207,37 +1515,93 @@ export class RollupTradingClient implements TradingClient {
   async placeOrder(wallet: WalletIdentity, order: NewOrderInput): Promise<PlaceOrderResult> {
     const held = this.heldOrder(wallet, order.market);
     if (held) throw new OrderOutcomeUnknownError(held);
-    return this.withSession(wallet, async (session) => {
-      const attempt = await this.runWithKeyResync(
-        session,
-        () => this.placeOnce(wallet, session, order),
-        (result) => ({ ...result, reason: KEYS_IN_USE_ELSEWHERE_REASON }),
-      );
+    return this.keyedPath(wallet, orderRefusedWith, async (_session, send) => {
+      const attempt = await send((live) => this.placeOnce(wallet, live, order));
       if (order.reduceOnly && attempt.refusal === PROGRAM_ERROR.reduceOnlyWouldIncrease) {
-        return this.explainReduceRefusal(session, order, attempt.value);
+        return this.explainReduceRefusal(attempt.session, order, attempt.value);
       }
       return attempt.value;
     });
   }
 
   /**
+   * The one boundary every order-key path crosses. An away session refuses
+   * before anything else runs (the path's own checks come after, so an away
+   * session never reaches them); otherwise `body` gets the session and a
+   * `send` that runs one key-signed call with the NotOrderKey recovery below.
+   * Every refusal made here goes through the path's own `withReason`, which
+   * turns a plain reason into that path's result shape, keeping what the
+   * attempted result carried when there was one.
+   */
+  private keyedPath<T>(
+    wallet: WalletIdentity,
+    withReason: (reason: string, attempted?: T) => T,
+    body: (session: RollupSession, send: KeyedSend<T>) => Promise<T>,
+  ): Promise<T> {
+    return this.withSession(wallet, async (session) => {
+      if (this.isAway(session)) return withReason(KEYS_AWAY_REASON);
+      return body(session, (run) => this.sendKeyed(wallet, session, withReason, run));
+    });
+  }
+
+  /**
    * Another tab or device that used an order key leaves this one holding a
    * dead key, which the program refuses as NotOrderKey. The refusal ran
-   * nothing, so one resync from the view and one more try is safe; a second
-   * refusal means the other tab or device is still trading on the account.
+   * nothing, so the view is read: if it holds none of this session's keys,
+   * another device took over and nothing is retried; otherwise one resync and
+   * one more try is safe, and a second refusal means another tab is still
+   * trading on the account with this device's keys. Returns the session the
+   * result came from: a rebuilt one when the keys fell behind.
    */
-  private async runWithKeyResync<T>(
+  private async sendKeyed<T>(
+    wallet: WalletIdentity,
     session: RollupSession,
-    run: () => Promise<KeyedAttempt<T>>,
-    inUseElsewhere: (value: T) => T,
-  ): Promise<KeyedAttempt<T>> {
-    let attempt = await run();
-    if (attempt.refusal === PROGRAM_ERROR.notSeated) await this.showUnseatedView(session);
-    if (attempt.refusal !== PROGRAM_ERROR.notOrderKey) return attempt;
-    if (await this.resyncKeys(session)) attempt = await run();
+    withReason: (reason: string, attempted?: T) => T,
+    run: (live: RollupSession) => Promise<KeyedAttempt<T>>,
+  ): Promise<KeyedAttempt<T> & { session: RollupSession }> {
+    let live = session;
+    let attempt = await run(live);
+    const refusedWith = (reason: string) => ({
+      ...attempt,
+      value: withReason(reason, attempt.value),
+      session: live,
+    });
+    if (attempt.refusal === PROGRAM_ERROR.notSeated) await this.showUnseatedView(live);
+    if (attempt.refusal !== PROGRAM_ERROR.notOrderKey) return { ...attempt, session: live };
+    const resync = await this.resyncKeys(live);
+    if (resync === "moved") return refusedWith(KEYS_AWAY_REASON);
+    if (resync === "behind") {
+      const rebuilt = await this.rebuiltSession(wallet, live);
+      if (!rebuilt) return refusedWith(KEYS_REBUILD_FAILED_REASON);
+      live = rebuilt;
+    }
+    if (resync === "resynced" || resync === "behind") attempt = await run(live);
     return attempt.refusal === PROGRAM_ERROR.notOrderKey
-      ? { ...attempt, value: inUseElsewhere(attempt.value) }
-      : attempt;
+      ? refusedWith(KEYS_IN_USE_ELSEWHERE_REASON)
+      : { ...attempt, session: live };
+  }
+
+  /**
+   * The wallet's session rebuilt from the checkpoint this device saved, for a
+   * call whose keys fell behind the keys another tab of this browser
+   * installed. The build restores the keys from the view and needs no wallet
+   * signature while the sign-in token is cached. Every caller that found the
+   * same session behind shares the one rebuild (see `replaceSession`). Null
+   * when the rebuild fails or the rebuilt session still cannot sign.
+   */
+  private async rebuiltSession(
+    wallet: WalletIdentity,
+    behind: RollupSession,
+  ): Promise<RollupSession | null> {
+    const open = this.sessions.get(wallet.address);
+    const target = open?.built === behind ? this.replaceSession(wallet, open) : open;
+    if (!target) return null;
+    try {
+      const rebuilt = await target.session;
+      return this.isAway(rebuilt) || rebuilt === behind ? null : rebuilt;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1254,13 +1618,27 @@ export class RollupTradingClient implements TradingClient {
     }
   }
 
-  private async resyncKeys(session: RollupSession): Promise<boolean> {
-    if (!session.resyncKeys) return false;
+  private async resyncKeys(session: RollupSession): Promise<KeyResync> {
+    if (!session.resyncKeys) return "unreadable";
+    let view: View | null;
     try {
-      session.resyncKeys(await session.client.view());
-      return true;
+      const read = await session.client.view();
+      if (this.predatesMove(session, read)) return "unreadable";
+      view = await this.admit(session, read, true);
     } catch {
-      return false;
+      return "unreadable";
+    }
+    if (!view) return "moved";
+    try {
+      session.resyncKeys(view);
+      this.outOfStep.delete(session);
+      return "resynced";
+    } catch {
+      try {
+        return session.keysFromThisSeed?.(view) ? "behind" : "unreadable";
+      } catch {
+        return "unreadable";
+      }
     }
   }
 
@@ -1495,30 +1873,26 @@ export class RollupTradingClient implements TradingClient {
     market: string,
     orderId: string,
   ): Promise<CancelResult> {
-    return this.withSession(wallet, async (session) => {
+    return this.keyedPath(wallet, cancelRefusedWith, async (session, send) => {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      const attempt = await this.runWithKeyResync(
-        session,
-        async (): Promise<KeyedAttempt<CancelResult>> => {
-          try {
-            const result = await session.client.cancelOrder(
-              binding.numericId,
-              BigInt(orderId),
-              DEFAULT_EXPIRY_SECONDS,
-            );
-            session.saveKeyCheckpoint();
-            return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
-          } catch (error) {
-            const mapped = cancelErrorToResult(error, expiresAtMs);
-            if (!mapped) throw error;
-            return { value: mapped, refusal: refusalNumberOf(error) };
-          }
-        },
-        (result) => ({ ...result, reason: KEYS_IN_USE_ELSEWHERE_REASON }),
-      );
-      if (attempt.value.cancelled > 0) await this.showViewAfterCancel(session);
+      const attempt = await send(async (live): Promise<KeyedAttempt<CancelResult>> => {
+        try {
+          const result = await live.client.cancelOrder(
+            binding.numericId,
+            BigInt(orderId),
+            DEFAULT_EXPIRY_SECONDS,
+          );
+          live.saveKeyCheckpoint();
+          return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
+        } catch (error) {
+          const mapped = cancelErrorToResult(error, expiresAtMs);
+          if (!mapped) throw error;
+          return { value: mapped, refusal: refusalNumberOf(error) };
+        }
+      });
+      if (attempt.value.cancelled > 0) await this.showViewAfterCancel(attempt.session);
       return attempt.value;
     });
   }
@@ -1533,28 +1907,21 @@ export class RollupTradingClient implements TradingClient {
   }
 
   async cancelAllInMarket(wallet: WalletIdentity, market: string): Promise<CancelResult> {
-    return this.withSession(wallet, async (session) => {
+    return this.keyedPath(wallet, cancelRefusedWith, async (session, send) => {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      const attempt = await this.runWithKeyResync(
-        session,
-        async (): Promise<KeyedAttempt<CancelResult>> => {
-          try {
-            const result = await session.client.cancelAll(
-              binding.numericId,
-              DEFAULT_EXPIRY_SECONDS,
-            );
-            session.saveKeyCheckpoint();
-            return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
-          } catch (error) {
-            const mapped = cancelErrorToResult(error, expiresAtMs);
-            if (!mapped) throw error;
-            return { value: mapped, refusal: refusalNumberOf(error) };
-          }
-        },
-        (result) => ({ ...result, reason: KEYS_IN_USE_ELSEWHERE_REASON }),
-      );
+      const attempt = await send(async (live): Promise<KeyedAttempt<CancelResult>> => {
+        try {
+          const result = await live.client.cancelAll(binding.numericId, DEFAULT_EXPIRY_SECONDS);
+          live.saveKeyCheckpoint();
+          return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
+        } catch (error) {
+          const mapped = cancelErrorToResult(error, expiresAtMs);
+          if (!mapped) throw error;
+          return { value: mapped, refusal: refusalNumberOf(error) };
+        }
+      });
       return attempt.value;
     });
   }
@@ -1572,10 +1939,11 @@ export class RollupTradingClient implements TradingClient {
     market: string,
     request: TriggerRequest,
   ): Promise<TriggerResult> {
-    return this.withSession(wallet, async (session) => {
-      const send = session.client.setTrigger?.bind(session.client);
+    return this.keyedPath(wallet, refusedTrigger, async (session, send) => {
       const unavailable = this.triggerUnavailable(session, market);
-      if (unavailable || !send) return unavailable ?? refusedTrigger(TRIGGERS_NOT_LIVE_REASON);
+      if (unavailable || !session.client.setTrigger) {
+        return unavailable ?? refusedTrigger(TRIGGERS_NOT_LIVE_REASON);
+      }
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       let triggerPrice: bigint;
@@ -1595,28 +1963,25 @@ export class RollupTradingClient implements TradingClient {
       trackSecret(this.storage, wallet.address, market, secret, request.kind);
       let attempt: KeyedAttempt<TriggerResult>;
       try {
-        attempt = await this.runWithKeyResync(
-          session,
-          () =>
-            this.sendTrigger(
-              session,
-              expiresAtMs,
-              () =>
-                send(
-                  binding.numericId,
-                  {
-                    kind: TRIGGER_KIND_CODE[request.kind],
-                    triggerPrice,
-                    worstPrice,
-                    size,
-                    expiry: 0n,
-                    secret,
-                  },
-                  DEFAULT_EXPIRY_SECONDS,
-                ),
-              binding,
-            ),
-          () => refusedTrigger(KEYS_IN_USE_ELSEWHERE_REASON),
+        attempt = await send((live) =>
+          this.sendTrigger(
+            live,
+            expiresAtMs,
+            () =>
+              triggerSenderOf(live, "setTrigger")(
+                binding.numericId,
+                {
+                  kind: TRIGGER_KIND_CODE[request.kind],
+                  triggerPrice,
+                  worstPrice,
+                  size,
+                  expiry: 0n,
+                  secret,
+                },
+                DEFAULT_EXPIRY_SECONDS,
+              ),
+            binding,
+          ),
         );
       } catch (error) {
         untrackSecret(this.storage, wallet.address, secret);
@@ -1637,23 +2002,26 @@ export class RollupTradingClient implements TradingClient {
     market: string,
     kind: TriggerKind,
   ): Promise<TriggerResult> {
-    return this.withSession(wallet, async (session) => {
-      const send = session.client.cancelTrigger?.bind(session.client);
+    return this.keyedPath(wallet, refusedTrigger, async (session, send) => {
       const unavailable = this.triggerUnavailable(session, market);
-      if (unavailable || !send) return unavailable ?? refusedTrigger(TRIGGERS_NOT_LIVE_REASON);
+      if (unavailable || !session.client.cancelTrigger) {
+        return unavailable ?? refusedTrigger(TRIGGERS_NOT_LIVE_REASON);
+      }
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      const attempt = await this.runWithKeyResync(
-        session,
-        () =>
-          this.sendTrigger(
-            session,
-            expiresAtMs,
-            () => send(binding.numericId, TRIGGER_KIND_CODE[kind], DEFAULT_EXPIRY_SECONDS),
-            binding,
-          ),
-        () => refusedTrigger(KEYS_IN_USE_ELSEWHERE_REASON),
+      const attempt = await send((live) =>
+        this.sendTrigger(
+          live,
+          expiresAtMs,
+          () =>
+            triggerSenderOf(live, "cancelTrigger")(
+              binding.numericId,
+              TRIGGER_KIND_CODE[kind],
+              DEFAULT_EXPIRY_SECONDS,
+            ),
+          binding,
+        ),
       );
       return whenTriggerSettles(attempt.value, (settled) => {
         if (settled.kind === "ok") unpinTriggerSecrets(this.storage, wallet.address, market, kind);
@@ -1703,6 +2071,7 @@ export class RollupTradingClient implements TradingClient {
 
   /** A `sync_view` for the market, then the view read back: the one way the status of its triggers reaches this device. */
   private async refreshTriggers(session: RollupSession, binding: MarketBinding): Promise<void> {
+    if (this.isAway(session)) return;
     try {
       await session.client.syncView(binding.numericId, DEFAULT_EXPIRY_SECONDS);
       session.saveKeyCheckpoint();
@@ -1776,38 +2145,33 @@ export class RollupTradingClient implements TradingClient {
     toSpot: boolean,
     amount: string,
   ): Promise<TransferResult> {
-    return this.withSession(wallet, async (session) => {
+    const withReason = (reason: string): TransferResult => ({ kind: "error", message: reason });
+    return this.keyedPath(wallet, withReason, async (session, send) => {
       const spot = [...this.bindings(session).values()].find((binding) => !binding.isPerp);
       const quoteIndex = spot ? session.tokenIndexBySymbol.get(spot.quoteTokenSymbol) : undefined;
-      if (!spot || quoteIndex === undefined) {
-        return { kind: "error", message: "No spot market to transfer into." };
-      }
+      if (!spot || quoteIndex === undefined) return withReason("No spot market to transfer into.");
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      const attempt = await this.runWithKeyResync(
-        session,
-        async (): Promise<KeyedAttempt<TransferResult>> => {
-          try {
-            const result = await session.client.transferBetweenBalances(
-              !toSpot,
-              quoteIndex,
-              amountToQuoteAtoms(amount),
-              DEFAULT_EXPIRY_SECONDS,
-            );
-            session.saveKeyCheckpoint();
-            return { value: { kind: "ok" }, refusal: resultRefusalNumber(result) };
-          } catch (error) {
-            const mapped = transferErrorToResult(error, expiresAtMs);
-            return {
-              value: mapped ?? {
-                kind: "error",
-                message: error instanceof Error ? error.message : "The venue refused the transfer.",
-              },
-              refusal: refusalNumberOf(error),
-            };
-          }
-        },
-        (): TransferResult => ({ kind: "error", message: KEYS_IN_USE_ELSEWHERE_REASON }),
-      );
+      const attempt = await send(async (live): Promise<KeyedAttempt<TransferResult>> => {
+        try {
+          const result = await live.client.transferBetweenBalances(
+            !toSpot,
+            quoteIndex,
+            amountToQuoteAtoms(amount),
+            DEFAULT_EXPIRY_SECONDS,
+          );
+          live.saveKeyCheckpoint();
+          return { value: { kind: "ok" }, refusal: resultRefusalNumber(result) };
+        } catch (error) {
+          const mapped = transferErrorToResult(error, expiresAtMs);
+          return {
+            value: mapped ?? {
+              kind: "error",
+              message: error instanceof Error ? error.message : "The venue refused the transfer.",
+            },
+            refusal: refusalNumberOf(error),
+          };
+        }
+      });
       return attempt.value;
     });
   }
@@ -1815,6 +2179,7 @@ export class RollupTradingClient implements TradingClient {
   /** Whether the view was refreshed: false when the sync did not go through, so the caller can ask again. A market this terminal does not trade has nothing to refresh and counts as done. */
   async syncMarket(wallet: WalletIdentity, market: string): Promise<boolean> {
     return this.withSession(wallet, async (session) => {
+      if (this.isAway(session)) return false;
       const binding = this.bindings(session).get(market);
       if (!binding) return true;
       try {

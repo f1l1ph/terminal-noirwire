@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
-import type { KeyValueStore } from "@/lib/wallet/index";
+import { json, memoryStore } from "./support/rollupFixtures";
 import { keypairOwnerSigner, type OwnerSigner } from "@/lib/wallet/ownerSigner";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
@@ -30,17 +30,6 @@ const deployment = (mode: Mode): PublicDeployment => ({
   markets: [],
   ...(mode === "message" ? { ownerAuth: "message" as const } : {}),
 });
-
-const memoryStore = (): KeyValueStore => {
-  const map = new Map<string, string>();
-  return {
-    getItem: (key) => map.get(key) ?? null,
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
-  };
-};
-
-const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
 function preparedTransaction(): string {
   const transaction = new Transaction({

@@ -390,7 +390,7 @@ describe("cancelToResult", () => {
     const mapped = cancelToResult(
       result({ cancelled: 0n, kind: 3, status: RESULT_STATUS_CODE.refused, code: 123 }),
     );
-    expect(mapped.reason).toMatch(/trading keys are no longer the ones on your account/);
+    expect(mapped.reason).toMatch(/Trading moved to another device/);
   });
 
   it("gives a cancel refused with a code it has no sentence for a plain fallback", () => {
@@ -410,7 +410,7 @@ describe("cancelErrorToResult: a cancel the program refused on chain", () => {
   it("turns a failed cancel transaction into a zero with the refusal's sentence", () => {
     const mapped = cancelErrorToResult(failedWith(6123), Date.now());
     expect(mapped?.cancelled).toBe(0);
-    expect(mapped?.reason).toMatch(/trading keys are no longer the ones on your account/);
+    expect(mapped?.reason).toMatch(/Trading moved to another device/);
   });
 
   it("falls back to a plain line for a code below 6000 or one it has no sentence for", () => {

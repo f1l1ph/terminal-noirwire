@@ -145,6 +145,10 @@ export class LazyRollupTradingClient implements TradingClient {
     await (await this.load()).signInAgain?.(wallet);
   }
 
+  async moveTradingHere(wallet: WalletIdentity): Promise<void> {
+    await (await this.load()).moveTradingHere?.(wallet);
+  }
+
   async sessionDeployment(wallet: WalletIdentity): Promise<PublicDeployment> {
     const client = await this.load();
     if (!client.sessionDeployment) throw new Error("This client has no session deployment");

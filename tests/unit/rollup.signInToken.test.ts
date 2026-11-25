@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Keypair, type Connection } from "@solana/web3.js";
 import { ownerDataKeys, type KeyValueStore } from "@/lib/wallet/index";
 import { keypairOwnerSigner, type OwnerSigner } from "@/lib/wallet/ownerSigner";
+import { memoryStore } from "./support/rollupFixtures";
 import {
   clearSignInToken,
   signedInReader,
@@ -12,12 +13,6 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const URL = "https://rollup.example";
-
-const memoryStore = (map = new Map<string, string>()): KeyValueStore => ({
-  getItem: (key) => map.get(key) ?? null,
-  setItem: (key, value) => void map.set(key, value),
-  removeItem: (key) => void map.delete(key),
-});
 
 /** One page load: its own wallet and clock, sharing only what the browser keeps (`storage`). */
 function page(storage: KeyValueStore, nowMs: { value: number }, keypair = Keypair.generate()) {

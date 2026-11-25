@@ -6,18 +6,13 @@ import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { WalletIdentity } from "@/lib/trading/types";
-import {
-  RESULT_STATUS_CODE,
-  TransactionFailed,
-  type OrderResult,
-  type Placed,
-  type View,
-} from "@/lib/rollup/sdk";
+import { RESULT_STATUS_CODE, type OrderResult, type Placed, type View } from "@/lib/rollup/sdk";
 import {
   KEYS_IN_USE_ELSEWHERE_REASON,
   POSITION_ALREADY_REDUCED_REASON,
 } from "@/lib/rollup/outcome";
 import { describeProgramError, PROGRAM_ERROR } from "@/lib/rollup/refusals";
+import { programRefusal } from "./support/rollupFixtures";
 
 const PERP: MarketInfo = {
   id: "NSOL-PERP",
@@ -85,10 +80,7 @@ const DEPLOYMENT: PublicDeployment = {
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 const ORDER = { market: "NSOL-PERP", side: "sell", type: "market", price: "100.00", size: "1" };
 
-const notOrderKey = () =>
-  new TransactionFailed("sig", {
-    InstructionError: [0, { Custom: 6000 + PROGRAM_ERROR.notOrderKey }],
-  });
+const notOrderKey = () => programRefusal(PROGRAM_ERROR.notOrderKey);
 
 function refusedResult(code: number): OrderResult {
   return {

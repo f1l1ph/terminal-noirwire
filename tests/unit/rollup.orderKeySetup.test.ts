@@ -1,23 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
 import { deriveOrderKey } from "@noirwire/orderbook";
-import { deviceOrderKeys, type DeviceKeyDeps, type DeviceSeeds } from "@/lib/rollup/orderKeySetup";
-import { freshOrderKeys, type OrderKeyManager, type View } from "@/lib/rollup/sdk";
+import {
+  cancelsStops,
+  deviceOrderKeys,
+  type DeviceKeyDeps,
+  type DeviceSeeds,
+} from "@/lib/rollup/orderKeySetup";
+import { freshOrderKeys, type View } from "@/lib/rollup/sdk";
 
 const OWNER = "OwnerAddress111111111111111111111111111111";
-const NOW = 1_800_000_000_000;
 const SEED = new Uint8Array(32).fill(7);
 
-const viewOf = (orderKeys: PublicKey[], expiriesMs: number[] = []) =>
+const viewOf = (orderKeys: PublicKey[], base = 0n, seatRecorded = true) =>
   ({
     orderKeys,
-    snapshot: { orders: expiriesMs.map((ms) => ({ expiry: BigInt(Math.floor(ms / 1000)) })) },
+    seatRecorded,
+    snapshot: { seat: { positions: [{ marketId: 0, base }] } },
   }) as unknown as View;
 
 const keysOf = (seed: Uint8Array, indices: number[]) =>
   indices.map((index) => deriveOrderKey(seed, index).publicKey);
 
 const strangersKeys = () => keysOf(new Uint8Array(32).fill(99), [0, 1, 2, 3]);
+
+const base58 = (keys: PublicKey[]) => keys.map((key) => key.toBase58());
 
 function setup(options: { stored?: Uint8Array | null; view: View | null; createFails?: boolean }) {
   const events: string[] = [];
@@ -29,112 +36,99 @@ function setup(options: { stored?: Uint8Array | null; view: View | null; createF
       return SEED;
     },
   };
-  const installed: string[][] = [];
-  const sleeps: number[] = [];
   const deps: DeviceKeyDeps = {
     ownerAddress: OWNER,
     seeds,
     checkpoint: null,
     readView: async () => options.view,
-    install: async (keys: OrderKeyManager) => {
-      events.push("set_order_keys");
-      installed.push(keys.publicKeys.map((key) => key.toBase58()));
-    },
-    report: vi.fn(),
-    now: () => NOW,
-    sleep: async (ms) => {
-      events.push("waited");
-      sleeps.push(ms);
-    },
+    report: vi.fn((status) => void events.push(`report ${status.stage}`)),
   };
-  return { deps, events, installed, sleeps };
+  return { deps, events };
 }
 
+const reports = (deps: DeviceKeyDeps) =>
+  (deps.report as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+
 describe("order keys on a new device", () => {
-  it("waits for old orders to lapse, then installs this seed's keys with exactly one owner transaction", async () => {
-    const { deps, events, installed, sleeps } = setup({ view: viewOf(strangersKeys()) });
-    const keys = await deviceOrderKeys(deps);
-    expect(events).toEqual(["seed created", "waited", "set_order_keys"]);
-    expect(sleeps).toEqual([60_000]);
-    expect(installed).toEqual([freshOrderKeys(SEED).publicKeys.map((key) => key.toBase58())]);
-    expect(keys.publicKeys.map((key) => key.toBase58())).toEqual(installed[0]);
+  it("reports elsewhere and returns a fresh set that is not held, with nothing installed and no wait", async () => {
+    const { deps, events } = setup({ view: viewOf(strangersKeys()) });
+    const { keys, held } = await deviceOrderKeys(deps);
+    expect(held).toBe(false);
+    expect(reports(deps)).toEqual([{ stage: "elsewhere", cancelsStops: true }]);
+    expect(events).toEqual(["seed created", "report elsewhere"]);
+    expect(base58(keys.publicKeys)).toEqual(base58(freshOrderKeys(SEED).publicKeys));
   });
 
-  it("reports a plain failed stage, and still rejects, when the wallet declines set_order_keys", async () => {
-    const { deps } = setup({ view: viewOf(strangersKeys()) });
-    deps.install = async () => {
-      throw new Error("User rejected the request");
-    };
-    await expect(deviceOrderKeys(deps)).rejects.toThrow(/rejected/);
-    const last = (deps.report as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
-    expect(last).toEqual({
-      stage: "failed",
-      reason: "The wallet request was declined.",
-      failure: "wallet_declined",
-    });
+  it("warns that stops may be cancelled whenever the view records a seat, even with a flat snapshot", async () => {
+    const { deps } = setup({ view: viewOf(strangersKeys(), 0n) });
+    await deviceOrderKeys(deps);
+    expect(reports(deps)[0]).toEqual({ stage: "elsewhere", cancelsStops: true });
   });
 
-  it("reports a failed stage when the view cannot be read, without leaking the error text", async () => {
+  it("does not warn when the view records no seat", async () => {
+    const { deps } = setup({ view: viewOf(strangersKeys(), 5n, false) });
+    await deviceOrderKeys(deps);
+    expect(reports(deps)[0]).toEqual({ stage: "elsewhere", cancelsStops: false });
+  });
+
+  it("is elsewhere even when this device already has a seed whose keys are not the view's", async () => {
+    const { deps } = setup({ stored: SEED, view: viewOf(strangersKeys()) });
+    const { held } = await deviceOrderKeys(deps);
+    expect(held).toBe(false);
+    expect(reports(deps).map((status) => status.stage)).toEqual(["elsewhere"]);
+  });
+
+  it("reports a plain failed stage, and still rejects, when the view cannot be read, without leaking the error text", async () => {
     const { deps } = setup({ view: null });
     deps.readView = async () => {
       throw new Error("fetch failed for https://x/?token=secret");
     };
     await expect(deviceOrderKeys(deps)).rejects.toThrow();
-    const last = (deps.report as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    const last = reports(deps).at(-1);
     expect(last.stage).toBe("failed");
     expect(last.reason).not.toMatch(/secret|fetch/);
   });
+});
 
-  it("still waits the full 60 seconds when a resting order expires in 5", async () => {
-    const view = viewOf(strangersKeys(), [NOW + 5_000]);
-    const { deps, sleeps } = setup({ view });
-    await deviceOrderKeys(deps);
-    expect(sleeps).toEqual([60_000]);
+describe("whether moving trading may cancel stops", () => {
+  it("is true with a recorded seat, whatever the snapshot shows", () => {
+    expect(cancelsStops(viewOf([], 3n))).toBe(true);
+    expect(cancelsStops(viewOf([], -3n))).toBe(true);
+    expect(cancelsStops(viewOf([], 0n))).toBe(true);
   });
 
-  it("tells the UI it is waiting, until when, and then that it is installing", async () => {
-    const { deps } = setup({ view: viewOf(strangersKeys()) });
-    await deviceOrderKeys(deps);
-    expect(deps.report).toHaveBeenNthCalledWith(1, { stage: "settling", readyAtMs: NOW + 60_000 });
-    expect(deps.report).toHaveBeenNthCalledWith(2, { stage: "installing" });
-  });
-
-  it("replaces keys another device installed, even when this device already has a seed", async () => {
-    const { deps, installed, sleeps } = setup({ stored: SEED, view: viewOf(strangersKeys()) });
-    await deviceOrderKeys(deps);
-    expect(sleeps).toHaveLength(1);
-    expect(installed).toHaveLength(1);
+  it("is false when the view records no seat", () => {
+    expect(cancelsStops(viewOf([], 3n, false))).toBe(false);
   });
 });
 
 describe("order keys on a device that has them", () => {
-  it("keeps the keys this seed made, waiting for nothing and installing nothing", async () => {
+  it("keeps the keys this seed made, held, reporting nothing", async () => {
     const inView = keysOf(SEED, [5, 1, 2, 7]);
     const { deps, events } = setup({ stored: SEED, view: viewOf(inView) });
-    const keys = await deviceOrderKeys(deps);
+    const { keys, held } = await deviceOrderKeys(deps);
+    expect(held).toBe(true);
     expect(events).toEqual([]);
-    expect(keys.publicKeys.map((key) => key.toBase58())).toEqual(
-      inView.map((key) => key.toBase58()),
-    );
+    expect(reports(deps)).toEqual([]);
+    expect(base58(keys.publicKeys)).toEqual(base58(inView));
   });
 });
 
 describe("order keys before the account is opened", () => {
-  it("starts from this seed's first four keys, waiting for nothing and installing nothing", async () => {
+  it("starts from this seed's first four keys, held, waiting for nothing", async () => {
     const { deps, events } = setup({ view: null });
-    const keys = await deviceOrderKeys(deps);
+    const { keys, held } = await deviceOrderKeys(deps);
+    expect(held).toBe(true);
     expect(events).toEqual(["seed created"]);
-    expect(keys.publicKeys.map((key) => key.toBase58())).toEqual(
-      freshOrderKeys(SEED).publicKeys.map((key) => key.toBase58()),
-    );
+    expect(base58(keys.publicKeys)).toEqual(base58(freshOrderKeys(SEED).publicKeys));
   });
 });
 
 describe("a seed that cannot be stored", () => {
   it("refuses to go on rather than use keys that would be lost on reload", async () => {
-    const { deps, installed } = setup({ view: viewOf(strangersKeys()), createFails: true });
+    const { deps } = setup({ view: viewOf(strangersKeys()), createFails: true });
     await expect(deviceOrderKeys(deps)).rejects.toThrow(/storage/);
-    expect(installed).toEqual([]);
+    expect(reports(deps).at(-1)).toMatchObject({ stage: "failed" });
   });
 
   it("reports the failure as key storage, whatever the store threw", async () => {
@@ -143,7 +137,6 @@ describe("a seed that cannot be stored", () => {
       throw new DOMException("aborted", "AbortError");
     };
     await expect(deviceOrderKeys(deps)).rejects.toThrow("aborted");
-    const last = (deps.report as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
-    expect(last.failure).toBe("key_storage_unavailable");
+    expect(reports(deps).at(-1).failure).toBe("key_storage_unavailable");
   });
 });

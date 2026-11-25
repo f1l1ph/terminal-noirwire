@@ -37,6 +37,7 @@ import {
   clockOf as sdkClockOf,
   decodeExchange,
   decodeMarket,
+  deriveOrderKey as sdkDeriveOrderKey,
   positionOn as sdkPositionOn,
   ownerActionMessage as sdkOwnerActionMessage,
   ownerExpiry as sdkOwnerExpiry,
@@ -91,6 +92,9 @@ export const VIEW_NOT_READABLE_MESSAGE =
   "the view is not readable by this connection: read through a private connection signed in as the owner";
 /** `OrderKeyManager.fromView`'s own message when the view holds keys this seed never derived. Matched on its exact text. */
 export const KEYS_NOT_FROM_SEED_MESSAGE = "the view's order keys do not all derive from this seed";
+/** Whether `error` is the SDK's "keys not from this seed" answer, as opposed to any other failure. */
+export const isKeysNotFromSeed = (error: unknown): boolean =>
+  error instanceof Error && error.message === KEYS_NOT_FROM_SEED_MESSAGE;
 /** The program id this package release was built for. */
 export const PACKAGE_PROGRAM_ID = PROGRAM_ID;
 export const MARKET_KIND_CODE = MARKET_KIND;
@@ -266,6 +270,20 @@ export function orderKeysFromCheckpoint(
   return OrderKeyManager.fromView(seed, view, searchLimit);
 }
 
+/**
+ * Four keys at consecutive derivation indices from `firstIndex`, as a manager
+ * whose next index follows them. Pass an index no key was ever handed out at,
+ * so the set never contains a key an earlier instruction was signed with.
+ */
+export function orderKeysFromIndex(seed: Uint8Array, firstIndex: number): OrderKeyManager {
+  const indices = [0, 1, 2, 3].map((slot) => firstIndex + slot);
+  return OrderKeyManager.restore(
+    seed,
+    { orderKeys: indices.map((index) => sdkDeriveOrderKey(seed, index).publicKey) },
+    { indices, nextIndex: firstIndex },
+  );
+}
+
 /** Whether every key `view` holds derives from `seed` within `searchLimit` indices. */
 export function viewKeysDeriveFrom(
   seed: Uint8Array,
@@ -278,6 +296,11 @@ export function viewKeysDeriveFrom(
   } catch {
     return false;
   }
+}
+
+/** The public key of the order key at `index` of `seed`'s derivation. */
+export function orderKeyAt(seed: Uint8Array, index: number): PublicKey {
+  return sdkDeriveOrderKey(seed, index).publicKey;
 }
 
 export function checkpointOf(keys: OrderKeyManager): OrderKeyCheckpoint {

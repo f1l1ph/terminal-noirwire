@@ -8,6 +8,7 @@ import {
   placeLabel,
   sideWord,
   tradeGate,
+  tradeGateLabel,
   walletlessAction,
   walletlessDockText,
 } from "@/lib/trading/uiRules";
@@ -46,15 +47,14 @@ describe("what a mainnet build leaves out", () => {
   });
 });
 
-const keys = (stage: "settling" | "installing" | "ready"): OrderKeyState =>
-  stage === "settling"
-    ? { stage, readyAtMs: 1, seedPersisted: true }
+const keys = (stage: "elsewhere" | "moved" | "installing" | "ready"): OrderKeyState =>
+  stage === "elsewhere" || stage === "moved"
+    ? { stage, cancelsStops: false, seedPersisted: true }
     : { stage, seedPersisted: true };
 
 describe("tradeGate", () => {
   it("blocks orders until the account is open, then until the keys are ready", () => {
     expect(tradeGate(true, "absent", keys("ready"))).toBe("needsAccount");
-    expect(tradeGate(true, "open", keys("settling"))).toBe("keysNotReady");
     expect(tradeGate(true, "open", keys("installing"))).toBe("keysNotReady");
     expect(tradeGate(true, "open", keys("ready"))).toBeNull();
   });
@@ -65,6 +65,16 @@ describe("tradeGate", () => {
     expect(tradeGate(true, "open", null)).toBe("keysNotReady");
   });
 
+  it("gates on keys held elsewhere before anything about the account", () => {
+    for (const stage of ["elsewhere", "moved"] as const) {
+      for (const status of ["unknown", "absent", "open"] as const) {
+        expect(tradeGate(true, status, keys(stage))).toBe("keysElsewhere");
+      }
+    }
+    expect(tradeGateLabel("keysElsewhere")).toBe("Trading is on another device");
+    expect(tradeGate(false, "unknown", keys("elsewhere"))).toBeNull();
+  });
+
   it("keeps Place closed when key setup failed", () => {
     expect(tradeGate(true, "open", { stage: "failed", reason: "x", seedPersisted: true })).toBe(
       "keysFailed",
@@ -73,7 +83,7 @@ describe("tradeGate", () => {
 
   it("opens the gate for exactly one combination: open account, ready keys", () => {
     const statuses = ["unknown", "absent", "open"] as const;
-    const states = [null, keys("settling"), keys("installing"), keys("ready")];
+    const states = [null, keys("elsewhere"), keys("moved"), keys("installing"), keys("ready")];
     const open = statuses.flatMap((status) =>
       states.filter((state) => tradeGate(true, status, state) === null).map(() => status),
     );
@@ -81,7 +91,7 @@ describe("tradeGate", () => {
   });
 
   it("never gates a test build", () => {
-    expect(tradeGate(false, "absent", keys("settling"))).toBeNull();
+    expect(tradeGate(false, "absent", keys("installing"))).toBeNull();
   });
 });
 

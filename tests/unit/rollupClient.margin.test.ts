@@ -3,6 +3,7 @@ import { MarketDataStore } from "@/lib/market-data/store";
 import { marketWithLiveMark, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { Keypair } from "@solana/web3.js";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
+import { deploymentMarket } from "./support/rollupFixtures";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
@@ -26,23 +27,6 @@ function perp(id: string, markPrice: string | null, markAgeMs = 0): MarketInfo {
     change24hPercent: 0,
     volume24h: "0",
     openInterest: "0",
-  };
-}
-
-function deploymentMarket(marketId: number, symbol: string, baseDecimals: number, lot: string) {
-  return {
-    marketId,
-    symbol,
-    kind: "perp" as const,
-    market: Keypair.generate().publicKey.toBase58(),
-    tape: Keypair.generate().publicKey.toBase58(),
-    priceFeed: Keypair.generate().publicKey.toBase58(),
-    baseToken: null,
-    quoteToken: { symbol: "nUSD", mint: Keypair.generate().publicKey.toBase58(), decimals: 6 },
-    baseDecimals,
-    quoteDecimals: 6,
-    lotSize: lot,
-    tick: "100",
   };
 }
 

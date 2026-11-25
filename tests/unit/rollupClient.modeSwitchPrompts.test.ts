@@ -3,6 +3,7 @@ import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { ownerDataKeys } from "@/lib/wallet/index";
+import { json } from "./support/rollupFixtures";
 import {
   MARKET_KIND_CODE,
   programInstructions,
@@ -33,8 +34,6 @@ const PERP = {
   lotSize: "1000000",
   tick: "100",
 };
-
-const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
 afterEach(() => {
   vi.unstubAllGlobals();
