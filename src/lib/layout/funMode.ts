@@ -1,3 +1,5 @@
+import type { ChoiceStorage } from "./persistedStore";
+
 /**
  * The trader's Fun mode choice: whether it is on, and which of its two
  * visuals (screen tint, wizard) show. Off by default and remembered per
@@ -15,12 +17,7 @@ export interface FunModeSettings {
 
 export const DEFAULT_FUN_MODE: FunModeSettings = { enabled: false, tint: true, wizard: true };
 
-export interface FunModeStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-export function loadFunMode(storage: FunModeStorage | null): FunModeSettings {
+export function loadFunMode(storage: ChoiceStorage | null): FunModeSettings {
   if (!storage) return DEFAULT_FUN_MODE;
   try {
     const parsed: unknown = JSON.parse(storage.getItem(FUN_MODE_STORAGE_KEY) ?? "null");
@@ -35,7 +32,7 @@ export function loadFunMode(storage: FunModeStorage | null): FunModeSettings {
   }
 }
 
-export function saveFunMode(storage: FunModeStorage | null, settings: FunModeSettings): void {
+export function saveFunMode(storage: ChoiceStorage | null, settings: FunModeSettings): void {
   if (!storage) return;
   try {
     storage.setItem(FUN_MODE_STORAGE_KEY, JSON.stringify(settings));

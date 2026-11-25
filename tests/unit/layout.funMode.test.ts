@@ -4,10 +4,10 @@ import {
   FUN_MODE_STORAGE_KEY,
   loadFunMode,
   saveFunMode,
-  type FunModeStorage,
 } from "@/lib/layout/funMode";
+import type { ChoiceStorage } from "@/lib/layout/persistedStore";
 
-function fakeStorage(initial: Record<string, string> = {}): FunModeStorage & {
+function fakeStorage(initial: Record<string, string> = {}): ChoiceStorage & {
   data: Record<string, string>;
 } {
   const data = { ...initial };
@@ -20,7 +20,7 @@ function fakeStorage(initial: Record<string, string> = {}): FunModeStorage & {
   };
 }
 
-const throwing: FunModeStorage = {
+const throwing: ChoiceStorage = {
   getItem: () => {
     throw new Error("blocked");
   },

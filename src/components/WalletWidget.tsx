@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Wallet } from "@wallet-standard/base";
 import { formatShortAddress } from "@/lib/format";
 import { isMainnetBuild } from "@/lib/network";
@@ -14,6 +14,7 @@ import {
 } from "@/lib/wallet/index";
 import { isMobileBrowser, phantomBrowseUrl, solflareBrowseUrl } from "@/lib/wallet/walletLinks";
 import type { WalletHookResult } from "@/lib/wallet/useWallet";
+import { useDismissOnOutside } from "@/components/hooks/useDismissOnOutside";
 import { btnGhost, input, panel } from "@/components/ui/styles";
 
 /** Fields that carry a secret: never autofilled, autocorrected or sent to a spell-check service. */
@@ -127,29 +128,6 @@ function PassphraseForm({
  */
 export function WalletWidget({ wallet }: { wallet: WalletHookResult }) {
   return isMainnetBuild() ? <ExternalWalletWidget /> : <BuiltInWalletWidget wallet={wallet} />;
-}
-
-/** Closes the panel on a click outside `containerRef` or on Escape. */
-function useDismissOnOutside(
-  open: boolean,
-  containerRef: RefObject<HTMLDivElement | null>,
-  close: () => void,
-) {
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) close();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open, containerRef, close]);
 }
 
 const WALLET_INSTALLS = [
@@ -403,25 +381,10 @@ function BuiltInWalletWidget({ wallet }: { wallet: WalletHookResult }) {
   const [revealed, setRevealed] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const close = () => {
-      setOpen(false);
-      setRevealed(null);
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) close();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  useDismissOnOutside(open, containerRef, () => {
+    setOpen(false);
+    setRevealed(null);
+  });
 
   useWalletMenuEvents(open, setOpen);
 

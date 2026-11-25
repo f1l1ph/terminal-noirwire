@@ -1,3 +1,5 @@
+import type { ChoiceStorage } from "./persistedStore";
+
 /**
  * Whether the trader has switched the privacy tools on (the public tape, the
  * privacy check, order timing and the private order log). Off by default and
@@ -7,12 +9,7 @@
  */
 export const PRIVACY_TOOLS_STORAGE_KEY = "noirwire-terminal-privacy-tools";
 
-export interface PrivacyToolsStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-export function loadPrivacyTools(storage: PrivacyToolsStorage | null): boolean {
+export function loadPrivacyTools(storage: ChoiceStorage | null): boolean {
   if (!storage) return false;
   try {
     return storage.getItem(PRIVACY_TOOLS_STORAGE_KEY) === "on";
@@ -21,7 +18,7 @@ export function loadPrivacyTools(storage: PrivacyToolsStorage | null): boolean {
   }
 }
 
-export function savePrivacyTools(storage: PrivacyToolsStorage | null, on: boolean): void {
+export function savePrivacyTools(storage: ChoiceStorage | null, on: boolean): void {
   if (!storage) return;
   try {
     storage.setItem(PRIVACY_TOOLS_STORAGE_KEY, on ? "on" : "off");

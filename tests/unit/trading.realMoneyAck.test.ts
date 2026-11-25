@@ -7,15 +7,7 @@ import {
   recordAcknowledgement,
 } from "@/lib/trading/realMoneyAck";
 import type { KeyValueStore } from "@/lib/wallet";
-
-function memoryStore(): KeyValueStore {
-  const map = new Map<string, string>();
-  return {
-    getItem: (key) => map.get(key) ?? null,
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
-  };
-}
+import { memoryStore } from "./support/rollupFixtures";
 
 const broken: KeyValueStore = {
   getItem: () => {

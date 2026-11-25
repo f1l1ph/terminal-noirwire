@@ -3,10 +3,10 @@ import {
   PRIVACY_TOOLS_STORAGE_KEY,
   loadPrivacyTools,
   savePrivacyTools,
-  type PrivacyToolsStorage,
 } from "@/lib/layout/privacyTools";
+import type { ChoiceStorage } from "@/lib/layout/persistedStore";
 
-function fakeStorage(initial: Record<string, string> = {}): PrivacyToolsStorage & {
+function fakeStorage(initial: Record<string, string> = {}): ChoiceStorage & {
   data: Record<string, string>;
 } {
   const data = { ...initial };
@@ -19,7 +19,7 @@ function fakeStorage(initial: Record<string, string> = {}): PrivacyToolsStorage 
   };
 }
 
-const throwing: PrivacyToolsStorage = {
+const throwing: ChoiceStorage = {
   getItem: () => {
     throw new Error("blocked");
   },
