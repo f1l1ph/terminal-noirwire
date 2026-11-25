@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildVersion,
   EVENT_SCHEMA,
+  resetAppErrors,
   resetTrackOnce,
   sanitizeEventData,
   track,
+  trackAppError,
   trackOnce,
 } from "@/lib/analytics";
 
@@ -12,6 +14,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   resetTrackOnce();
+  resetAppErrors();
 });
 
 describe("track", () => {
@@ -138,5 +141,26 @@ describe("trackOnce", () => {
     trackOnce("ticket", "ticket_seen");
     trackOnce("other", "ticket_seen");
     expect(umamiTrack).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("trackAppError", () => {
+  it("sends the kind only, at most three times per page load", () => {
+    const umamiTrack = vi.fn();
+    vi.stubGlobal("window", { umami: { track: umamiTrack } });
+    for (const kind of [
+      "uncaught",
+      "rejection",
+      "route_boundary",
+      "uncaught",
+      "rejection",
+    ] as const) {
+      trackAppError(kind);
+    }
+    expect(umamiTrack.mock.calls).toEqual([
+      ["app_error", { kind: "uncaught", v: "dev" }],
+      ["app_error", { kind: "rejection", v: "dev" }],
+      ["app_error", { kind: "route_boundary", v: "dev" }],
+    ]);
   });
 });

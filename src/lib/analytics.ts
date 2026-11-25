@@ -184,3 +184,18 @@ export function trackOnce<E extends AnalyticsEvent>(
 export function resetTrackOnce(): void {
   sentThisPageLoad.clear();
 }
+
+const MAX_APP_ERRORS_PER_LOAD = 3;
+let appErrorsSent = 0;
+
+/** Counts an app error by kind only, at most three per page load, so a loop of errors cannot flood the counts. */
+export function trackAppError(kind: AppErrorKind): void {
+  if (appErrorsSent >= MAX_APP_ERRORS_PER_LOAD) return;
+  appErrorsSent += 1;
+  track("app_error", { kind });
+}
+
+/** Forgets the app errors counted so far. Tests only. */
+export function resetAppErrors(): void {
+  appErrorsSent = 0;
+}
