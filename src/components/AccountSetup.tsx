@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { track, type AnalyticsEvent } from "@/lib/analytics";
+import { track, type AnalyticsEvent, type SetupStepId } from "@/lib/analytics";
+import { openRefusalReason } from "@/lib/failureReason";
 import { formatShortAddress } from "@/lib/format";
 import {
   depositHelp,
@@ -18,6 +19,7 @@ import {
   type SetupStep,
 } from "@/lib/trading/openCopy";
 import { SETTLE_WAIT_MS } from "@/lib/rollup/orderKeySetup";
+import { SetupFunnel } from "@/lib/setupFunnel";
 import type {
   AccountStatus,
   OpenAccountOutcome,
@@ -45,6 +47,7 @@ const SETUP_EVENTS: Record<string, AnalyticsEvent | undefined> = {
 
 const sentThisPageLoad = new Set<string>();
 const countedOutcomes = new WeakSet<OpenAccountOutcome>();
+const funnel = new SetupFunnel();
 
 const STATE_WORD = { done: "done", current: "current", upcoming: "not started" } as const;
 
@@ -125,7 +128,11 @@ export function AccountSetup({
     .map((step) => step.id)
     .join(",");
   useEffect(() => {
+    if (current) funnel.seen(current);
+  }, [current]);
+  useEffect(() => {
     for (const id of doneIds ? doneIds.split(",") : []) {
+      funnel.done(id as SetupStepId);
       const event = SETUP_EVENTS[id];
       if (!event || sentThisPageLoad.has(id)) continue;
       sentThisPageLoad.add(id);
@@ -133,9 +140,23 @@ export function AccountSetup({
     }
   }, [doneIds]);
   useEffect(() => {
+    if (status === "declined") funnel.failed("verify", "wallet_declined");
+  }, [status]);
+  const keyFailure = keys?.stage === "failed" ? (keys.failure ?? "other") : null;
+  useEffect(() => {
+    if (keyFailure) funnel.failed("keys", keyFailure);
+  }, [keyFailure]);
+  useEffect(() => {
     if (!outcome || countedOutcomes.has(outcome)) return;
     countedOutcomes.add(outcome);
     track("account_open_result", { result: outcome.kind });
+    const reason =
+      outcome.kind === "refused"
+        ? openRefusalReason(outcome.refusal)
+        : outcome.kind === "notSent"
+          ? (outcome.failure ?? "other")
+          : null;
+    if (reason) funnel.failed("open", reason);
   }, [outcome]);
   useEffect(() => {
     if (!asksForInvite || sentThisPageLoad.has("invite")) return;
@@ -162,6 +183,7 @@ export function AccountSetup({
       className={`${btnGhost} mt-1 h-11 w-full`}
       disabled={checking}
       onClick={() => {
+        funnel.acted(offer === "retry" ? "keys" : "verify");
         setChecking(true);
         void onRecheck().finally(() => setChecking(false));
       }}
@@ -191,7 +213,10 @@ export function AccountSetup({
             <button
               type="button"
               className={`${btnPrimary} mt-1 h-11 w-full`}
-              onClick={openWalletMenu}
+              onClick={() => {
+                funnel.acted("connect");
+                openWalletMenu();
+              }}
             >
               Connect wallet
             </button>
@@ -244,7 +269,10 @@ export function AccountSetup({
                 type="button"
                 className={`${btnPrimary} mt-1 h-11 w-full`}
                 disabled={opening}
-                onClick={() => onOpen(inviteCode.trim() === "" ? undefined : inviteCode.trim())}
+                onClick={() => {
+                  funnel.acted("open");
+                  onOpen(inviteCode.trim() === "" ? undefined : inviteCode.trim());
+                }}
               >
                 {opening ? "Opening…" : "Open account"}
               </button>
