@@ -8,7 +8,6 @@ import type { LimitLine } from "@/lib/trading/limitLine";
 import type { useTrading } from "@/lib/trading/useTrading";
 import { MarketChart } from "@/components/MarketChart";
 import { PriceHeadline } from "@/components/MarketContextBar";
-import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
 import { PublicTape } from "@/components/PublicTape";
 import { PublicView } from "@/components/PublicView";
 import { VenuePulse } from "@/components/VenuePulse";
@@ -174,7 +173,6 @@ export function PhoneLayout({
             {accountDock}
           </div>
           {toolsOn && witnessRail}
-          <PrivacyToolsToggle className="self-start" />
         </div>
       )}
     </div>

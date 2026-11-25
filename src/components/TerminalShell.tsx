@@ -28,7 +28,7 @@ export function TerminalShell({
   connectionState,
   wallet,
   footer,
-  onResetLayout,
+  settings,
   notices,
   funMode,
   mood,
@@ -47,8 +47,8 @@ export function TerminalShell({
   wallet: WalletHookResult;
   /** The quiet line under the workspace; absent where it would add nothing. */
   footer: ReactNode;
-  /** Present only once the desktop workspace layout differs from its default - the control itself appears only then. */
-  onResetLayout?: () => void;
+  /** The settings cog, last in the header's right cluster. */
+  settings?: ReactNode;
   /** Lines that stay above the workspace while they are true. */
   notices?: ReactNode;
   children: ReactNode;
@@ -72,18 +72,10 @@ export function TerminalShell({
           />
         )}
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          {onResetLayout && (
-            <button
-              type="button"
-              className="text-dim hover:text-ink rounded-tile text-[12px] underline decoration-dotted underline-offset-2"
-              onClick={onResetLayout}
-            >
-              Reset layout
-            </button>
-          )}
           <FunModeToggle />
           <ConnectionStatus state={connectionState} />
           <WalletWidget wallet={wallet} />
+          {settings}
         </div>
       </header>
       {wizard && !wizardInHeader && (

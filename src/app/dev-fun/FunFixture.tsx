@@ -7,6 +7,7 @@ import { FunWizard, HIDE_FROM_SPOT_WIDTH, WizardSpot } from "@/components/FunWiz
 import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { BarStat, MarketBarFrame } from "@/components/MarketContextBar";
+import { SettingsMenu } from "@/components/SettingsMenu";
 import { Mark } from "@/components/ui/Mark";
 import { NetworkBadge } from "@/components/ui/NetworkBadge";
 import { formatShortAddress } from "@/lib/format";
@@ -55,6 +56,7 @@ export function FunFixture({
               <span className="text-danger ml-2 text-[12px]">Not saved</span>
             )}
           </span>
+          <SettingsMenu keys={null} mainnet />
         </div>
       </header>
       {!wide && <WizardSpot data={wizard} variant="phone" className="h-14 shrink-0 px-3" />}
