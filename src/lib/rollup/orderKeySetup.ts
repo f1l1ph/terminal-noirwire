@@ -1,3 +1,5 @@
+import type { FailureReason } from "../analytics";
+import { failureReasonOf } from "../failureReason";
 import { isWalletDecline } from "../wallet/declined";
 import { OwnerActionFailed, OwnerActionRefused } from "./ownerMessages";
 import {
@@ -20,7 +22,7 @@ export type OrderKeyStatus =
   | { stage: "installing" }
   | { stage: "ready" }
   /** Setting up the keys did not finish; `reason` is plain text for the trader. Building the session again retries. */
-  | { stage: "failed"; reason: string };
+  | { stage: "failed"; reason: string; failure?: FailureReason };
 
 /** A plain, token-free reason for a failed key setup. */
 export function keySetupFailureReason(error: unknown): string {
@@ -78,14 +80,36 @@ export async function deviceOrderKeys(deps: DeviceKeyDeps): Promise<OrderKeyMana
   try {
     return await setUpDeviceOrderKeys(deps);
   } catch (error) {
-    deps.report({ stage: "failed", reason: keySetupFailureReason(error) });
+    deps.report({
+      stage: "failed",
+      reason: keySetupFailureReason(error),
+      failure: failureReasonOf(error),
+    });
     throw error;
   }
 }
 
+/** This device's seed store could not load or keep the seed. The message is the store's own. */
+export class SeedStorageError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "the order seed store failed", { cause });
+    this.name = "SeedStorageError";
+  }
+}
+
+async function deviceSeed(
+  deps: DeviceKeyDeps,
+): Promise<{ existing: Uint8Array | null; seed: Uint8Array }> {
+  try {
+    const existing = await deps.seeds.load(deps.ownerAddress);
+    return { existing, seed: existing ?? (await deps.seeds.create(deps.ownerAddress)) };
+  } catch (error) {
+    throw new SeedStorageError(error);
+  }
+}
+
 async function setUpDeviceOrderKeys(deps: DeviceKeyDeps): Promise<OrderKeyManager> {
-  const existing = await deps.seeds.load(deps.ownerAddress);
-  const seed = existing ?? (await deps.seeds.create(deps.ownerAddress));
+  const { existing, seed } = await deviceSeed(deps);
   const fresh = freshOrderKeys(seed);
   const view = await deps.readView(fresh);
   if (!view) return fresh;

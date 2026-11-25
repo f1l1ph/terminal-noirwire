@@ -67,7 +67,11 @@ describe("order keys on a new device", () => {
     };
     await expect(deviceOrderKeys(deps)).rejects.toThrow(/rejected/);
     const last = (deps.report as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
-    expect(last).toEqual({ stage: "failed", reason: "The wallet request was declined." });
+    expect(last).toEqual({
+      stage: "failed",
+      reason: "The wallet request was declined.",
+      failure: "wallet_declined",
+    });
   });
 
   it("reports a failed stage when the view cannot be read, without leaking the error text", async () => {
@@ -131,5 +135,15 @@ describe("a seed that cannot be stored", () => {
     const { deps, installed } = setup({ view: viewOf(strangersKeys()), createFails: true });
     await expect(deviceOrderKeys(deps)).rejects.toThrow(/storage/);
     expect(installed).toEqual([]);
+  });
+
+  it("reports the failure as key storage, whatever the store threw", async () => {
+    const { deps } = setup({ view: viewOf(strangersKeys()) });
+    deps.seeds.load = async () => {
+      throw new DOMException("aborted", "AbortError");
+    };
+    await expect(deviceOrderKeys(deps)).rejects.toThrow("aborted");
+    const last = (deps.report as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(last.failure).toBe("key_storage_unavailable");
   });
 });

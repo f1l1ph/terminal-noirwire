@@ -1,4 +1,5 @@
 import type { Connection } from "@solana/web3.js";
+import type { FailureReason } from "../analytics";
 import type { MarketInfo } from "../market-data/types";
 import type { UnknownHold } from "../rollup/accountMemory";
 import type { PublicDeployment } from "../rollup/deployment";
@@ -60,7 +61,7 @@ export type OpenAccountOutcome =
   /** The service turned the request away or could not be reached; `mayBeOpen` means the view could not settle it either, so read it before trying again. */
   | { kind: "refused"; refusal: OpenRefusal }
   /** Nothing was sent: the prepared transaction or the wallet's signature was not what was asked for, or the wallet declined. */
-  | { kind: "notSent"; reason: string }
+  | { kind: "notSent"; reason: string; failure?: FailureReason }
   /** This deployment opens accounts another way (test funds), not through the invite-gated routes. */
   | { kind: "notAvailable" };
 

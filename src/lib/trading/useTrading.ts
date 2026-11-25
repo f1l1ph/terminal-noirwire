@@ -578,7 +578,12 @@ export function useTrading(
 
   const openAccount = useCallback(
     async (invite?: string): Promise<OpenAccountOutcome> => {
-      if (!wallet) return { kind: "notSent", reason: "No wallet is connected." };
+      if (!wallet)
+        return {
+          kind: "notSent",
+          reason: "No wallet is connected.",
+          failure: "wallet_unavailable",
+        };
       patchFlow(wallet.address, { opening: true });
       let outcome: OpenAccountOutcome;
       try {

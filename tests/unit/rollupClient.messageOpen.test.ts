@@ -169,6 +169,7 @@ describe("opening an account by a signed message", () => {
     expect(await h.client.openAccount(h.wallet)).toEqual({
       kind: "notSent",
       reason: "You declined the message",
+      failure: "wallet_declined",
     });
     expect(h.events).not.toContain("submit");
     expect(h.signTransaction).not.toHaveBeenCalled();

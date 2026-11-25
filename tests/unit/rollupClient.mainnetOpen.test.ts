@@ -280,6 +280,7 @@ describe("opening an account on mainnet", () => {
     expect(outcome).toEqual({
       kind: "notSent",
       reason: `your wallet changed the transaction (it added 1 instruction, from programs ${budget.toBase58()})`,
+      failure: "other",
     });
     expect(h.events).not.toContain("submit");
   });

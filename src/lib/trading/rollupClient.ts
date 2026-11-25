@@ -12,6 +12,7 @@ import {
 } from "../rollup/openClient";
 import { messageDeclined, OwnerActionRefused, signOwnerAction } from "../rollup/ownerMessages";
 import { isWalletDecline } from "../wallet/declined";
+import { failureReasonOf } from "../failureReason";
 import { userMessage } from "../userMessage";
 import { orderSeedPersisted } from "../rollup/orderSeedStore";
 import type { OrderKeyStatus } from "../rollup/orderKeySetup";
@@ -963,7 +964,7 @@ export class RollupTradingClient implements TradingClient {
         error instanceof SignedTransactionRefused || error instanceof OwnerActionRefused
           ? error.reason
           : userMessage(error, { nothingSent: true }).text;
-      return { kind: "notSent", reason: redactToken(reason) };
+      return { kind: "notSent", reason: redactToken(reason), failure: failureReasonOf(error) };
     }
   }
 
@@ -1013,7 +1014,7 @@ export class RollupTradingClient implements TradingClient {
       nowMs: this.now(),
       expiresAtMs: prepared.expiresAtMs,
     });
-    if (refusal) return { kind: "notSent", reason: refusal };
+    if (refusal) return { kind: "notSent", reason: refusal, failure: "server_refused" };
     const signed = await signChecked(session.owner, prepared.transaction);
     const submitted = await submitOpen(
       { simUrl: this.options.simUrl, owner: owner.toBase58(), signedTx: signed },
@@ -1099,7 +1100,7 @@ export class RollupTradingClient implements TradingClient {
       return this.openAgainOnCurrentMode(wallet, invite, refreshed);
     if (prepared.kind !== "prepared") return this.afterRefusal(wallet, prepared);
     const refusal = isExpectedOpenWindow(prepared.expiresAtMs, this.now());
-    if (refusal) return { kind: "notSent", reason: refusal };
+    if (refusal) return { kind: "notSent", reason: refusal, failure: "request_timeout" };
     const programId = trustedProgramId(this.options.overrides);
     let signed: Awaited<ReturnType<typeof signOwnerAction>>;
     try {
@@ -1110,7 +1111,7 @@ export class RollupTradingClient implements TradingClient {
       );
     } catch (error) {
       if (error instanceof OwnerActionRefused || !messageDeclined(error)) throw error;
-      return { kind: "notSent", reason: "You declined the message" };
+      return { kind: "notSent", reason: "You declined the message", failure: "wallet_declined" };
     }
     const submitted = await submitOpenMessage(
       {
