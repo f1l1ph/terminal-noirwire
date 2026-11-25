@@ -43,6 +43,7 @@ describe("failureReasonOf", () => {
     expect(failureReasonOf(named("SessionAuthError"))).toBe("network_unreachable");
     expect(failureReasonOf(named("RollupIdentityError"))).toBe("network_unreachable");
     expect(failureReasonOf(named("SessionRefused"))).toBe("server_refused");
+    expect(failureReasonOf(named("OrderOutcomeUnknownError"))).toBe("request_timeout");
   });
 
   it("reads a seed store failure as key storage", () => {

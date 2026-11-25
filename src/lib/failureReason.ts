@@ -17,6 +17,7 @@ const BY_NAME: Readonly<Record<string, FailureReason>> = {
   SessionAuthError: "network_unreachable",
   RollupIdentityError: "network_unreachable",
   SessionRefused: "server_refused",
+  OrderOutcomeUnknownError: "request_timeout",
   SeedStorageError: "key_storage_unavailable",
 };
 

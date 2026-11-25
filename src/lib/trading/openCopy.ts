@@ -271,11 +271,15 @@ function heldSolText(lamports: bigint): string {
  * so here rather than letting the deposit fail. `walletLamports` is null while
  * the balance is unknown.
  */
+/** True when the wallet holds too little SOL to pay a deposit's network fees. Null (not read yet) is never short. */
+export const depositNeedsSol = (walletLamports: bigint | null): boolean =>
+  walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS);
+
 export function depositHelp(depositsOpen: boolean, walletLamports: bigint | null = null): string {
   if (!depositsOpen) return "Deposits open soon. You can explore the market until then.";
   const addUsdc = "Add USDC from your wallet in the Funds section of your account panel.";
   const depositFee = feeSolText(ROUND_TRIP_LAMPORTS);
-  if (walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS)) {
+  if (walletLamports !== null && depositNeedsSol(walletLamports)) {
     return `${addUsdc} Your wallet holds ${heldSolText(walletLamports)}, and a deposit needs about ${depositFee} for network fees. Add some SOL first. Nothing is charged until you deposit.`;
   }
   return `${addUsdc} Your wallet also needs about ${depositFee} for network fees on the deposit, and about ${feeSolText(SOLANA_EXIT_LAMPORTS)} again to withdraw.`;

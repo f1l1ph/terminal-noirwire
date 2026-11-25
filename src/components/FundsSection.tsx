@@ -2,7 +2,8 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { track, type AnalyticsEvent } from "@/lib/analytics";
+import { track, trackOnce, type AnalyticsEvent } from "@/lib/analytics";
+import { failureReasonOf } from "@/lib/failureReason";
 import { env } from "@/lib/env";
 import { formatMoney } from "@/lib/format";
 import { isAvailableUnknown, transferableAmount } from "@/lib/trading/balanceDisplay";
@@ -51,15 +52,9 @@ type Kind = "deposit" | "withdraw";
 
 const SOL_DECIMALS = 9;
 
-const sentOnce = new Set<AnalyticsEvent>();
-
 /** Counts `event` the first time it mounts in this page load. */
 function CountOnce({ event }: { event: AnalyticsEvent }) {
-  useEffect(() => {
-    if (sentOnce.has(event)) return;
-    sentOnce.add(event);
-    track(event);
-  }, [event]);
+  useEffect(() => trackOnce(event, event), [event]);
   return null;
 }
 
@@ -323,7 +318,9 @@ export default function FundsSection({
         onSettled();
       }
     } catch (error) {
-      if (kind === "deposit") track("deposit_result", { result: "error" });
+      if (kind === "deposit") {
+        track("deposit_result", { result: "error", reason: failureReasonOf(error) });
+      }
       setResult(failureLine(error));
     } finally {
       setPhase(null);

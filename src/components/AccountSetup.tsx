@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { track, type AnalyticsEvent, type SetupStepId } from "@/lib/analytics";
+import { track, trackOnce, type AnalyticsEvent, type SetupStepId } from "@/lib/analytics";
 import { openRefusalReason } from "@/lib/failureReason";
 import { formatShortAddress } from "@/lib/format";
 import {
   depositHelp,
+  depositNeedsSol,
   describeOpenOutcome,
   gateAsksForInvite,
   KEYS_NOT_PERSISTED_NOTE,
@@ -123,6 +124,10 @@ export function AccountSetup({
   const { steps, ready } = setupSteps({ connected: address !== null, status, keys, funded });
   const current = steps.find((step) => step.state === "current")?.id ?? null;
   const walletLamports = useWalletLamports(address, current === "deposit" && depositsOpen);
+  const showsNeedsSol = current === "deposit" && depositsOpen && depositNeedsSol(walletLamports);
+  useEffect(() => {
+    if (showsNeedsSol) trackOnce("deposit_needs_sol", "deposit_needs_sol");
+  }, [showsNeedsSol]);
   const doneIds = steps
     .filter((step) => step.state === "done")
     .map((step) => step.id)

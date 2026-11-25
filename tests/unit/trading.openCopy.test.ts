@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   depositHelp,
+  depositNeedsSol,
   describeOpenOutcome,
   feeSolText,
   gateAsksForInvite,
@@ -283,6 +284,21 @@ describe("depositHelp", () => {
     expect(depositHelp(true, null)).not.toContain("Add some SOL first");
     expect(depositHelp(true, BigInt(ROUND_TRIP_LAMPORTS))).not.toContain("Add some SOL first");
     expect(depositHelp(true, BigInt(ROUND_TRIP_LAMPORTS) - 1n)).toContain("Add some SOL first");
+  });
+
+  it("says the wallet needs SOL exactly when the help line does", () => {
+    for (const lamports of [
+      null,
+      0n,
+      BigInt(ROUND_TRIP_LAMPORTS) - 1n,
+      BigInt(ROUND_TRIP_LAMPORTS),
+    ]) {
+      expect(depositNeedsSol(lamports)).toBe(
+        depositHelp(true, lamports).includes("Add some SOL first"),
+      );
+    }
+    expect(depositNeedsSol(null)).toBe(false);
+    expect(depositNeedsSol(0n)).toBe(true);
   });
 
   it("does not mention SOL when deposits are off", () => {
