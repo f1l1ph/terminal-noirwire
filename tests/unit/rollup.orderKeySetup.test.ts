@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
-import { deriveOrderKey } from "@noirwire/orderbook";
 import {
   cancelsStops,
   deviceOrderKeys,
@@ -8,9 +7,9 @@ import {
   type DeviceSeeds,
 } from "@/lib/rollup/orderKeySetup";
 import { freshOrderKeys, type View } from "@/lib/rollup/sdk";
+import { keysOf, SEED, STRANGER_SEED } from "./support/rollupFixtures";
 
 const OWNER = "OwnerAddress111111111111111111111111111111";
-const SEED = new Uint8Array(32).fill(7);
 
 const viewOf = (orderKeys: PublicKey[], base = 0n, seatRecorded = true) =>
   ({
@@ -19,10 +18,7 @@ const viewOf = (orderKeys: PublicKey[], base = 0n, seatRecorded = true) =>
     snapshot: { seat: { positions: [{ marketId: 0, base }] } },
   }) as unknown as View;
 
-const keysOf = (seed: Uint8Array, indices: number[]) =>
-  indices.map((index) => deriveOrderKey(seed, index).publicKey);
-
-const strangersKeys = () => keysOf(new Uint8Array(32).fill(99), [0, 1, 2, 3]);
+const strangersKeys = () => keysOf(STRANGER_SEED, [0, 1, 2, 3]);
 
 const base58 = (keys: PublicKey[]) => keys.map((key) => key.toBase58());
 

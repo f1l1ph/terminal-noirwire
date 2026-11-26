@@ -1,3 +1,4 @@
+import { KEYS_ELSEWHERE_TITLE } from "./openCopy";
 import type { AccountStatus, OrderKeyState, Side } from "./types";
 
 /** Test funds, the faucet and the built-in test wallet exist on test builds only. */
@@ -107,7 +108,7 @@ export function tradeGate(
 }
 
 const GATE_LABELS: Record<TradeGate, string> = {
-  keysElsewhere: "Trading is on another device",
+  keysElsewhere: KEYS_ELSEWHERE_TITLE,
   keysFailed: "Trading keys not set up",
   needsAccount: "Open your account to trade",
   accountUnknown: "Checking your account…",

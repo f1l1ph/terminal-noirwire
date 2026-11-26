@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { Keypair, type Connection, type PublicKey } from "@solana/web3.js";
-import { deriveOrderKey } from "@noirwire/orderbook";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import { holdsKeysOf, type RollupSession, type TraderClientLike } from "@/lib/rollup/session";
@@ -11,8 +10,6 @@ import {
   type OrderKeyStatus,
 } from "@/lib/rollup/orderKeySetup";
 import { loadCheckpoint, saveCheckpoint } from "@/lib/rollup/checkpointStore";
-import type { PublicDeployment } from "@/lib/rollup/deployment";
-import type { MarketInfo } from "@/lib/market-data/types";
 import type { OrderKeyState, WalletIdentity } from "@/lib/trading/types";
 import {
   freshOrderKeys,
@@ -25,14 +22,22 @@ import {
 } from "@/lib/rollup/sdk";
 import { KEYS_AWAY_REASON, KEYS_REBUILD_FAILED_REASON } from "@/lib/rollup/outcome";
 import { PROGRAM_ERROR } from "@/lib/rollup/refusals";
-import { deploymentMarket, memoryStore, programRefusal } from "./support/rollupFixtures";
+import {
+  keysOf,
+  memoryStore,
+  PERP_MARKET as PERP,
+  programRefusal,
+  SEED,
+  settle,
+  singleMarketDeployment,
+  stages,
+  STRANGER_SEED,
+  tick,
+  USDC,
+} from "./support/rollupFixtures";
 
-const SEED = new Uint8Array(32).fill(7);
-const STRANGER_SEED = new Uint8Array(32).fill(99);
-const USDC = 1_000_000n;
+const DEPLOYMENT = singleMarketDeployment();
 
-const keysOf = (seed: Uint8Array, indices: number[]): PublicKey[] =>
-  indices.map((index) => deriveOrderKey(seed, index).publicKey);
 const range = (first: number) => [first, first + 1, first + 2, first + 3];
 const names = (keys: PublicKey[]) => keys.map((key) => key.toBase58());
 const checkpointAt = (first: number): OrderKeyCheckpoint => ({
@@ -155,37 +160,6 @@ describe("recognising this browser's own keys", () => {
     expect(viewDerivesFromSeed(SEED, view, [checkpointAt(0), checkpointAt(5000)])).toBe(false);
   });
 });
-
-const PERP: MarketInfo = {
-  id: "NSOL-PERP",
-  kind: "perp",
-  base: "SOL",
-  quote: "nUSD",
-  tickSize: "0.010000",
-  lotSize: "0.001000",
-  maxLeverage: 10,
-  markPrice: "150.000000",
-  markPriceUpdatedAtMs: Date.now(),
-  change24hPercent: 0,
-  volume24h: "0",
-  openInterest: "0",
-};
-
-const DEPLOYMENT: PublicDeployment = {
-  network: "localnet",
-  programId: Keypair.generate().publicKey.toBase58(),
-  solanaRpcUrl: "http://127.0.0.1:8899",
-  rollupRpcUrl: "http://127.0.0.1:6699",
-  rollupWsUrl: "ws://127.0.0.1:6700",
-  exchange: Keypair.generate().publicKey.toBase58(),
-  stats: Keypair.generate().publicKey.toBase58(),
-  markets: [deploymentMarket(0, "NSOL-PERP", 9, "1000000")],
-};
-
-const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-const settle = async () => {
-  for (let round = 0; round < 5; round += 1) await tick();
-};
 
 interface WorldOptions {
   /** The manager of the first session starts here (its live keys are `firstIndex` .. +3). */
@@ -317,8 +291,6 @@ function world(options: WorldOptions) {
     viewNow: () => viewNow,
   };
 }
-
-const stages = (statuses: OrderKeyStatus[]) => statuses.map((status) => status.stage);
 
 describe("a second tab of this browser", () => {
   async function started(first: number, ahead: number) {

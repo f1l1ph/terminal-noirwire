@@ -90,6 +90,8 @@ export const ALL_KEYS_BUSY_MESSAGE = "every order key is in use";
 /** `TraderClient.view()`'s own message (0.6.0) when the view account does not exist (the account is not opened yet). Matched on its exact text. */
 export const VIEW_NOT_READABLE_MESSAGE =
   "the view is not readable by this connection: read through a private connection signed in as the owner";
+export const isViewNotReadable = (error: unknown): boolean =>
+  error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
 /** `OrderKeyManager.fromView`'s own message when the view holds keys this seed never derived. Matched on its exact text. */
 export const KEYS_NOT_FROM_SEED_MESSAGE = "the view's order keys do not all derive from this seed";
 /** Whether `error` is the SDK's "keys not from this seed" answer, as opposed to any other failure. */
@@ -270,16 +272,19 @@ export function orderKeysFromCheckpoint(
   return OrderKeyManager.fromView(seed, view, searchLimit);
 }
 
+/** How many order keys a manager holds at once, and so how many replacement keys can be out at once. */
+export const ORDER_KEY_SLOTS = 4;
+
 /**
  * Four keys at consecutive derivation indices from `firstIndex`, as a manager
  * whose next index follows them. Pass an index no key was ever handed out at,
  * so the set never contains a key an earlier instruction was signed with.
  */
 export function orderKeysFromIndex(seed: Uint8Array, firstIndex: number): OrderKeyManager {
-  const indices = [0, 1, 2, 3].map((slot) => firstIndex + slot);
+  const indices = Array.from({ length: ORDER_KEY_SLOTS }, (_, slot) => firstIndex + slot);
   return OrderKeyManager.restore(
     seed,
-    { orderKeys: indices.map((index) => sdkDeriveOrderKey(seed, index).publicKey) },
+    { orderKeys: indices.map((index) => orderKeyAt(seed, index)) },
     { indices, nextIndex: firstIndex },
   );
 }

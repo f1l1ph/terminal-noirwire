@@ -82,6 +82,7 @@ import {
   randomSecret,
   rollupClockSeconds,
   TransactionFailed,
+  isViewNotReadable,
   VIEW_NOT_READABLE_MESSAGE,
   WithdrawalUnknown,
   type OrderResult,
@@ -581,10 +582,6 @@ export class RollupTradingClient implements TradingClient {
     });
   }
 
-  private isAway(session: RollupSession): boolean {
-    return this.away.has(session);
-  }
-
   /** The status for a session that is away, with the warning about stops taken from `view`. Only the wallet's current session changes what the wallet shows. */
   private emitAway(session: RollupSession, view: View): void {
     const state = this.away.get(session);
@@ -781,7 +778,7 @@ export class RollupTradingClient implements TradingClient {
     } catch (error) {
       // An away session shows no account; its status already says why.
       if (error instanceof KeysAwayError) return () => void stop();
-      const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
+      const notReadable = isViewNotReadable(error);
       if (notReadable && !wasAccountOpened(this.storage, address)) {
         // This wallet has never been seen with an account: no view yet means
         // it is empty. The subscription reports it once it exists.
@@ -898,7 +895,7 @@ export class RollupTradingClient implements TradingClient {
 
   /** A `sync_view` read back: whether the seat is held, and the view as it left the program. Throws while the session is away: nothing can be confirmed without this device's keys. */
   private async confirmedSeat(session: RollupSession): Promise<{ seated: boolean; view: View }> {
-    if (this.isAway(session)) throw new KeysAwayError();
+    if (this.away.has(session)) throw new KeysAwayError();
     if (!session.client.confirmSeat) throw new Error("This session cannot confirm a seat");
     const confirmed = await session.client.confirmSeat(DEFAULT_EXPIRY_SECONDS);
     this.confirmedSessions.add(session);
@@ -1038,8 +1035,7 @@ export class RollupTradingClient implements TradingClient {
       return view ? "open" : "absent";
     } catch (error) {
       if (looksUnauthorized(error)) throw error;
-      const notReadable = error instanceof Error && error.message === VIEW_NOT_READABLE_MESSAGE;
-      return notReadable ? "absent" : "unknown";
+      return isViewNotReadable(error) ? "absent" : "unknown";
     }
   }
 
@@ -1095,7 +1091,7 @@ export class RollupTradingClient implements TradingClient {
     onSigned: ((raw: Uint8Array) => Promise<void>) | undefined,
     count: DispatchCount,
   ): Promise<KeyWithdrawal> {
-    if (this.isAway(session)) return { kind: "refused", code: PROGRAM_ERROR.notOrderKey };
+    if (this.away.has(session)) return { kind: "refused", code: PROGRAM_ERROR.notOrderKey };
     let restore = () => {};
     if (onSigned) {
       if (typeof session.reader?.sendRawTransaction !== "function") {
@@ -1539,7 +1535,7 @@ export class RollupTradingClient implements TradingClient {
     body: (session: RollupSession, send: KeyedSend<T>) => Promise<T>,
   ): Promise<T> {
     return this.withSession(wallet, async (session) => {
-      if (this.isAway(session)) return withReason(KEYS_AWAY_REASON);
+      if (this.away.has(session)) return withReason(KEYS_AWAY_REASON);
       return body(session, (run) => this.sendKeyed(wallet, session, withReason, run));
     });
   }
@@ -1598,7 +1594,7 @@ export class RollupTradingClient implements TradingClient {
     if (!target) return null;
     try {
       const rebuilt = await target.session;
-      return this.isAway(rebuilt) || rebuilt === behind ? null : rebuilt;
+      return this.away.has(rebuilt) || rebuilt === behind ? null : rebuilt;
     } catch {
       return null;
     }
@@ -1877,21 +1873,11 @@ export class RollupTradingClient implements TradingClient {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      const attempt = await send(async (live): Promise<KeyedAttempt<CancelResult>> => {
-        try {
-          const result = await live.client.cancelOrder(
-            binding.numericId,
-            BigInt(orderId),
-            DEFAULT_EXPIRY_SECONDS,
-          );
-          live.saveKeyCheckpoint();
-          return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
-        } catch (error) {
-          const mapped = cancelErrorToResult(error, expiresAtMs);
-          if (!mapped) throw error;
-          return { value: mapped, refusal: refusalNumberOf(error) };
-        }
-      });
+      const attempt = await send((live) =>
+        cancelAttempt(live, expiresAtMs, () =>
+          live.client.cancelOrder(binding.numericId, BigInt(orderId), DEFAULT_EXPIRY_SECONDS),
+        ),
+      );
       if (attempt.value.cancelled > 0) await this.showViewAfterCancel(attempt.session);
       return attempt.value;
     });
@@ -1911,17 +1897,11 @@ export class RollupTradingClient implements TradingClient {
       const binding = this.bindings(session).get(market);
       if (!binding) throw new Error(`${market} was not found on chain`);
       const expiresAtMs = this.now() + DEFAULT_EXPIRY_SECONDS * 1000;
-      const attempt = await send(async (live): Promise<KeyedAttempt<CancelResult>> => {
-        try {
-          const result = await live.client.cancelAll(binding.numericId, DEFAULT_EXPIRY_SECONDS);
-          live.saveKeyCheckpoint();
-          return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
-        } catch (error) {
-          const mapped = cancelErrorToResult(error, expiresAtMs);
-          if (!mapped) throw error;
-          return { value: mapped, refusal: refusalNumberOf(error) };
-        }
-      });
+      const attempt = await send((live) =>
+        cancelAttempt(live, expiresAtMs, () =>
+          live.client.cancelAll(binding.numericId, DEFAULT_EXPIRY_SECONDS),
+        ),
+      );
       return attempt.value;
     });
   }
@@ -2071,7 +2051,7 @@ export class RollupTradingClient implements TradingClient {
 
   /** A `sync_view` for the market, then the view read back: the one way the status of its triggers reaches this device. */
   private async refreshTriggers(session: RollupSession, binding: MarketBinding): Promise<void> {
-    if (this.isAway(session)) return;
+    if (this.away.has(session)) return;
     try {
       await session.client.syncView(binding.numericId, DEFAULT_EXPIRY_SECONDS);
       session.saveKeyCheckpoint();
@@ -2179,7 +2159,7 @@ export class RollupTradingClient implements TradingClient {
   /** Whether the view was refreshed: false when the sync did not go through, so the caller can ask again. A market this terminal does not trade has nothing to refresh and counts as done. */
   async syncMarket(wallet: WalletIdentity, market: string): Promise<boolean> {
     return this.withSession(wallet, async (session) => {
-      if (this.isAway(session)) return false;
+      if (this.away.has(session)) return false;
       const binding = this.bindings(session).get(market);
       if (!binding) return true;
       try {
@@ -2462,6 +2442,22 @@ export class SessionRefusedError extends Error {
   constructor() {
     super("The exchange stopped accepting your sign-in. Sign in again to continue.");
     this.name = "SessionRefused";
+  }
+}
+
+async function cancelAttempt(
+  live: RollupSession,
+  expiresAtMs: number,
+  call: () => Promise<OrderResult>,
+): Promise<KeyedAttempt<CancelResult>> {
+  try {
+    const result = await call();
+    live.saveKeyCheckpoint();
+    return { value: cancelToResult(result), refusal: resultRefusalNumber(result) };
+  } catch (error) {
+    const mapped = cancelErrorToResult(error, expiresAtMs);
+    if (!mapped) throw error;
+    return { value: mapped, refusal: refusalNumberOf(error) };
   }
 }
 

@@ -21,6 +21,7 @@ import { marketMatchesChain } from "./markets";
 import {
   deviceOrderKeys,
   moveOrderKeysHere,
+  QUICK_KEY_SEARCH,
   viewDerivesFromSeed,
   type DeviceOrderKeys,
   type DeviceSeeds,
@@ -45,8 +46,9 @@ import {
   PACKAGE_PROGRAM_ID,
   programAddresses,
   signInWithExpiry,
+  ORDER_KEY_SLOTS,
   TraderClient,
-  VIEW_NOT_READABLE_MESSAGE,
+  isViewNotReadable,
   viewKeysDeriveFrom,
   type CustodyToken,
   type OrderKeyManager,
@@ -342,17 +344,6 @@ async function marketsMatchingChain(
   return matching;
 }
 
-const isErrorWithMessage = (error: unknown, message: string) =>
-  error instanceof Error && error.message === message;
-
-/**
- * How far the first, quick searches look. The full search (100,000 indices)
- * takes many seconds when the keys are not there, so it runs only once the
- * quick ones have ruled out the common cases: this seed's keys not far in,
- * or keys left from the earlier seed derivation.
- */
-const QUICK_KEY_SEARCH = 1_024;
-
 /**
  * The owner's view, or null while the account is not opened. A one-shot read,
  * thrown away right after: no benefit from a live result subscription here,
@@ -368,7 +359,7 @@ async function readOwnerView(
   try {
     return await new TraderClient(reader, reader, owner, keys, programId, { push: false }).view();
   } catch (error) {
-    if (isErrorWithMessage(error, VIEW_NOT_READABLE_MESSAGE)) return null;
+    if (isViewNotReadable(error)) return null;
     throw error;
   }
 }
@@ -407,9 +398,6 @@ async function derivedOrderKeys(
   await install(fresh);
   return fresh;
 }
-
-/** How many replacement keys can be out at once: one per order-key slot. */
-const ORDER_KEY_SLOTS = 4;
 
 /**
  * Whether the view holds a key this manager holds, or one it handed out as a

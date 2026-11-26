@@ -12,8 +12,13 @@ import {
   type View,
 } from "./sdk";
 
-/** How far the first, quick search for this seed's keys in the view looks. */
-const QUICK_KEY_SEARCH = 1_024;
+/**
+ * How far the first, quick searches look. The full search (100,000 indices)
+ * takes many seconds when the keys are not there, so it runs only once the
+ * quick ones have ruled out the common cases: this seed's keys not far in,
+ * or keys left from the earlier seed derivation.
+ */
+export const QUICK_KEY_SEARCH = 1_024;
 
 /** Where the order keys stand while a session is built, for the UI to show. */
 export type OrderKeyStatus =
@@ -97,7 +102,6 @@ export async function deviceOrderKeys(deps: DeviceKeyDeps): Promise<DeviceOrderK
   }
 }
 
-/** This device's seed store could not load or keep the seed. The message is the store's own. */
 export class SeedStorageError extends Error {
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : "the order seed store failed", { cause });

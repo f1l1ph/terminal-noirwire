@@ -1,3 +1,4 @@
+import { SETUP_STEPS, type SetupStepId } from "../analytics";
 import { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "../transfer/computeBudget";
 import type { AccountStatus, OpenAccountOutcome, OrderKeyState } from "./types";
 
@@ -199,7 +200,7 @@ export function keysNotice(keys: OrderKeyState | null): KeysNotice | null {
   }
 }
 
-export type DeviceStatus = "here" | "elsewhere";
+type DeviceStatus = "here" | "elsewhere";
 
 /** Where the trader's trading keys are, or null while that is not known or key setup failed. */
 export function deviceStatus(keys: OrderKeyState | null): DeviceStatus | null {
@@ -246,7 +247,6 @@ export function withoutOpenOutcome<T extends { outcome: OpenAccountOutcome | nul
   return { ...flows, [owner]: { ...flow, outcome: null } };
 }
 
-export type SetupStepId = "connect" | "verify" | "open" | "keys" | "deposit";
 export type SetupStepState = "done" | "current" | "upcoming";
 
 export interface SetupStep {
@@ -263,7 +263,7 @@ export const SETUP_LABELS: Record<SetupStepId, string> = {
   deposit: "Deposit USDC",
 };
 
-const SETUP_ORDER: SetupStepId[] = ["connect", "verify", "open", "keys", "deposit"];
+const SETUP_ORDER: readonly SetupStepId[] = SETUP_STEPS;
 
 /**
  * The steps from a new visitor to a funded account, each done, current or
@@ -309,6 +309,10 @@ function heldSolText(lamports: bigint): string {
   return `${sol.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")} SOL`;
 }
 
+/** True when the wallet holds too little SOL to pay a deposit's network fees. Null (not read yet) is never short. */
+export const depositNeedsSol = (walletLamports: bigint | null): boolean =>
+  walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS);
+
 /**
  * What the deposit step says to do; it never asks for an action the page
  * cannot offer. It names the SOL a deposit and a later withdrawal cost in
@@ -316,10 +320,6 @@ function heldSolText(lamports: bigint): string {
  * so here rather than letting the deposit fail. `walletLamports` is null while
  * the balance is unknown.
  */
-/** True when the wallet holds too little SOL to pay a deposit's network fees. Null (not read yet) is never short. */
-export const depositNeedsSol = (walletLamports: bigint | null): boolean =>
-  walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS);
-
 export function depositHelp(depositsOpen: boolean, walletLamports: bigint | null = null): string {
   if (!depositsOpen) return "Deposits open soon. You can explore the market until then.";
   const addUsdc = "Add USDC from your wallet in the Funds section of your account panel.";

@@ -1,23 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
-import { deriveOrderKey } from "@noirwire/orderbook";
 import { deviceOrderKeys, type DeviceKeyDeps } from "@/lib/rollup/orderKeySetup";
-import { KEYS_NOT_FROM_SEED_MESSAGE, type View } from "@/lib/rollup/sdk";
+import type { View } from "@/lib/rollup/sdk";
+import { keysOf, SEED, STRANGER_SEED } from "./support/rollupFixtures";
 
 // The full search for keys this seed never made takes many seconds; the search
 // is replaced by its own "not from this seed" answer, which is all it gives here.
-vi.mock("@/lib/rollup/sdk", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/rollup/sdk")>()),
-  orderKeysFromCheckpoint: () => {
-    throw new Error("the view's order keys do not all derive from this seed");
-  },
-}));
+vi.mock("@/lib/rollup/sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/rollup/sdk")>();
+  return {
+    ...actual,
+    orderKeysFromCheckpoint: () => {
+      throw new Error(actual.KEYS_NOT_FROM_SEED_MESSAGE);
+    },
+  };
+});
 
-const SEED = new Uint8Array(32).fill(7);
 const foreignView = () =>
   ({
-    orderKeys: [0, 1, 2, 3].map(
-      (index) => deriveOrderKey(new Uint8Array(32).fill(99), index).publicKey,
-    ),
+    orderKeys: keysOf(STRANGER_SEED, [0, 1, 2, 3]),
     seatRecorded: true,
   }) as unknown as View;
 
@@ -33,7 +33,6 @@ function depsWith(checkpoint: DeviceKeyDeps["checkpoint"]): DeviceKeyDeps {
 
 describe("the keys of a session that does not hold the account's", () => {
   it("start past the device's saved checkpoint, so a move installs where resync reaches", async () => {
-    expect(KEYS_NOT_FROM_SEED_MESSAGE).toMatch(/derive from this seed/);
     const { keys, held } = await deviceOrderKeys(
       depsWith({ indices: [96, 97, 98, 99], nextIndex: 100 }),
     );
