@@ -332,6 +332,12 @@ export default function FundsSection({
     }
   }
 
+  const awayNote = tradingAway && (
+    <p role="status" className="text-dim mt-1 text-[12px]">
+      {MOVING_FUNDS_AWAY_NOTE}
+    </p>
+  );
+
   return (
     <div>
       <TransferRecords
@@ -353,11 +359,7 @@ export default function FundsSection({
             >
               Add or withdraw USDC
             </button>
-            {tradingAway && (
-              <p role="status" className="text-dim mt-1 text-[12px]">
-                {MOVING_FUNDS_AWAY_NOTE}
-              </p>
-            )}
+            {awayNote}
           </>
         ) : (
           <div>
@@ -403,11 +405,7 @@ export default function FundsSection({
                 new one cannot start until then.
               </p>
             )}
-            {tradingAway && (
-              <p role="status" className="text-dim mt-1 text-[12px]">
-                {MOVING_FUNDS_AWAY_NOTE}
-              </p>
-            )}
+            {awayNote}
             {!accountOpen && !tradingAway && (
               <p className="text-dim mt-1 text-[12px]">Open your account before moving USDC.</p>
             )}

@@ -120,6 +120,7 @@ export function AccountDock({
   /** Take profit and stop loss on each position; null wherever the exchange does not offer them, which shows nothing new. */
   triggers?: PositionTriggerControls | null;
 }) {
+  const showsFigures = hasWallet && !figuresAway && !unseated;
   return (
     <div
       className={`flex min-h-0 flex-1 flex-col ${bordered ? "bg-surface border-line-subtle rounded-panel border" : ""}`}
@@ -162,7 +163,7 @@ export function AccountDock({
             hint="Your trading account holds nothing yet. Your first deposit opens it."
           />
         )}
-        {hasWallet && !figuresAway && !unseated && tab === "positions" && (
+        {showsFigures && tab === "positions" && (
           <PositionsTable
             positions={positions}
             collateral={collateral}
@@ -177,7 +178,7 @@ export function AccountDock({
             triggers={triggers}
           />
         )}
-        {hasWallet && !figuresAway && !unseated && tab === "openOrders" && (
+        {showsFigures && tab === "openOrders" && (
           <OpenOrdersTable
             openOrders={openOrders}
             marketSettings={marketSettings}
@@ -186,10 +187,10 @@ export function AccountDock({
             cancellingOrderIds={cancellingOrderIds}
           />
         )}
-        {hasWallet && !figuresAway && !unseated && tab === "fills" && (
+        {showsFigures && tab === "fills" && (
           <FillsTable fills={ownFills} marketSettings={marketSettings} />
         )}
-        {hasWallet && !figuresAway && !unseated && tab === "balances" && (
+        {showsFigures && tab === "balances" && (
           <BalancesTable
             balances={balances}
             collateral={collateral}
@@ -198,7 +199,7 @@ export function AccountDock({
             now={now}
           />
         )}
-        {hasWallet && !figuresAway && !unseated && tab === "margin" && (
+        {showsFigures && tab === "margin" && (
           <MarginTable
             positions={positions}
             collateral={collateral}

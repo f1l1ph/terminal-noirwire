@@ -49,7 +49,6 @@ const SETUP_EVENTS: Record<string, AnalyticsEvent | undefined> = {
   deposit: "account_funded",
 };
 
-const sentThisPageLoad = new Set<string>();
 const countedOutcomes = new WeakSet<OpenAccountOutcome>();
 const funnel = new SetupFunnel();
 
@@ -143,9 +142,7 @@ export function AccountSetup({
     for (const id of doneIds ? doneIds.split(",") : []) {
       funnel.done(id as SetupStepId);
       const event = SETUP_EVENTS[id];
-      if (!event || sentThisPageLoad.has(id)) continue;
-      sentThisPageLoad.add(id);
-      track(event);
+      if (event) trackOnce(`setup:${id}`, event);
     }
   }, [doneIds]);
   useEffect(() => {
@@ -168,9 +165,7 @@ export function AccountSetup({
     if (reason) funnel.failed("open", reason);
   }, [outcome]);
   useEffect(() => {
-    if (!asksForInvite || sentThisPageLoad.has("invite")) return;
-    sentThisPageLoad.add("invite");
-    track("invite_asked");
+    if (asksForInvite) trackOnce("setup:invite", "invite_asked");
   }, [asksForInvite]);
 
   if (ready) {

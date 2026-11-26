@@ -20,7 +20,6 @@ import {
 const ROW_BUTTON =
   "rounded-tile text-ink hover:bg-elevated flex min-h-8 w-full items-center px-2 text-[12px]";
 
-/** What the settings popover shows; the menu around it only opens and closes it. */
 export function SettingsPanel({
   keys,
   mainnet,

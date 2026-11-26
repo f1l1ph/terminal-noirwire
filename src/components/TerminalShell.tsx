@@ -11,7 +11,6 @@ import {
   WizardSpot,
   type WizardSpotData,
 } from "@/components/FunWizard";
-import type { FunModeSettings } from "@/lib/layout/funMode";
 import type { Mood } from "@/lib/trading/positionMood";
 import type { ConnectionState } from "@/lib/market-data/socket";
 import type { WalletHookResult } from "@/lib/wallet/useWallet";
@@ -30,16 +29,13 @@ export function TerminalShell({
   footer,
   settings,
   notices,
-  funMode,
-  mood,
+  tintMood,
   wizard,
   wizardInHeader,
   children,
 }: {
-  /** The trader's Fun mode choices; the visuals only appear while it is on. */
-  funMode: FunModeSettings;
-  mood: Mood;
-  /** The wizard's line and risk range; absent while Fun mode or the Wizard setting is off. */
+  /** The mood the screen is tinted with; null leaves it untinted. */
+  tintMood: Mood | null;
   wizard: WizardSpotData | null;
   /** The compact wizard sits in the header on a desktop layout (until the market card has room for his spot) and in a fixed row under it on a phone. */
   wizardInHeader: boolean;
@@ -55,7 +51,7 @@ export function TerminalShell({
 }) {
   return (
     <div className="bg-base isolate flex h-dvh min-h-0 flex-col overflow-hidden">
-      {funMode.enabled && funMode.tint && <FunMoodOverlay mood={mood} />}
+      {tintMood && <FunMoodOverlay mood={tintMood} />}
       <header className="relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Mark size={18} title="NoirWire" />

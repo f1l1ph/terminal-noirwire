@@ -581,9 +581,8 @@ export function Terminal() {
     .join(",");
   // Either sync below is asked again, ever more slowly up to once a minute,
   // for as long as the account is open and it has not gone through.
-  const keysDevice = deviceStatus(trading.orderKeys);
-  const accountOpen =
-    trading.accountStatus === "open" && trading.accountLoaded && keysDevice !== "elsewhere";
+  const tradingAway = deviceStatus(trading.orderKeys) === "elsewhere";
+  const accountOpen = trading.accountStatus === "open" && trading.accountLoaded && !tradingAway;
   const positionTriggers = usePositionTriggers({
     owner: ownerIdentity?.address ?? null,
     live: trading.triggersLive,
@@ -592,7 +591,7 @@ export function Terminal() {
     statuses: trading.state.triggers,
     blocked: tabGuard.elsewhere
       ? TRADING_IN_OTHER_TAB_NOTICE
-      : keysDevice === "elsewhere"
+      : tradingAway
         ? KEYS_ELSEWHERE_NOTICE
         : null,
     setTrigger: trading.setTrigger,
@@ -1004,7 +1003,7 @@ export function Terminal() {
       limits={trading.marketLimits}
       exposureUnreadable={trading.state.exposureUnreadable === true}
       unseated={trading.state.unseated === true}
-      figuresAway={keysDevice === "elsewhere"}
+      figuresAway={tradingAway}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
       cancellingOrderIds={
         cancelling ? new Set(trading.state.openOrders.map((order) => order.orderId)) : cancellingIds
@@ -1021,7 +1020,7 @@ export function Terminal() {
               ownerAuthKnown={trading.ownerAuthKnown}
               accountOpen={trading.accountStatus === "open"}
               accountKnown={trading.accountStatus !== "unknown"}
-              tradingAway={keysDevice === "elsewhere"}
+              tradingAway={tradingAway}
               collateral={trading.state.collateral ?? null}
               onSettled={() => void trading.syncMarket(selectedMarketId)}
             />
@@ -1103,8 +1102,7 @@ export function Terminal() {
           onResetLayout={isDesktop ? resetLayout : undefined}
         />
       }
-      funMode={funMode}
-      mood={mood}
+      tintMood={funMode.enabled && funMode.tint ? mood : null}
       wizard={wizard}
       wizardInHeader={isDesktop}
       notices={
