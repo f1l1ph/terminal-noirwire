@@ -6,6 +6,7 @@ import {
   nextMood,
   positionGauge,
   rawMood,
+  sameMood,
   type LocalTriggerReading,
   type Mood,
   type MoodInput,
@@ -47,38 +48,110 @@ function moodOf(overrides: Partial<MoodInput> & { triggers?: Triggers }): Mood {
   return nextMood(CALM_MOOD, rawMood(input(overrides)));
 }
 
-describe("mood from stop loss and take profit", () => {
-  it("is calm with no open position", () => {
+function longAt(mark: string, triggers: Triggers[string]): Mood {
+  return moodOf({ marks: { "A-PERP": freshMark(mark) }, triggers: { "A-PERP": triggers } });
+}
+
+describe("danger target selection", () => {
+  it("is calm and untoned with no open position", () => {
     expect(moodOf({ positions: [position("A-PERP", "0")] })).toEqual(CALM_MOOD);
   });
 
-  it("warns a long as the mark falls towards its stop loss, more the closer it gets", () => {
-    const far = moodOf({ triggers: { "A-PERP": { stopLoss: armed("98", true) } } });
-    const close = moodOf({
-      marks: { "A-PERP": freshMark("98.5") },
-      triggers: { "A-PERP": { stopLoss: armed("98", true) } },
-    });
-    expect(far).toMatchObject({ state: "nearDanger", reason: "stopLoss" });
-    expect(close.intensity).toBeGreaterThan(far.intensity);
-  });
-
-  it("warns a short as the mark rises towards its stop loss", () => {
-    expect(
-      moodOf({
-        positions: [position("A-PERP", "-1")],
-        triggers: { "A-PERP": { stopLoss: armed("102", false) } },
-      }),
-    ).toMatchObject({ state: "nearDanger", reason: "stopLoss" });
-  });
-
-  it("shows a long approaching its take profit, and a short approaching its own", () => {
-    const long = moodOf({ triggers: { "A-PERP": { takeProfit: armed("104", true) } } });
+  it("follows the stop loss of a long, and a short's own", () => {
+    const long = longAt("99", { stopLoss: armed("98", true) });
     const short = moodOf({
       positions: [position("A-PERP", "-1")],
-      triggers: { "A-PERP": { takeProfit: armed("96", false) } },
+      marks: { "A-PERP": freshMark("101") },
+      triggers: { "A-PERP": { stopLoss: armed("102", false) } },
     });
-    expect(long).toMatchObject({ state: "nearProfit", reason: "takeProfit" });
-    expect(short).toMatchObject({ state: "nearProfit", reason: "takeProfit" });
+    for (const mood of [long, short]) {
+      expect(mood).toMatchObject({ tone: "danger", reason: "stopLoss", state: "nearDanger" });
+      expect(mood.progress).toBeCloseTo(0.5, 6);
+    }
+    expect(long.focus).toEqual({ market: "A-PERP", price: "98", kind: "stopLoss" });
+    expect(short.focus).toEqual({ market: "A-PERP", price: "102", kind: "stopLoss" });
+  });
+
+  it("prefers the stop loss over a farther liquidation estimate", () => {
+    const mood = moodOf({
+      marks: { "A-PERP": freshMark("99") },
+      entryLiquidation: () => "90",
+      triggers: { "A-PERP": { stopLoss: armed("98", true) } },
+    });
+    expect(mood).toMatchObject({ reason: "stopLoss", focus: { price: "98", kind: "stopLoss" } });
+  });
+
+  it("follows the take-profit band, not a calm liquidation reading, for the tone and focus", () => {
+    const mood = nextMood(CALM_MOOD, {
+      unknown: null,
+      danger: {
+        progress: 0.3,
+        bps: 200,
+        reached: false,
+        reason: "liquidation",
+        market: "A-PERP",
+        price: "90",
+      },
+      profit: { progress: 0.6, bps: 100, reached: false, market: "A-PERP", price: "110" },
+    });
+    expect(mood).toMatchObject({
+      state: "nearProfit",
+      reason: "takeProfit",
+      tone: "profit",
+      focus: { market: "A-PERP", price: "110", kind: "takeProfit" },
+    });
+    expect(mood.progress).toBeCloseTo(0.6, 6);
+  });
+
+  it("uses the liquidation estimate only when there is no stop loss", () => {
+    const mood = moodOf({ marks: { "A-PERP": freshMark("95") }, entryLiquidation: () => "90" });
+    expect(mood).toMatchObject({
+      tone: "danger",
+      reason: "liquidation",
+      state: "nearDanger",
+      focus: { market: "A-PERP", price: "90" },
+    });
+    expect(mood.progress).toBeCloseTo(0.5, 6);
+  });
+
+  it("ignores a stop loss that is not armed and falls back to the liquidation", () => {
+    const mood = moodOf({
+      marks: { "A-PERP": freshMark("95") },
+      entryLiquidation: () => "90",
+      triggers: { "A-PERP": { stopLoss: { price: "98", long: true, armed: false } } },
+    });
+    expect(mood.reason).toBe("liquidation");
+  });
+
+  it("targets the liquidation when it would be reached before the stop loss, for a long", () => {
+    const mood = moodOf({
+      marks: { "A-PERP": freshMark("99.5") },
+      entryLiquidation: () => "99",
+      triggers: { "A-PERP": { stopLoss: armed("98", true) } },
+    });
+    expect(mood).toMatchObject({ reason: "liquidation", focus: { price: "99" } });
+    expect(mood.progress).toBeCloseTo(0.5, 6);
+  });
+
+  it("targets the liquidation when it would be reached before the stop loss, for a short", () => {
+    const mood = moodOf({
+      positions: [position("A-PERP", "-1")],
+      marks: { "A-PERP": freshMark("100.5") },
+      entryLiquidation: () => "101",
+      triggers: { "A-PERP": { stopLoss: armed("102", false) } },
+    });
+    expect(mood).toMatchObject({ reason: "liquidation", focus: { price: "101" } });
+    expect(mood.progress).toBeCloseTo(0.5, 6);
+  });
+
+  it("keeps a short's stop loss when the liquidation lies beyond it", () => {
+    const mood = moodOf({
+      positions: [position("A-PERP", "-1")],
+      marks: { "A-PERP": freshMark("101") },
+      entryLiquidation: () => "110",
+      triggers: { "A-PERP": { stopLoss: armed("102", false) } },
+    });
+    expect(mood.reason).toBe("stopLoss");
   });
 
   const unarmed: LocalTriggerReading = { price: "98", long: true, armed: false };
@@ -97,53 +170,259 @@ describe("mood from stop loss and take profit", () => {
       { "A-PERP": { stopLoss: armed("abc", true) } },
     ],
   ])("%s", (_name, triggers) => {
-    expect(moodOf({ triggers })).toEqual(CALM_MOOD);
-  });
-
-  it("warns about a stop loss moved above the entry to lock in profit", () => {
-    expect(
-      moodOf({
-        marks: { "A-PERP": freshMark("103") },
-        triggers: { "A-PERP": { stopLoss: armed("102", true) } },
-      }),
-    ).toMatchObject({ state: "nearDanger", reason: "stopLoss" });
-  });
-
-  it("is at danger once the mark is past the stop loss", () => {
-    expect(
-      moodOf({
-        marks: { "A-PERP": freshMark("97") },
-        triggers: { "A-PERP": { stopLoss: armed("98", true) } },
-      }),
-    ).toEqual({ state: "atDanger", intensity: 1, reason: "stopLoss" });
-  });
-
-  it("is at profit once the mark is past the take profit price", () => {
-    expect(
-      moodOf({
-        marks: { "A-PERP": freshMark("105") },
-        triggers: { "A-PERP": { takeProfit: armed("104", true) } },
-      }),
-    ).toEqual({ state: "atProfit", intensity: 1, reason: "takeProfit" });
+    expect(moodOf({ marks: { "A-PERP": freshMark("99") }, triggers })).toEqual(CALM_MOOD);
   });
 });
 
-describe("mood across positions and freshness", () => {
-  const two = [position("A-PERP", "1"), position("B-PERP", "1")];
-  const marks = { "A-PERP": freshMark("100"), "B-PERP": freshMark("100") };
+describe("progress from the entry price", () => {
+  it("is zero at the entry and one at the target, and clamps outside", () => {
+    const stop = { stopLoss: armed("98", true) };
+    expect(longAt("100", stop).tone).toBeNull();
+    expect(longAt("101", stop).tone).toBeNull();
+    expect(longAt("99", stop).progress).toBeCloseTo(0.5, 6);
+    expect(longAt("98", stop)).toMatchObject({ state: "atDanger", progress: 1, intensity: 1 });
+    expect(longAt("97", stop)).toMatchObject({ state: "atDanger", progress: 1, intensity: 1 });
+  });
 
-  it("lets danger win over profit on another position", () => {
+  it("measures a profit the same way from the entry", () => {
+    const takeProfit = { takeProfit: armed("104", true) };
+    expect(longAt("100", takeProfit).tone).toBeNull();
+    expect(longAt("102", takeProfit)).toMatchObject({ tone: "profit", reason: "takeProfit" });
+    expect(longAt("102", takeProfit).progress).toBeCloseTo(0.5, 6);
+    expect(longAt("104", takeProfit)).toMatchObject({ state: "atProfit", intensity: 1 });
+    expect(longAt("105", takeProfit)).toMatchObject({ state: "atProfit", progress: 1 });
+  });
+
+  it("mirrors a short's take profit", () => {
+    const mood = moodOf({
+      positions: [position("A-PERP", "-1")],
+      marks: { "A-PERP": freshMark("98") },
+      triggers: { "A-PERP": { takeProfit: armed("96", false) } },
+    });
+    expect(mood).toMatchObject({ tone: "profit", state: "nearProfit" });
+    expect(mood.progress).toBeCloseTo(0.5, 6);
+  });
+
+  it("falls back to a 300 bps window when the entry price cannot be read", () => {
+    const mood = moodOf({
+      positions: [position("A-PERP", "1", "abc")],
+      marks: { "A-PERP": freshMark("99") },
+      triggers: { "A-PERP": { stopLoss: armed("98", true) } },
+    });
+    expect(mood.progress).toBeCloseTo(1 - 101.01 / 300, 3);
+  });
+
+  it("falls back to the window when the stop sits at or beyond break-even", () => {
+    const mood = longAt("103", { stopLoss: armed("102", true) });
+    expect(mood).toMatchObject({ tone: "danger", reason: "stopLoss" });
+    expect(mood.progress).toBeCloseTo(1 - 97.09 / 300, 3);
+    expect(longAt("102.5", { stopLoss: armed("100", true) }).progress).toBeCloseTo(
+      1 - 243.9 / 300,
+      3,
+    );
+  });
+
+  it("falls back to a 500 bps window for a take profit with no usable entry", () => {
+    const mood = moodOf({
+      positions: [position("A-PERP", "1", "0")],
+      triggers: { "A-PERP": { takeProfit: armed("104", true) } },
+    });
+    expect(mood).toMatchObject({ tone: "profit" });
+    expect(mood.progress).toBeCloseTo(0.2, 6);
+  });
+
+  it("is at danger once the mark is past a short's stop loss", () => {
+    expect(
+      moodOf({
+        positions: [position("A-PERP", "-1")],
+        marks: { "A-PERP": freshMark("103") },
+        triggers: { "A-PERP": { stopLoss: armed("102", false) } },
+      }),
+    ).toMatchObject({ state: "atDanger", reason: "stopLoss", intensity: 1, progress: 1 });
+  });
+
+  it("is at danger with no price to show when the account is already below maintenance", () => {
+    const long = { ...position("A-PERP", "100", "0.1"), quote: "-10", maintenanceMarginBps: 500 };
+    expect(
+      moodOf({ positions: [long], collateral: "1", marks: { "A-PERP": freshMark("0.09") } }),
+    ).toMatchObject({
+      state: "atDanger",
+      reason: "liquidation",
+      tone: "danger",
+      intensity: 1,
+      focus: { market: "A-PERP", price: null },
+    });
+  });
+});
+
+describe("continuous intensity", () => {
+  it("is the square of progress, never stepped", () => {
+    const seen = new Set<number>();
+    for (let tick = 1; tick < 40; tick += 1) {
+      const mark = (100 - tick * 0.05).toFixed(2);
+      const mood = longAt(mark, { stopLoss: armed("98", true) });
+      expect(mood.intensity).toBeCloseTo(mood.progress * mood.progress, 9);
+      seen.add(mood.intensity);
+    }
+    expect(seen.size).toBe(39);
+    expect([...seen].some((value) => Math.round(value * 10) !== value * 10)).toBe(true);
+  });
+
+  it("rises with every price move towards the stop and falls on the way back", () => {
+    const stop = { stopLoss: armed("98", true) };
+    const a = longAt("99.4", stop).intensity;
+    const b = longAt("99.3", stop).intensity;
+    const c = longAt("99.4", stop).intensity;
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBe(a);
+  });
+});
+
+describe("several positions", () => {
+  const two = [position("A-PERP", "1"), position("B-PERP", "1")];
+
+  it("follows the position furthest towards its danger target", () => {
+    const mood = moodOf({
+      positions: two,
+      marks: { "A-PERP": freshMark("99"), "B-PERP": freshMark("99.8") },
+      triggers: {
+        "A-PERP": { stopLoss: armed("98", true) },
+        "B-PERP": { stopLoss: armed("98", true) },
+      },
+    });
+    expect(mood.focus?.market).toBe("A-PERP");
+    expect(mood.progress).toBeCloseTo(0.5, 6);
+  });
+
+  it("measures each position against its own entry", () => {
+    const mood = moodOf({
+      positions: [position("A-PERP", "1", "100"), position("B-PERP", "1", "50")],
+      marks: { "A-PERP": freshMark("99"), "B-PERP": freshMark("47") },
+      triggers: {
+        "A-PERP": { stopLoss: armed("98", true) },
+        "B-PERP": { stopLoss: armed("46", true) },
+      },
+    });
+    expect(mood.focus?.market).toBe("B-PERP");
+    expect(mood.progress).toBeCloseTo(0.75, 6);
+  });
+
+  it("lets a profit band win the glow over a danger reading that has only begun", () => {
+    const mood = moodOf({
+      positions: two,
+      marks: { "A-PERP": freshMark("100.8"), "B-PERP": freshMark("99.9") },
+      triggers: {
+        "A-PERP": { takeProfit: armed("101", true) },
+        "B-PERP": { stopLoss: armed("98", true) },
+      },
+    });
+    expect(mood).toMatchObject({
+      state: "nearProfit",
+      tone: "profit",
+      focus: { market: "A-PERP", kind: "takeProfit" },
+    });
+  });
+
+  it("shows the profit glow while no danger has begun, from the position furthest along", () => {
+    const mood = moodOf({
+      positions: two,
+      marks: { "A-PERP": freshMark("100"), "B-PERP": freshMark("101") },
+      triggers: {
+        "A-PERP": { stopLoss: armed("98", true), takeProfit: armed("102", true) },
+        "B-PERP": { takeProfit: armed("102", true) },
+      },
+    });
+    expect(mood).toMatchObject({ tone: "profit", focus: { market: "B-PERP", price: "102" } });
+  });
+
+  it("tones and focuses on the reached take profit, not a faint stop on another position", () => {
+    const mood = moodOf({
+      positions: two,
+      marks: { "A-PERP": freshMark("99.9"), "B-PERP": freshMark("102") },
+      triggers: {
+        "A-PERP": { stopLoss: armed("98", true) },
+        "B-PERP": { takeProfit: armed("102", true) },
+      },
+    });
+    expect(mood).toMatchObject({
+      state: "atProfit",
+      reason: "takeProfit",
+      tone: "profit",
+      progress: 1,
+      intensity: 1,
+      focus: { market: "B-PERP", price: "102", kind: "takeProfit" },
+    });
+  });
+
+  it("lets a danger band win over profit on another position", () => {
     expect(
       moodOf({
         positions: two,
-        marks,
+        marks: { "A-PERP": freshMark("101.5"), "B-PERP": freshMark("99") },
         triggers: {
-          "A-PERP": { takeProfit: armed("101", true) },
+          "A-PERP": { takeProfit: armed("102", true) },
           "B-PERP": { stopLoss: armed("98", true) },
         },
       }).state,
     ).toBe("nearDanger");
   });
+});
+
+describe("the wizard band and the glow", () => {
+  it("shows a faint glow while the band is still calm", () => {
+    const mood = longAt("99.5", { stopLoss: armed("98", true) });
+    expect(mood).toMatchObject({
+      state: "calm",
+      tone: "danger",
+      reason: "stopLoss",
+      focus: { market: "A-PERP", price: "98" },
+    });
+    expect(mood.intensity).toBeCloseTo(0.0625, 6);
+  });
+
+  it("names the take profit as the reason of a calm profit glow", () => {
+    expect(longAt("100.5", { takeProfit: armed("104", true) })).toMatchObject({
+      state: "calm",
+      tone: "profit",
+      reason: "takeProfit",
+    });
+  });
+
+  it("is untoned when the mark sits at the entry", () => {
+    expect(longAt("100", { stopLoss: armed("98", true) })).toEqual(CALM_MOOD);
+  });
+
+  it("matches the worked case at each step", () => {
+    const base = {
+      positions: [position("SOL-PERP", "0.208", "71.27")],
+      entryLiquidation: () => "14.77",
+      triggers: {
+        "SOL-PERP": { stopLoss: armed("70.40", true), takeProfit: armed("72.53", true) },
+      },
+    };
+    const at = (mark: string) => moodOf({ ...base, marks: { "SOL-PERP": freshMark(mark) } });
+
+    const entry = at("71.16");
+    expect(entry).toMatchObject({
+      state: "calm",
+      tone: "danger",
+      reason: "stopLoss",
+      focus: { market: "SOL-PERP", price: "70.40" },
+    });
+    expect(entry.progress).toBeCloseTo(0.126, 3);
+    expect(entry.intensity).toBeCloseTo(0.016, 3);
+
+    const close = at("70.57");
+    expect(close.state).toBe("nearDanger");
+    expect(close.progress).toBeCloseTo(0.805, 3);
+    expect(close.intensity).toBeCloseTo(0.648, 2);
+
+    expect(at("70.40")).toMatchObject({ state: "atDanger", intensity: 1, progress: 1 });
+  });
+});
+
+describe("mood across freshness", () => {
+  const two = [position("A-PERP", "1"), position("B-PERP", "1")];
 
   it.each<[string, Partial<MoodInput> & { triggers?: Triggers }]>([
     [
@@ -159,27 +438,65 @@ describe("mood across positions and freshness", () => {
     ],
     ["reads a missing mark as unknown", { marks: { "A-PERP": null } }],
   ])("%s", (_name, overrides) => {
-    expect(moodOf(overrides).state).toBe("unknown");
+    expect(moodOf(overrides)).toEqual({ ...CALM_MOOD, state: "unknown", reason: "noPrice" });
   });
 
-  it("shows no profit while another position has no fresh mark", () => {
+  it("shows no profit band or glow while another position has no fresh mark", () => {
+    const mood = moodOf({
+      positions: two,
+      marks: { "A-PERP": freshMark("100.9"), "B-PERP": null },
+      triggers: { "A-PERP": { takeProfit: armed("101", true) } },
+    });
+    expect(mood).toMatchObject({
+      state: "unknown",
+      reason: "noPrice",
+      tone: null,
+      intensity: 0,
+      progress: 0,
+      focus: null,
+    });
+  });
+
+  it("shows no profit glow while the account exposure is unreadable", () => {
+    const mood = moodOf({
+      exposureUnreadable: true,
+      marks: { "A-PERP": freshMark("100.9") },
+      triggers: { "A-PERP": { takeProfit: armed("101", true) } },
+    });
+    expect(mood).toEqual({ ...CALM_MOOD, state: "unknown", reason: "accountUnreadable" });
+  });
+
+  it("keeps a calm danger glow that has begun while the picture is incomplete", () => {
+    const mood = moodOf({
+      positions: two,
+      marks: { "A-PERP": freshMark("99.5"), "B-PERP": null },
+      triggers: { "A-PERP": { stopLoss: armed("98", true) } },
+    });
+    expect(mood).toMatchObject({
+      state: "unknown",
+      reason: "noPrice",
+      tone: "danger",
+      focus: { market: "A-PERP", price: "98", kind: "stopLoss" },
+    });
+    expect(mood.intensity).toBeCloseTo(0.0625, 6);
+  });
+
+  it("still shows a known danger band while another position has no fresh mark", () => {
     expect(
       moodOf({
         positions: two,
-        marks: { "A-PERP": freshMark("100"), "B-PERP": null },
-        triggers: { "A-PERP": { takeProfit: armed("101", true) } },
-      }).state,
-    ).toBe("unknown");
-  });
-
-  it("still shows a known danger while another position has no fresh mark", () => {
-    expect(
-      moodOf({
-        positions: two,
-        marks: { "A-PERP": freshMark("100"), "B-PERP": null },
+        marks: { "A-PERP": freshMark("98.5"), "B-PERP": null },
         triggers: { "A-PERP": { stopLoss: armed("98", true) } },
       }).state,
     ).toBe("nearDanger");
+  });
+
+  it("carries no glow when nothing could be read", () => {
+    expect(moodOf({ marks: { "A-PERP": null } })).toEqual({
+      ...CALM_MOOD,
+      state: "unknown",
+      reason: "noPrice",
+    });
   });
 
   it("reads unreadable exposure as unknown, with fresh prices, and says the account is the cause", () => {
@@ -201,28 +518,30 @@ describe("mood from the estimated liquidation", () => {
   const long = { ...position("A-PERP", "100", "0.1"), quote: "-10", maintenanceMarginBps: 500 };
   const short = { ...position("A-PERP", "-100", "0.1"), quote: "10", maintenanceMarginBps: 500 };
 
-  it("is calm while the liquidation estimate is far away", () => {
+  it("is untoned at the entry price", () => {
     expect(
       moodOf({ positions: [long], collateral: "1", marks: { "A-PERP": freshMark("0.1") } }),
     ).toEqual(CALM_MOOD);
   });
 
-  it("warns a long near its estimated liquidation price", () => {
-    expect(
-      moodOf({ positions: [long], collateral: "1", marks: { "A-PERP": freshMark("0.0975") } }),
-    ).toMatchObject({ state: "nearDanger", reason: "liquidation" });
+  it("warns a long as the mark falls towards the account's liquidation price", () => {
+    const mood = moodOf({
+      positions: [long],
+      collateral: "1",
+      marks: { "A-PERP": freshMark("0.0975") },
+    });
+    expect(mood).toMatchObject({ tone: "danger", reason: "liquidation" });
+    expect(mood.progress).toBeGreaterThan(0);
   });
 
-  it("warns a short near its estimated liquidation price", () => {
-    expect(
-      moodOf({ positions: [short], collateral: "1", marks: { "A-PERP": freshMark("0.1025") } }),
-    ).toMatchObject({ state: "nearDanger", reason: "liquidation" });
-  });
-
-  it("is at danger when the account is already below maintenance", () => {
-    expect(
-      moodOf({ positions: [long], collateral: "1", marks: { "A-PERP": freshMark("0.09") } }),
-    ).toEqual({ state: "atDanger", intensity: 1, reason: "liquidation" });
+  it("warns a short as the mark rises towards it", () => {
+    const mood = moodOf({
+      positions: [short],
+      collateral: "1",
+      marks: { "A-PERP": freshMark("0.1025") },
+    });
+    expect(mood).toMatchObject({ tone: "danger", reason: "liquidation" });
+    expect(mood.progress).toBeGreaterThan(0);
   });
 
   it("has no liquidation target without the account's collateral", () => {
@@ -230,33 +549,19 @@ describe("mood from the estimated liquidation", () => {
       moodOf({ positions: [long], collateral: null, marks: { "A-PERP": freshMark("0.09") } }),
     ).toEqual(CALM_MOOD);
   });
-});
 
-describe("mood from the entry liquidation estimate", () => {
-  const longEstimate = (position: Position) => (Number(position.size) > 0 ? "90" : null);
-  const shortEstimate = (position: Position) => (Number(position.size) < 0 ? "110" : null);
-  const longAt = (price: string) =>
-    moodOf({ entryLiquidation: longEstimate, marks: { "A-PERP": freshMark(price) } });
-  const shortAt = (price: string) =>
-    moodOf({
-      positions: [position("A-PERP", "-1")],
-      entryLiquidation: shortEstimate,
-      marks: { "A-PERP": freshMark(price) },
-    });
-
-  it("warns a long near the estimate and a short near its own", () => {
-    expect(longAt("92")).toMatchObject({ state: "nearDanger", reason: "liquidation" });
-    expect(shortAt("108")).toMatchObject({ state: "nearDanger", reason: "liquidation" });
-  });
-
-  it("stays calm while the mark is far from the estimate", () => {
-    expect(longAt("100")).toEqual(CALM_MOOD);
-    expect(shortAt("100")).toEqual(CALM_MOOD);
-  });
-
-  it("is at danger once the mark is past the estimate", () => {
-    expect(longAt("89")).toEqual({ state: "atDanger", intensity: 1, reason: "liquidation" });
-    expect(shortAt("111")).toEqual({ state: "atDanger", intensity: 1, reason: "liquidation" });
+  it("is at danger once the mark is past the entry estimate", () => {
+    const estimate = (candidate: Position) => (Number(candidate.size) > 0 ? "90" : "110");
+    expect(
+      moodOf({ entryLiquidation: estimate, marks: { "A-PERP": freshMark("89") } }),
+    ).toMatchObject({ state: "atDanger", reason: "liquidation", intensity: 1 });
+    expect(
+      moodOf({
+        positions: [position("A-PERP", "-1")],
+        entryLiquidation: estimate,
+        marks: { "A-PERP": freshMark("111") },
+      }),
+    ).toMatchObject({ state: "atDanger", reason: "liquidation", intensity: 1 });
   });
 
   it("ignores the estimate when the account carries its own liquidation", () => {
@@ -285,42 +590,113 @@ describe("mood from the entry liquidation estimate", () => {
   });
 });
 
-describe("mood hysteresis", () => {
+describe("band hysteresis", () => {
   const raw = (overrides: Partial<RawMood>): RawMood => ({
     unknown: null,
     danger: null,
     profit: null,
     ...overrides,
   });
-  const danger = (bps: number): RawMood => raw({ danger: { bps, reason: "stopLoss" } });
-  const profit = (bps: number): RawMood => raw({ profit: { bps } });
-  const inDanger: Mood = { state: "nearDanger", intensity: 0.1, reason: "stopLoss" };
-  const inProfit: Mood = { state: "nearProfit", intensity: 0.1, reason: "takeProfit" };
+  const danger = (progress: number): RawMood =>
+    raw({
+      danger: {
+        progress,
+        bps: (1 - progress) * 300,
+        reached: false,
+        reason: "stopLoss",
+        market: "A-PERP",
+        price: "98",
+      },
+    });
+  const profit = (progress: number): RawMood =>
+    raw({
+      profit: {
+        progress,
+        bps: (1 - progress) * 500,
+        reached: false,
+        market: "A-PERP",
+        price: "104",
+      },
+    });
+  const inDanger = nextMood(CALM_MOOD, danger(0.6));
+  const inProfit = nextMood(CALM_MOOD, profit(0.6));
 
   it.each<[string, Mood, RawMood, string]>([
-    ["enters danger at 300 bps", CALM_MOOD, danger(300), "nearDanger"],
-    ["does not enter danger at 301 bps", CALM_MOOD, danger(301), "calm"],
-    ["stays in danger at 360 bps", inDanger, danger(360), "nearDanger"],
-    ["leaves danger above 360 bps", inDanger, danger(361), "calm"],
-    ["enters profit at 500 bps", CALM_MOOD, profit(500), "nearProfit"],
-    ["does not enter profit at 501 bps", CALM_MOOD, profit(501), "calm"],
-    ["stays in profit at 575 bps", inProfit, profit(575), "nearProfit"],
-    ["leaves profit above 575 bps", inProfit, profit(576), "calm"],
-  ])("%s", (_name, from, raw, expected) => {
-    expect(nextMood(from, raw).state).toBe(expected);
+    ["enters danger at half way", CALM_MOOD, danger(0.5), "nearDanger"],
+    ["does not enter danger just below half way", CALM_MOOD, danger(0.499), "calm"],
+    ["stays in danger down to 0.45", inDanger, danger(0.45), "nearDanger"],
+    ["leaves danger below 0.45", inDanger, danger(0.449), "calm"],
+    ["enters profit at half way", CALM_MOOD, profit(0.5), "nearProfit"],
+    ["does not enter profit just below half way", CALM_MOOD, profit(0.499), "calm"],
+    ["stays in profit down to 0.45", inProfit, profit(0.45), "nearProfit"],
+    ["leaves profit below 0.45", inProfit, profit(0.449), "calm"],
+  ])("%s", (_name, from, reading, expected) => {
+    expect(nextMood(from, reading).state).toBe(expected);
   });
 
-  it("keeps a visible intensity inside the leave band", () => {
-    expect(nextMood(inDanger, danger(350)).intensity).toBeGreaterThan(0);
+  it("keeps the glow while the band is held below half way", () => {
+    expect(nextMood(inDanger, danger(0.47))).toMatchObject({
+      state: "nearDanger",
+      tone: "danger",
+    });
   });
 
   it("switches to at-danger at once on crossing, even from calm", () => {
-    expect(nextMood(CALM_MOOD, danger(0))).toMatchObject({ state: "atDanger", intensity: 1 });
+    expect(
+      nextMood(
+        CALM_MOOD,
+        raw({
+          danger: {
+            progress: 1,
+            bps: 0,
+            reached: true,
+            reason: "liquidation",
+            market: "A-PERP",
+            price: null,
+          },
+        }),
+      ),
+    ).toMatchObject({ state: "atDanger", intensity: 1, progress: 1 });
   });
 
-  it("quantizes intensity to tenths", () => {
-    const { intensity } = nextMood(CALM_MOOD, danger(200));
-    expect(Math.round(intensity * 10)).toBe(intensity * 10);
+  it("does not carry a held danger band over to another position", () => {
+    const other = danger(0.47);
+    other.danger = { ...other.danger!, market: "B-PERP", price: "50" };
+    expect(nextMood(inDanger, other)).toMatchObject({
+      state: "calm",
+      tone: "danger",
+      focus: { market: "B-PERP" },
+    });
+  });
+
+  it("does not carry a held danger band over to another target on the same position", () => {
+    const liquidation = danger(0.47);
+    liquidation.danger = { ...liquidation.danger!, reason: "liquidation", price: "90" };
+    expect(nextMood(inDanger, liquidation).state).toBe("calm");
+  });
+
+  it("does not carry a held profit band over to another position", () => {
+    const other = profit(0.47);
+    other.profit = { ...other.profit!, market: "B-PERP", price: "60" };
+    expect(nextMood(inProfit, other).state).toBe("calm");
+  });
+
+  it("does not hold a danger band across a different state", () => {
+    const unknownBand = nextMood(inDanger, raw({ unknown: "noPrice" }));
+    expect(unknownBand).toMatchObject({ state: "unknown", reason: "noPrice", tone: null });
+    expect(nextMood(unknownBand, danger(0.47)).state).toBe("calm");
+  });
+
+  it("compares every field when deciding two moods are the same", () => {
+    const base = nextMood(CALM_MOOD, danger(0.6));
+    expect(sameMood(base, nextMood(CALM_MOOD, danger(0.6)))).toBe(true);
+    expect(sameMood(base, nextMood(CALM_MOOD, danger(0.61)))).toBe(false);
+    const focus = { market: "A-PERP", price: "98", kind: "stopLoss" } as const;
+    expect(sameMood(base, { ...base, focus: { ...focus, market: "B-PERP" } })).toBe(false);
+    expect(sameMood(base, { ...base, focus: { ...focus, price: null } })).toBe(false);
+    expect(sameMood(base, { ...base, focus: { ...focus, kind: "liquidation" } })).toBe(false);
+    expect(sameMood(base, { ...base, focus: null })).toBe(false);
+    expect(sameMood(base, { ...base, tone: "profit" })).toBe(false);
   });
 });
 
@@ -400,7 +776,7 @@ describe("risk gauge", () => {
     ).toBe(1);
   });
 
-  it("follows the position nearest its danger, with that position's own take profit", () => {
+  it("follows the position furthest towards its danger, with that position's own take profit", () => {
     const gauge = positionGauge(
       input({
         positions: [position("A-PERP", "1"), position("B-PERP", "1")],
@@ -413,6 +789,56 @@ describe("risk gauge", () => {
     );
     expect(gauge).toEqual({ dangerBps: 100, dangerReason: "stopLoss", profitBps: 1000 });
     expect(gaugeMarker(gauge!)).toBeCloseTo(100 / 1100, 6);
+  });
+
+  it("follows the same position as the mood when progress differs from distance", () => {
+    const overrides = {
+      positions: [position("A-PERP", "1", "100"), position("B-PERP", "1", "50")],
+      marks: { "A-PERP": freshMark("99"), "B-PERP": freshMark("47") },
+      triggers: {
+        "A-PERP": { stopLoss: armed("98", true) },
+        "B-PERP": { stopLoss: armed("46", true) },
+      },
+    };
+    const gauge = positionGauge(input(overrides));
+    expect(gauge?.dangerBps).toBeCloseTo((1 / 47) * 10_000, 1);
+  });
+
+  it("follows the position the mood focuses on, not another one's danger reading", () => {
+    const overrides = {
+      positions: [position("A-PERP", "1"), position("B-PERP", "1")],
+      marks: { "A-PERP": freshMark("100"), "B-PERP": freshMark("101") },
+      triggers: {
+        "A-PERP": { stopLoss: armed("98", true), takeProfit: armed("102", true) },
+        "B-PERP": { takeProfit: armed("102", true) },
+      },
+    };
+    const mood = nextMood(CALM_MOOD, rawMood(input(overrides)));
+    expect(mood).toMatchObject({
+      state: "nearProfit",
+      reason: "takeProfit",
+      tone: "profit",
+      focus: { market: "B-PERP", price: "102", kind: "takeProfit" },
+    });
+    const gauge = positionGauge(input(overrides), mood.focus?.market ?? null);
+    expect(gauge?.dangerBps).toBeNull();
+    expect(gauge?.dangerReason).toBeNull();
+    expect(gauge?.profitBps).toBeCloseTo((1 / 101) * 10_000, 1);
+  });
+
+  it("shows the focused position's own danger reading and take profit", () => {
+    const gauge = positionGauge(
+      input({
+        positions: [position("A-PERP", "1"), position("B-PERP", "1")],
+        marks: { "A-PERP": freshMark("99"), "B-PERP": freshMark("100") },
+        triggers: {
+          "A-PERP": { stopLoss: armed("98", true), takeProfit: armed("101", true) },
+          "B-PERP": { stopLoss: armed("99", true), takeProfit: armed("110", true) },
+        },
+      }),
+      "B-PERP",
+    );
+    expect(gauge).toEqual({ dangerBps: 100, dangerReason: "stopLoss", profitBps: 1000 });
   });
 
   it("follows the nearest take profit when no position has a danger target", () => {

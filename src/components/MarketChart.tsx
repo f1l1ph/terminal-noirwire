@@ -28,6 +28,9 @@ import {
 import { useReferenceHistory } from "@/lib/market-data/useReferenceHistory";
 import type { Candle, MarketInfo, PublicFill } from "@/lib/market-data/types";
 import type { LimitLine } from "@/lib/trading/limitLine";
+import { tripwireLine } from "@/lib/trading/tripwire";
+import { useTripwireMood } from "@/components/TripwireContext";
+import { TripwirePrimitive } from "@/components/tripwirePrimitive";
 
 const UP = "#75bc97";
 const DOWN = "#f18d80";
@@ -96,6 +99,8 @@ export function MarketChart({
   const chartRef = useRef<IChartApi | null>(null);
   const areaRef = useRef<ISeriesApi<"Area"> | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const tripwireRef = useRef<TripwirePrimitive[]>([]);
+  const tripwireMood = useTripwireMood();
   const priceDecimals = market ? priceDecimalsOf(market) : 2;
   const priceDecimalsRef = useRef(priceDecimals);
   const [range, setRange] = useState<HistoryRange>("1D");
@@ -199,6 +204,11 @@ export function MarketChart({
       setReadout(price === undefined ? null : { price, time: Number(param.time) });
     });
 
+    const tripwires = [new TripwirePrimitive(), new TripwirePrimitive()];
+    area.attachPrimitive(tripwires[0]);
+    candleSeries.attachPrimitive(tripwires[1]);
+    tripwireRef.current = tripwires;
+
     chartRef.current = chart;
     areaRef.current = area;
     candleRef.current = candleSeries;
@@ -216,6 +226,7 @@ export function MarketChart({
       chartRef.current = null;
       areaRef.current = null;
       candleRef.current = null;
+      tripwireRef.current = [];
     };
   }, [market?.id]);
 
@@ -301,6 +312,57 @@ export function MarketChart({
       for (const [owner, line] of lines) owner.removePriceLine(line);
     };
   }, [limitPrice, limitSide, hasSeries, market?.id]);
+
+  const wire = tripwireLine(tripwireMood, market?.id);
+  const wirePrice = wire?.price ?? null;
+  const wireColor = wire?.color ?? null;
+  const wireWidth = wire?.lineWidth ?? null;
+  const wireDashed = wire?.dashed ?? null;
+  const wireTitle = wire?.title ?? null;
+  const wireIntensity = tripwireMood?.intensity ?? 0;
+  useEffect(() => {
+    const area = areaRef.current;
+    const candleSeries = candleRef.current;
+    if (
+      !area ||
+      !candleSeries ||
+      !hasSeries ||
+      wirePrice === null ||
+      wireColor === null ||
+      wireWidth === null ||
+      wireTitle === null
+    ) {
+      return;
+    }
+    const options = {
+      price: wirePrice,
+      color: wireColor,
+      lineWidth: wireWidth,
+      lineStyle: wireDashed ? LineStyle.Dashed : LineStyle.Solid,
+      axisLabelVisible: true,
+      title: wireTitle,
+    };
+    const lines: [ISeriesApi<"Area"> | ISeriesApi<"Candlestick">, IPriceLine][] = [
+      [area, area.createPriceLine(options)],
+      [candleSeries, candleSeries.createPriceLine(options)],
+    ];
+    return () => {
+      for (const [owner, line] of lines) owner.removePriceLine(line);
+    };
+  }, [wirePrice, wireColor, wireWidth, wireDashed, wireTitle, hasSeries, market?.id]);
+
+  useEffect(() => {
+    const shade =
+      wirePrice !== null && wireColor !== null && hasMark
+        ? {
+            markPrice: markValue,
+            targetPrice: wirePrice,
+            color: wireColor,
+            intensity: wireIntensity,
+          }
+        : null;
+    for (const primitive of tripwireRef.current) primitive.setShade(shade);
+  }, [wirePrice, wireColor, wireIntensity, markValue, hasMark, market?.id]);
 
   const ownMarkers = useMemo(() => {
     const first = series[0]?.time;

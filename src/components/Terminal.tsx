@@ -1103,6 +1103,7 @@ export function Terminal() {
         />
       }
       tintMood={funMode.enabled && funMode.tint ? mood : null}
+      tintStyle={funMode.tintStyle}
       wizard={wizard}
       wizardInHeader={isDesktop}
       notices={
