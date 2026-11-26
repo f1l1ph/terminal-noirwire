@@ -2,12 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { track, type StopAnswer } from "@/lib/analytics";
-import {
-  browserStore,
-  markStopReasonAsked,
-  mayAskStopReason,
-  STOP_ASK_AFTER_MS,
-} from "@/lib/setupFunnel";
+import { browserStorage } from "@/lib/layout/persistedStore";
+import { markStopReasonAsked, mayAskStopReason, STOP_ASK_AFTER_MS } from "@/lib/setupFunnel";
 
 export const STOP_CHOICES: readonly { answer: Exclude<StopAnswer, "dismissed">; label: string }[] =
   [
@@ -32,7 +28,7 @@ export function StopReasonAsk({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active || phase !== "waiting") return;
     const timer = setTimeout(() => {
-      const store = browserStore();
+      const store = browserStorage();
       if (!mayAskStopReason(store)) return;
       markStopReasonAsked(store);
       setPhase("asking");

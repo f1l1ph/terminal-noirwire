@@ -5,29 +5,7 @@ import {
   loadFunMode,
   saveFunMode,
 } from "@/lib/layout/funMode";
-import type { ChoiceStorage } from "@/lib/layout/persistedStore";
-
-function fakeStorage(initial: Record<string, string> = {}): ChoiceStorage & {
-  data: Record<string, string>;
-} {
-  const data = { ...initial };
-  return {
-    data,
-    getItem: (key) => (key in data ? data[key] : null),
-    setItem: (key, value) => {
-      data[key] = value;
-    },
-  };
-}
-
-const throwing: ChoiceStorage = {
-  getItem: () => {
-    throw new Error("blocked");
-  },
-  setItem: () => {
-    throw new Error("quota");
-  },
-};
+import { fakeStorage, throwingStorage } from "./support/choiceStorage";
 
 describe("fun mode preference", () => {
   it("is off with both visuals chosen by default", () => {
@@ -61,7 +39,18 @@ describe("fun mode preference", () => {
   });
 
   it("never throws when the storage itself does", () => {
-    expect(loadFunMode(throwing)).toEqual(DEFAULT_FUN_MODE);
-    expect(() => saveFunMode(throwing, DEFAULT_FUN_MODE)).not.toThrow();
+    expect(loadFunMode(throwingStorage)).toEqual(DEFAULT_FUN_MODE);
+    expect(() => saveFunMode(throwingStorage, DEFAULT_FUN_MODE)).not.toThrow();
+  });
+
+  it("never throws when the settings cannot be serialised", () => {
+    const unserialisable = {
+      ...DEFAULT_FUN_MODE,
+      toJSON: () => {
+        throw new Error("cannot serialise");
+      },
+    };
+    expect(() => saveFunMode(fakeStorage(), unserialisable)).not.toThrow();
+    expect(() => saveFunMode(null, unserialisable)).not.toThrow();
   });
 });

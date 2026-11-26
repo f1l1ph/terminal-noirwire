@@ -1,21 +1,11 @@
 import { track, type FailureReason, type SetupStepId } from "./analytics";
 import { tookBucket } from "./failureReason";
-
-type Store = Pick<Storage, "getItem" | "setItem">;
+import { browserStorage, type ChoiceStorage } from "./layout/persistedStore";
 
 const DONE_KEY = "noirwire.setup.stepsDone";
 const STOP_ASKED_KEY = "noirwire.setup.stopAsked";
 
-/** This browser's local storage, or null where the browser will not give it. */
-export function browserStore(): Store | null {
-  try {
-    return typeof window === "undefined" ? null : window.localStorage;
-  } catch {
-    return null;
-  }
-}
-
-function readDone(store: Store | null): Set<string> {
+function readDone(store: ChoiceStorage | null): Set<string> {
   try {
     const parsed: unknown = JSON.parse(store?.getItem(DONE_KEY) ?? "[]");
     return new Set(Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : []);
@@ -24,7 +14,7 @@ function readDone(store: Store | null): Set<string> {
   }
 }
 
-function writeDone(store: Store | null, done: Set<string>): void {
+function writeDone(store: ChoiceStorage | null, done: Set<string>): void {
   try {
     store?.setItem(DONE_KEY, JSON.stringify([...done]));
   } catch {
@@ -46,7 +36,7 @@ export class SetupFunnel {
 
   constructor(
     private readonly now: () => number = Date.now,
-    private readonly store: () => Store | null = browserStore,
+    private readonly store: () => ChoiceStorage | null = browserStorage,
     private readonly send: typeof track = track,
   ) {
     this.startedAt = now();
@@ -83,7 +73,7 @@ export class SetupFunnel {
 }
 
 /** Whether this browser may still be asked what stopped it; never when storage cannot remember the answer. */
-export function mayAskStopReason(store: Store | null): boolean {
+export function mayAskStopReason(store: ChoiceStorage | null): boolean {
   if (!store) return false;
   try {
     return store.getItem(STOP_ASKED_KEY) === null;
@@ -93,7 +83,7 @@ export function mayAskStopReason(store: Store | null): boolean {
 }
 
 /** Remembers that this browser was asked, so it is never asked again. */
-export function markStopReasonAsked(store: Store | null): void {
+export function markStopReasonAsked(store: ChoiceStorage | null): void {
   try {
     store?.setItem(STOP_ASKED_KEY, "1");
   } catch {

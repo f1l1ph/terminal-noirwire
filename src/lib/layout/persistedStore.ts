@@ -3,11 +3,38 @@ import type { KeyValueStore } from "@/lib/wallet";
 /** What a layout choice needs of browser storage; a storage that throws only means the choice is not remembered. */
 export type ChoiceStorage = Pick<KeyValueStore, "getItem" | "setItem">;
 
-function browserStorage(): Storage | null {
+export function browserStorage(): ChoiceStorage | null {
   try {
     return typeof window === "undefined" ? null : window.localStorage;
   } catch {
     return null;
+  }
+}
+
+export function readChoice<T>(
+  storage: ChoiceStorage | null,
+  key: string,
+  parse: (raw: string | null) => T,
+  fallback: T,
+): T {
+  if (!storage) return fallback;
+  try {
+    return parse(storage.getItem(key));
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeChoice(
+  storage: ChoiceStorage | null,
+  key: string,
+  serialize: () => string,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(key, serialize());
+  } catch {
+    // The choice holds for this session, just not remembered.
   }
 }
 
