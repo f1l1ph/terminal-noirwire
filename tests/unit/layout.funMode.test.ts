@@ -8,8 +8,13 @@ import {
 import { fakeStorage, throwingStorage } from "./support/choiceStorage";
 
 describe("fun mode preference", () => {
-  it("is off with both visuals chosen by default", () => {
-    expect(loadFunMode(fakeStorage())).toEqual({ enabled: false, tint: true, wizard: true });
+  it("is off with both visuals chosen and the fuse tint by default", () => {
+    expect(loadFunMode(fakeStorage())).toEqual({
+      enabled: false,
+      tint: true,
+      tintStyle: "fuse",
+      wizard: true,
+    });
   });
 
   it("uses the default with no storage at all", () => {
@@ -19,8 +24,9 @@ describe("fun mode preference", () => {
 
   it("remembers every setting under one key", () => {
     const storage = fakeStorage();
-    saveFunMode(storage, { enabled: true, tint: false, wizard: true });
-    expect(loadFunMode(storage)).toEqual({ enabled: true, tint: false, wizard: true });
+    const settings = { enabled: true, tint: false, tintStyle: "tripwire" as const, wizard: true };
+    saveFunMode(storage, settings);
+    expect(loadFunMode(storage)).toEqual(settings);
     expect(Object.keys(storage.data)).toEqual([FUN_MODE_STORAGE_KEY]);
   });
 
@@ -35,6 +41,28 @@ describe("fun mode preference", () => {
       expect(loadFunMode(fakeStorage({ [FUN_MODE_STORAGE_KEY]: stored }))).toEqual(
         DEFAULT_FUN_MODE,
       );
+    }
+  });
+
+  it("keeps the other fields of a stored value without a tint style and gives it the fuse", () => {
+    const stored = JSON.stringify({ enabled: true, tint: false, wizard: true });
+    expect(loadFunMode(fakeStorage({ [FUN_MODE_STORAGE_KEY]: stored }))).toEqual({
+      enabled: true,
+      tint: false,
+      tintStyle: "fuse",
+      wizard: true,
+    });
+  });
+
+  it("turns an unknown tint style into the fuse", () => {
+    for (const tintStyle of ["lamp", 3, null]) {
+      const stored = JSON.stringify({ enabled: true, tint: true, tintStyle, wizard: false });
+      expect(loadFunMode(fakeStorage({ [FUN_MODE_STORAGE_KEY]: stored }))).toEqual({
+        enabled: true,
+        tint: true,
+        tintStyle: "fuse",
+        wizard: false,
+      });
     }
   });
 
