@@ -9,7 +9,7 @@ import type { MarketInfo } from "@/lib/market-data/types";
 import type { TraderState, WalletIdentity } from "@/lib/trading/types";
 import { RESULT_STATUS_CODE, type OrderResult, type Placed, type View } from "@/lib/rollup/sdk";
 import { describeProgramError, PROGRAM_ERROR } from "@/lib/rollup/refusals";
-import { deploymentMarket, programRefusal } from "./support/rollupFixtures";
+import { deploymentMarket, memoryStore, programRefusal } from "./support/rollupFixtures";
 
 const USDC = 1_000_000n;
 const OWNER = Keypair.generate();
@@ -112,7 +112,6 @@ function refusedPlaced(code: number): Placed {
 }
 
 function trading(overrides: Partial<TraderClientLike>, views: View[] = [viewWith()]) {
-  const map = new Map<string, string>();
   const unused = async () => {
     throw new Error("unused");
   };
@@ -142,11 +141,7 @@ function trading(overrides: Partial<TraderClientLike>, views: View[] = [viewWith
   return new RollupTradingClient({
     simUrl: "http://sim.test",
     marketSettingsLookup: (id) => perp(id),
-    storage: {
-      getItem: (key) => map.get(key) ?? null,
-      setItem: (key, value) => void map.set(key, value),
-      removeItem: (key) => void map.delete(key),
-    },
+    storage: memoryStore(),
     buildSession: async () => session,
   });
 }

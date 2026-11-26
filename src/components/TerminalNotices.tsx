@@ -4,6 +4,8 @@ import { useDepositInProgress } from "@/components/hooks/useDepositInProgress";
 import { useKeySweepInProgress } from "@/components/hooks/useKeySweepInProgress";
 import { useQuestFlush } from "@/components/hooks/useQuests";
 import { QuestInviteDialog } from "@/components/QuestPoints";
+import { panelColumnGround } from "@/components/ui/styles";
+import { copySignature } from "@/lib/clipboard";
 import { shortSignature } from "@/lib/transfer/attention";
 
 export const PRICES_DOWN_NOTICE = "Prices are not loading. Your funds are safe; we keep retrying.";
@@ -17,14 +19,6 @@ export const SESSION_REFUSED_NOTICE =
   "The exchange stopped accepting your sign-in, so balances and orders have stopped updating. Your funds are safe. Sign in again to continue.";
 export const TRADING_IN_OTHER_TAB_NOTICE =
   "Trading is open in another tab on this account. You can still look around here, but orders and cancels are off so the two tabs do not clash.";
-
-function copySignature(signature: string) {
-  try {
-    void navigator.clipboard.writeText(signature).catch(() => {});
-  } catch {
-    // No clipboard here: the shortened signature on screen is all there is.
-  }
-}
 
 /**
  * Lines that stay on screen while they are true, above the workspace: the
@@ -58,7 +52,7 @@ export function TerminalNotices({
     <>
       <QuestInviteDialog owner={owner} />
       {anyNotice && (
-        <div className="flex shrink-0 flex-col gap-1 px-3 sm:px-4">
+        <div className={`${panelColumnGround} relative flex shrink-0 flex-col gap-1 px-3 sm:px-4`}>
           {sessionStopped && (
             <p
               role="alert"

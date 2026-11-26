@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { btnGhost } from "@/components/ui/styles";
 import { trackAppError } from "@/lib/analytics";
+import { isMainnetBuild } from "@/lib/network";
 
 export default function Error({
   error,
@@ -17,7 +18,7 @@ export default function Error({
       <p className="text-ink-strong text-[16px] font-medium">Something went wrong.</p>
       <p className="text-dim max-w-sm text-[13px]">
         The terminal hit an unexpected error.{" "}
-        {process.env.NEXT_PUBLIC_NETWORK === "mainnet"
+        {isMainnetBuild()
           ? "Your wallet and balances are unaffected."
           : "Your test wallet and balances are unaffected."}
       </p>

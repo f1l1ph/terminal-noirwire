@@ -4,6 +4,7 @@ import { deriveOrderKey } from "@noirwire/orderbook";
 import { bytesToHex } from "@/lib/wallet/index";
 import { deriveOrderSeed } from "@/lib/rollup/keys";
 import { orderKeysFromCheckpoint, PACKAGE_PROGRAM_ID } from "@/lib/rollup/sdk";
+import { memoryStore } from "./support/rollupFixtures";
 
 /**
  * A saved checkpoint that is further behind than `OrderKeyManager.restore`'s
@@ -44,11 +45,7 @@ describe("audit: stale order-key checkpoint", () => {
       [`noirwire-terminal-rollup-checkpoint-${owner.publicKey.toBase58()}`, JSON.stringify(STALE)],
     ]);
     vi.stubGlobal("window", {
-      localStorage: {
-        getItem: (k: string) => store.get(k) ?? null,
-        setItem: (k: string, v: string) => void store.set(k, v),
-        removeItem: (k: string) => void store.delete(k),
-      },
+      localStorage: memoryStore(store),
     });
 
     vi.doMock("@/lib/rollup/sdk", async (importOriginal) => {

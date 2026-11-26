@@ -1,5 +1,5 @@
-import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
+import { shot as sharedShot } from "../support/screenshot";
 import { keepWalletEncrypted, unlockWallet } from "../support/walletPassphrase";
 
 /**
@@ -11,13 +11,7 @@ import { keepWalletEncrypted, unlockWallet } from "../support/walletPassphrase";
  * stops that network itself (it may be shared with someone testing the
  * program directly).
  */
-const SCREENSHOT_DIR = path.join(process.cwd(), "e2e", "screenshots");
-
-async function shot(page: Page, name: string): Promise<void> {
-  const size = page.viewportSize();
-  const suffix = size ? `${size.width}x${size.height}` : "unknown";
-  await page.screenshot({ path: path.join(SCREENSHOT_DIR, `rollup-${name}-${suffix}.png`) });
-}
+const shot = (page: Page, name: string) => sharedShot(page, `rollup-${name}`);
 
 test.describe("First minute, signed in the browser, against the real rollup", () => {
   test.use({ viewport: { width: 1440, height: 900 } });

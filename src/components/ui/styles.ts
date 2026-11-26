@@ -25,3 +25,17 @@ export const input =
 export const sectionLabel = "text-faint text-[11px] tracking-wide uppercase";
 
 export const rangeBrand = "range-brand w-full";
+
+/**
+ * An opaque ground behind a full-width row across the panel column only
+ * (the main column's px-3 sm:px-4), so the gutters stay open to the Fun
+ * light. The row needs `relative`; `isolate` keeps the ground behind its content.
+ */
+export const panelColumnGround =
+  "isolate before:absolute before:inset-y-0 before:inset-x-3 before:-z-10 before:bg-base sm:before:inset-x-4";
+
+/** The header chip's visible box: 32px, the height of the header's other controls, clear of the screen-edge ring. */
+export const headerChipBox = "border-line text-ink rounded-tile min-h-8 border px-3 text-[13px]";
+
+/** The chip box plus an invisible hit area 6px past the border above and below, keeping a 44px touch target. */
+export const headerChip = `${headerChipBox} relative before:absolute before:inset-x-0 before:-inset-y-[7px]`;

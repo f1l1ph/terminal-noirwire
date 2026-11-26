@@ -4,6 +4,7 @@ import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import { SessionAuthError, type RollupSession, type TraderClientLike } from "@/lib/rollup/session";
 import { OrderOutcomeUnknownError } from "@/lib/trading/unknownOutcome";
+import { memoryStore } from "./support/rollupFixtures";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { WalletIdentity } from "@/lib/trading/types";
@@ -69,12 +70,7 @@ const ORDER = { market: "NSOL-PERP", side: "sell", type: "market", price: "100.0
 const SENT_BUT_UNREADABLE = { outcome: "placed" } as never;
 
 function trading(placeOrder: TraderClientLike["placeOrder"], failFirstBuildWith?: Error) {
-  const map = new Map<string, string>();
-  const storage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
-    removeItem: (k: string) => void map.delete(k),
-  };
+  const storage = memoryStore();
   const unused = async () => {
     throw new Error("unused");
   };

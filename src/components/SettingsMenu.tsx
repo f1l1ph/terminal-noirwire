@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { useDismissOnOutside } from "@/components/hooks/useDismissOnOutside";
 import { useFunMode } from "@/components/hooks/useFunMode";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { Dialog } from "@/components/ui/Dialog";
 import { sectionLabel, btnGhost } from "@/components/ui/styles";
 import { Switch } from "@/components/ui/Switch";
-import type { FunModeSettings } from "@/lib/layout/funMode";
+import { TINT_STYLES, type FunModeSettings, type TintStyle } from "@/lib/layout/funMode";
 import type { OrderKeyState } from "@/lib/trading/types";
 import {
   MOVE_TRADING_HERE,
@@ -19,6 +19,54 @@ import {
 
 const ROW_BUTTON =
   "rounded-tile text-ink hover:bg-elevated flex min-h-8 w-full items-center px-2 text-[12px]";
+
+const TINT_STYLE_LABELS: Record<TintStyle, string> = { fuse: "Fuse", tripwire: "Tripwire" };
+
+export function TintStyleChoice({
+  value,
+  onChange,
+}: {
+  value: TintStyle;
+  onChange: (next: TintStyle) => void;
+}) {
+  const step = (event: KeyboardEvent<HTMLDivElement>) => {
+    const delta =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? -1
+          : 0;
+    if (delta === 0) return;
+    event.preventDefault();
+    const next =
+      TINT_STYLES[(TINT_STYLES.indexOf(value) + delta + TINT_STYLES.length) % TINT_STYLES.length];
+    onChange(next);
+    event.currentTarget.querySelector<HTMLElement>(`[data-style="${next}"]`)?.focus();
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Tint style"
+      onKeyDown={step}
+      className="bg-base rounded-tile mx-2 mb-1 flex gap-0.5 p-0.5"
+    >
+      {TINT_STYLES.map((style) => (
+        <button
+          key={style}
+          type="button"
+          role="radio"
+          data-style={style}
+          tabIndex={value === style ? 0 : -1}
+          aria-checked={value === style}
+          onClick={() => onChange(style)}
+          className={`rounded-tile flex min-h-7 flex-1 items-center justify-center text-[12px] transition-colors ${value === style ? "bg-elevated text-ink-strong" : "text-dim hover:text-ink"}`}
+        >
+          {TINT_STYLE_LABELS[style]}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function SettingsPanel({
   keys,
@@ -67,6 +115,12 @@ export function SettingsPanel({
         on={funMode.tint}
         onChange={(tint) => onFunModeChange({ tint })}
       />
+      {funMode.tint && (
+        <TintStyleChoice
+          value={funMode.tintStyle}
+          onChange={(tintStyle) => onFunModeChange({ tintStyle })}
+        />
+      )}
       <Switch
         label="Wizard"
         on={funMode.wizard}

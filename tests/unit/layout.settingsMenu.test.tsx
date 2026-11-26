@@ -1,7 +1,7 @@
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { DeviceGuideBody, SettingsPanel } from "../../src/components/SettingsMenu";
+import { DeviceGuideBody, SettingsPanel, TintStyleChoice } from "../../src/components/SettingsMenu";
 import { DEFAULT_FUN_MODE } from "../../src/lib/layout/funMode";
 import {
   SWITCH_DEVICE_STEPS,
@@ -33,6 +33,28 @@ describe("settings panel", () => {
     expect(html).toContain("How to switch device");
     expect(html).toContain("Display");
     for (const label of ["Fun mode", "Screen tint", "Wizard"]) expect(html).toContain(label);
+  });
+
+  it("offers Fuse and Tripwire under Screen tint, with the chosen one checked", () => {
+    const html = renderPanel({ funMode: { ...DEFAULT_FUN_MODE, tintStyle: "tripwire" } });
+    expect(html).toContain("radiogroup");
+    expect(html).toMatch(/aria-checked="false"[^>]*>Fuse</);
+    expect(html).toMatch(/aria-checked="true"[^>]*>Tripwire</);
+  });
+
+  it("hides the tint style choice while the tint is off", () => {
+    const html = renderPanel({ funMode: { ...DEFAULT_FUN_MODE, tint: false } });
+    expect(html).not.toContain("radiogroup");
+    expect(html).not.toContain("Tripwire");
+  });
+
+  it("switches the style through the settings patch", () => {
+    const chosen: string[] = [];
+    const group = TintStyleChoice({ value: "fuse", onChange: (style) => chosen.push(style) });
+    const buttons = group.props.children as ReactElement<{ onClick: () => void }>[];
+    expect(buttons.map((button) => button.key)).toEqual(["fuse", "tripwire"]);
+    buttons[1].props.onClick();
+    expect(chosen).toEqual(["tripwire"]);
   });
 
   it("shows the privacy tools switch on mainnet only", () => {

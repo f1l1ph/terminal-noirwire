@@ -20,6 +20,10 @@
   --color-warning: #d1ad70;
   --color-danger: #f18d80;
 
+  /* Light only, for the Fun mode screen effects; never text. */
+  --color-fun-danger: #ff3b2e;
+  --color-fun-safe: #1fe37a;
+
   --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
 
   --radius-panel: 12px;
@@ -87,8 +91,13 @@ textarea:focus-visible,
   .fun-blink,
   .fun-shake,
   .fun-sparkle,
-  .fun-breathe {
+  .fun-fuse-flash,
+  .fun-fuse-shimmer {
     animation: none !important;
+  }
+
+  .fun-fuse-shimmer {
+    display: none;
   }
 }
 
@@ -106,13 +115,45 @@ textarea:focus-visible,
   }
 }
 
-.fun-breathe {
-  animation: fun-breathe 2.4s ease-in-out infinite;
+.fun-fuse-arm {
+  transition:
+    stroke-dashoffset 700ms var(--ease-out),
+    stroke-width 250ms var(--ease-out),
+    stroke 250ms var(--ease-out);
 }
 
-@keyframes fun-breathe {
-  50% {
-    opacity: 0.6;
+.fun-card-rule {
+  transition: box-shadow 400ms var(--ease-out);
+}
+
+.fun-thread {
+  transform-origin: left center;
+  transition:
+    transform 700ms var(--ease-out),
+    opacity 400ms var(--ease-out),
+    background-color 250ms var(--ease-out);
+}
+
+.fun-fuse-flash {
+  animation: fun-fuse-flash 300ms ease-out 1;
+}
+
+@keyframes fun-fuse-flash {
+  30% {
+    opacity: 0.45;
+  }
+}
+
+.fun-fuse-shimmer {
+  animation: fun-fuse-shimmer 600ms ease-in-out 1 both;
+}
+
+@keyframes fun-fuse-shimmer {
+  from {
+    stroke-dashoffset: var(--fuse-shimmer-from);
+  }
+  to {
+    stroke-dashoffset: var(--fuse-shimmer-to);
   }
 }
 

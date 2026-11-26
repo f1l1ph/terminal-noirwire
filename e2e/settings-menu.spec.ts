@@ -58,6 +58,35 @@ test.describe("Settings menu", () => {
     await expect(pill).toHaveAttribute("aria-pressed", "false");
   });
 
+  test("the tint style choice shows only while the tint is on and survives a reload", async ({
+    page,
+  }) => {
+    const { menu } = await openSettings(page);
+    const style = menu.getByRole("radiogroup", { name: "Tint style" });
+    const tint = menu.getByRole("switch", { name: "Screen tint" });
+    if ((await tint.getAttribute("aria-checked")) !== "true") await tint.click();
+    await expect(style).toBeVisible();
+    await expect(style.getByRole("radio", { name: "Fuse" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+
+    await style.getByRole("radio", { name: "Tripwire" }).click();
+    await expect(style.getByRole("radio", { name: "Tripwire" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+
+    await page.reload();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(
+      menu.getByRole("radiogroup", { name: "Tint style" }).getByRole("radio", { name: "Tripwire" }),
+    ).toHaveAttribute("aria-checked", "true");
+
+    await menu.getByRole("switch", { name: "Screen tint" }).click();
+    await expect(menu.getByRole("radiogroup", { name: "Tint style" })).toHaveCount(0);
+  });
+
   test("the switch-device guide traps focus and hands it back to Settings", async ({ page }) => {
     const { cog, menu } = await openSettings(page);
     await menu.getByRole("button", { name: "How to switch device" }).click();

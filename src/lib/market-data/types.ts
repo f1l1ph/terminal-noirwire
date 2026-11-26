@@ -1,15 +1,12 @@
 export {
   wsMessageSchema,
   MARKET_IDS,
-  type KnownMarketId,
   type MarketKind,
   type MarketInfo,
   type PublicFill,
   type CandleInterval,
   type Candle,
-  type LatencyStats,
   type StatsResponse,
   type WsMessage,
-  type WsStats,
   MIN_LATENCY_SAMPLE_SIZE,
 } from "@/lib/sim-api/schema";

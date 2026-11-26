@@ -86,9 +86,10 @@ export function usePositionMood(source: Source): PositionMoodReading {
   const next = raw === null ? CALM_MOOD : nextMood(previous, raw);
   if (shown.owner !== owner || !sameMood(shown.mood, next)) setShown({ owner, mood: next });
   const unknown = next.state === "unknown";
+  const focusMarket = next.focus?.market ?? null;
   const gauge = useMemo(
-    () => (moodInput && !unknown ? positionGauge(moodInput) : null),
-    [moodInput, unknown],
+    () => (moodInput && !unknown ? positionGauge(moodInput, focusMarket) : null),
+    [moodInput, unknown, focusMarket],
   );
   return { mood: next, gauge };
 }

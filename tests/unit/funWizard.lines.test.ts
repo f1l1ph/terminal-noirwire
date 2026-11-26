@@ -32,8 +32,19 @@ describe("wizard line choice", () => {
 });
 
 describe("wizard speech", () => {
-  const danger: Mood = { state: "atDanger", intensity: 1, reason: "liquidation" };
-  const near: Mood = { state: "nearDanger", intensity: 0.5, reason: "stopLoss" };
+  const glow = {
+    tone: "danger",
+    progress: 1,
+    focus: { market: "SOL-PERP", price: null, kind: "liquidation" },
+  } as const;
+  const danger: Mood = { ...glow, state: "atDanger", intensity: 1, reason: "liquidation" };
+  const near: Mood = {
+    ...glow,
+    state: "nearDanger",
+    intensity: 0.25,
+    progress: 0.5,
+    reason: "stopLoss",
+  };
 
   it("picks a new line, and a new entry, on every state change", () => {
     const first = advanceSpeech(firstSpeech(CALM_MOOD, 0), near, 0);

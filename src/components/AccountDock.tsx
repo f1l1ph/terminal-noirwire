@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { useTripwireMood } from "@/components/TripwireContext";
+import { positionCardRule } from "@/lib/trading/tripwire";
 import { fromFixedPoint } from "@/lib/trading/decimal";
 import { positionEntryEstimate } from "@/lib/trading/entryEstimate";
 import {
@@ -296,6 +298,7 @@ function PositionsTable({
   triggers: PositionTriggerControls | null;
 }) {
   const [editingMarket, setEditingMarket] = useState<string | null>(null);
+  const tripwireMood = useTripwireMood();
   const open = positions.filter((position) => Number(position.size) !== 0);
   const editing = triggers ? open.find((position) => position.market === editingMarket) : undefined;
   const editingSettings = editing ? marketSettings(editing.market) : undefined;
@@ -377,7 +380,8 @@ function PositionsTable({
           return (
             <li
               key={position.market}
-              className="bg-surface-raised border-line-subtle rounded-tile border p-3"
+              className="bg-surface-raised border-line-subtle rounded-tile fun-card-rule border p-3"
+              style={{ boxShadow: positionCardRule(tripwireMood, position.market) }}
             >
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span

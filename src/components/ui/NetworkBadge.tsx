@@ -5,11 +5,9 @@ import { env } from "@/lib/env";
  * number on this screen is ever mistaken for real money or a real-money
  * venue.
  */
-export function NetworkBadge({ className }: { className?: string }) {
+export function NetworkBadge() {
   return (
-    <span
-      className={`border-line text-faint inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] tracking-wide uppercase ${className ?? ""}`}
-    >
+    <span className="border-line text-faint inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] tracking-wide uppercase">
       {env.networkLabel}
     </span>
   );

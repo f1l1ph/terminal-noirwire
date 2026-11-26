@@ -1,5 +1,5 @@
-import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
+import { shot as sharedShot } from "../support/screenshot";
 import {
   loadPersistedWallet,
   savePersistedWallet,
@@ -26,13 +26,7 @@ test.beforeEach(async () => {
  * check below accepts either a fresh grant landing or a balance already
  * there from a previous run.
  */
-const SCREENSHOT_DIR = path.join(process.cwd(), "e2e", "screenshots");
-
-async function shot(page: Page, name: string): Promise<void> {
-  const size = page.viewportSize();
-  const suffix = size ? `${size.width}x${size.height}` : "unknown";
-  await page.screenshot({ path: path.join(SCREENSHOT_DIR, `devnet-${name}-${suffix}.png`) });
-}
+const shot = (page: Page, name: string) => sharedShot(page, `devnet-${name}`);
 
 /** Seeds this page's localStorage with the persisted wallet before any script runs, or leaves it empty so the UI creates (and this then persists) a new one. */
 async function primeWallet(page: Page): Promise<{ reused: boolean }> {

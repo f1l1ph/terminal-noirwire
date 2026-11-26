@@ -7,6 +7,7 @@ import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { WalletIdentity } from "@/lib/trading/types";
 import { RESULT_STATUS_CODE, type View } from "@/lib/rollup/sdk";
+import { memoryStore } from "./support/rollupFixtures";
 
 /**
  * Lot size and base decimals that turn a typed size into on-chain lots come
@@ -125,15 +126,10 @@ async function signedSizeFor(
     saveKeyCheckpoint: () => {},
     close: () => {},
   };
-  const map = new Map<string, string>();
   const trading = new RollupTradingClient({
     simUrl: "http://sim.test",
     marketSettingsLookup: (id) => (id === "NSOL-PERP" ? PERP : undefined),
-    storage: {
-      getItem: (k) => map.get(k) ?? null,
-      setItem: (k, v) => void map.set(k, v),
-      removeItem: (k) => void map.delete(k),
-    },
+    storage: memoryStore(),
     buildSession: async () => session,
   });
   const wallet: WalletIdentity = { address: "owner", secretKeyHex: "aa".repeat(64) };

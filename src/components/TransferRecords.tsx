@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { copySignature } from "@/lib/clipboard";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
 import {
   actionsOf,
@@ -219,14 +220,6 @@ export function TransferRecords({
     autoRecover.current = () => void recover();
   }, [recover]);
 
-  const copy = (signature: string) => {
-    try {
-      void navigator.clipboard.writeText(signature).catch(() => {});
-    } catch {
-      // No clipboard here: the shortened signature on screen is all there is.
-    }
-  };
-
   if (!owner) return null;
   if (unreadable) {
     return (
@@ -313,7 +306,7 @@ export function TransferRecords({
                   key={action}
                   type="button"
                   className={`${btnGhost} px-2 text-[11px]`}
-                  onClick={() => copy(item.signature ?? "")}
+                  onClick={() => copySignature(item.signature ?? "")}
                 >
                   Copy signature
                 </button>

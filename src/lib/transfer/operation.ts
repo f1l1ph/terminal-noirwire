@@ -292,17 +292,12 @@ export async function delegatedTo(
 }
 
 /**
- * What the owner holds in the rollup: the token account's amount there while
- * the balance is delegated, 0 when it is not, and null when it is delegated
- * but the rollup does not show it. A rollup serves the token account it clones
- * from Solana when nothing is delegated, which is not held in the rollup.
+ * What the deposit key holds in the rollup, read through its own session: the
+ * token account's amount there while the balance is delegated, 0 when it is
+ * not, and null when it is delegated but the rollup does not show it. A rollup
+ * serves the token account it clones from Solana when nothing is delegated,
+ * which is not held in the rollup.
  */
-export async function heldInRollup(env: TransferEnv): Promise<bigint | null> {
-  if (!(await delegatedTo(env))) return 0n;
-  return readTokenBalance(env.rollup, walletAccount(env));
-}
-
-/** What the deposit key holds in the rollup, read through its own session, on the same terms as `heldInRollup`. */
 export async function keyHeldInRollup(env: TransferEnv): Promise<bigint | null> {
   const key = env.depositKey.publicKey;
   if (!(await delegatedTo(env, depositKeyBalance(key, env.mint)))) return 0n;

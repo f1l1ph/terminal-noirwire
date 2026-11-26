@@ -5,24 +5,16 @@ import {
   unpinTriggerSecrets,
   type TrackedOrderSecret,
 } from "@/lib/rollup/secretStore";
-import { ownerDataKeys, type KeyValueStore } from "@/lib/wallet/index";
+import { ownerDataKeys } from "@/lib/wallet/index";
+import { memoryStore } from "./support/rollupFixtures";
 
 const OWNER = "owner-address";
-
-function memory(): KeyValueStore {
-  const map = new Map<string, string>();
-  return {
-    getItem: (key) => map.get(key) ?? null,
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
-  };
-}
 
 const secret = (n: number) => new Uint8Array(16).fill(n);
 
 describe("tracked order secrets", () => {
   it("keeps only the newest unpinned secrets past the cap", () => {
-    const storage = memory();
+    const storage = memoryStore();
     for (let n = 1; n <= 25; n++) trackSecret(storage, OWNER, "NSOL-PERP", secret(n));
     const kept = loadTrackedSecrets(storage, OWNER);
     expect(kept).toHaveLength(20);
@@ -30,7 +22,7 @@ describe("tracked order secrets", () => {
   });
 
   it("never evicts a pinned trigger secret, however many orders follow", () => {
-    const storage = memory();
+    const storage = memoryStore();
     trackSecret(storage, OWNER, "NSOL-PERP", secret(200), "stopLoss");
     for (let n = 1; n <= 40; n++) trackSecret(storage, OWNER, "NSOL-PERP", secret(n));
     const kept = loadTrackedSecrets(storage, OWNER);
@@ -40,7 +32,7 @@ describe("tracked order secrets", () => {
   });
 
   it("drops the oldest unpinned first and still leaves room for orders when many are pinned", () => {
-    const storage = memory();
+    const storage = memoryStore();
     for (let n = 1; n <= 22; n++) {
       trackSecret(storage, OWNER, `M${n}`, secret(n), n % 2 ? "takeProfit" : "stopLoss");
     }
@@ -51,7 +43,7 @@ describe("tracked order secrets", () => {
   });
 
   it("unpins a trigger's secret, keeping the one that replaced it", () => {
-    const storage = memory();
+    const storage = memoryStore();
     trackSecret(storage, OWNER, "NSOL-PERP", secret(1), "takeProfit");
     trackSecret(storage, OWNER, "NSOL-PERP", secret(2), "takeProfit");
     trackSecret(storage, OWNER, "NSOL-PERP", secret(3), "stopLoss");
@@ -64,7 +56,7 @@ describe("tracked order secrets", () => {
   });
 
   it("loads entries stored before pinning existed", () => {
-    const storage = memory();
+    const storage = memoryStore();
     const old: TrackedOrderSecret[] = [
       { market: "NSOL-PERP", secretHex: "01".repeat(16), placedAtMs: 1 },
     ];
