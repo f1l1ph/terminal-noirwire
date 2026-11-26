@@ -11,6 +11,7 @@ import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { BarStat, MarketBarFrame } from "@/components/MarketContextBar";
 import { SettingsMenu } from "@/components/SettingsMenu";
+import { headerChipBox, panelColumnGround } from "@/components/ui/styles";
 import { Mark } from "@/components/ui/Mark";
 import { NetworkBadge } from "@/components/ui/NetworkBadge";
 import { formatShortAddress } from "@/lib/format";
@@ -42,7 +43,9 @@ export function FunFixture({
       <div className="bg-base isolate flex h-dvh min-h-0 flex-col overflow-hidden">
         {tintStyle === "fuse" && <FunFuse mood={mood} />}
         {tintStyle === "tripwire" && <FunThread mood={mood} />}
-        <header className="bg-base relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
+        <header
+          className={`${panelColumnGround} relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4`}
+        >
           <div className="flex min-w-0 items-center gap-2">
             <Mark size={18} title="NoirWire" />
             <span className="text-ink-strong text-[13px] font-semibold tracking-tight max-sm:sr-only">
@@ -60,7 +63,7 @@ export function FunFixture({
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
             <FunModeToggle />
             <ConnectionStatus state="open" />
-            <span className="border-line text-ink rounded-tile flex min-h-11 items-center border px-3 text-[13px]">
+            <span className={`${headerChipBox} flex items-center`}>
               {formatShortAddress("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU")}
               {wallet === "locked" && <span className="text-faint ml-2 text-[12px]">Locked</span>}
               {wallet === "unsaved" && (
@@ -74,7 +77,7 @@ export function FunFixture({
           <WizardSpot
             data={wizard}
             variant="phone"
-            className="bg-base relative h-14 shrink-0 px-3"
+            className={`${panelColumnGround} relative h-14 shrink-0 px-3 sm:px-4`}
           />
         )}
         <main className="flex min-h-0 flex-1 flex-col gap-2 px-3 pb-2 sm:px-4">

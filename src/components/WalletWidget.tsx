@@ -15,7 +15,7 @@ import {
 import { isMobileBrowser, phantomBrowseUrl, solflareBrowseUrl } from "@/lib/wallet/walletLinks";
 import type { WalletHookResult } from "@/lib/wallet/useWallet";
 import { useDismissOnOutside } from "@/components/hooks/useDismissOnOutside";
-import { btnGhost, input, panel } from "@/components/ui/styles";
+import { btnGhost, headerChip, input, panel } from "@/components/ui/styles";
 
 /** Fields that carry a secret: never autofilled, autocorrected or sent to a spell-check service. */
 const secretFieldProps = {
@@ -215,7 +215,7 @@ function ExternalWalletWidget() {
     <div className="relative" ref={containerRef}>
       <button
         type="button"
-        className="border-line text-ink rounded-tile min-h-11 border px-3 text-[13px] whitespace-nowrap"
+        className={`${headerChip} whitespace-nowrap`}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
@@ -433,7 +433,7 @@ function BuiltInWalletWidget({ wallet }: { wallet: WalletHookResult }) {
     <div className="relative" ref={containerRef}>
       <button
         type="button"
-        className="border-line text-ink rounded-tile min-h-11 border px-3 text-[13px]"
+        className={headerChip}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >

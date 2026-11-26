@@ -5,6 +5,7 @@ import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { WalletWidget } from "@/components/WalletWidget";
 import { FunModeToggle } from "@/components/FunModeToggle";
 import { FunFuse } from "@/components/FunFuse";
+import { panelColumnGround } from "@/components/ui/styles";
 import { FunThread } from "@/components/FunThread";
 import { TripwireProvider } from "@/components/TripwireContext";
 import {
@@ -59,7 +60,9 @@ export function TerminalShell({
       <div className="bg-base isolate flex h-dvh min-h-0 flex-col overflow-hidden">
         {tintMood && tintStyle === "fuse" && <FunFuse mood={tintMood} />}
         {tintMood && tintStyle === "tripwire" && <FunThread mood={tintMood} />}
-        <header className="bg-base relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4">
+        <header
+          className={`${panelColumnGround} relative z-[110] flex h-12 shrink-0 items-center justify-between gap-2 px-3 whitespace-nowrap sm:gap-4 sm:px-4`}
+        >
           <div className="flex min-w-0 items-center gap-2">
             <Mark size={18} title="NoirWire" />
             <span className="text-ink-strong text-[13px] font-semibold tracking-tight max-sm:sr-only">
@@ -85,7 +88,7 @@ export function TerminalShell({
           <WizardSpot
             data={wizard}
             variant="phone"
-            className="bg-base relative h-14 shrink-0 px-3"
+            className={`${panelColumnGround} relative h-14 shrink-0 px-3 sm:px-4`}
           />
         )}
         {notices}

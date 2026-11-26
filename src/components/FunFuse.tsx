@@ -4,11 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import type { Mood } from "@/lib/trading/positionMood";
 import { funToneVar } from "@/lib/trading/tripwire";
 
-const RING_INSET_PX = 2;
-const CORNER_RADIUS_PX = 10;
+/** The outer strip of the viewport the ring draws in; nothing of it, spark included, leaves this band. */
+const RING_BAND_PX = 3;
+/** The window's own corner radius; the ring arc stays concentric with it. */
+const WINDOW_CORNER_RADIUS_PX = 10;
+/** The path runs along the middle of the band, so the widest stroke fills it edge to edge. */
+const PATH_INSET_PX = RING_BAND_PX / 2;
+const CORNER_RADIUS_PX = WINDOW_CORNER_RADIUS_PX - PATH_INSET_PX;
 const THIN_STROKE_PX = 1.5;
-const STRONG_STROKE_PX = 4;
-const SPARK_STROKE_PX = 7;
+const STRONG_STROKE_PX = RING_BAND_PX;
+const SPARK_STROKE_PX = RING_BAND_PX;
+/** Visible length of the bright dash at each arm's tip, round caps included. */
+const SPARK_LENGTH_PX = 14;
 /** Light opacity in the gutters and seams, which carry no text. */
 const GUTTER_LIGHT_PERCENT = 85;
 /** Light opacity on the footer strip at full intensity, per tone, set so the footer text keeps 4.5:1. */
@@ -26,8 +33,7 @@ const SPARK_FLASH_MS = 400;
 const SPARK_MIN_PROGRESS = 0.01;
 const SHIMMER_LENGTH_FRACTION = 0.14;
 const RING_OPACITY_EXPONENT = 0.6;
-const SPARK_FLASH_STROKE_SCALE = 1.8;
-const SPARK_WHITE_PERCENT = 45;
+const SPARK_WHITE_PERCENT = 60;
 const SHIMMER_WHITE_PERCENT = 30;
 /** Wide soft glow first, tight bright glow second: stroke width and share of the glow strength. */
 const GLOW_LAYERS = [
@@ -54,13 +60,17 @@ function prefersReducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-/** Both arms from the top centre round the rounded corners to the bottom centre; each is `length` long. */
+/** Both arms from the top centre round the rounded corners to the bottom centre, inside the band; each is `length` long. */
 function armGeometry({ width, height }: Size): ArmGeometry {
   const r = CORNER_RADIUS_PX;
+  const near = PATH_INSET_PX;
+  const corner = near + r;
+  const far = { x: width - near, y: height - near };
+  const farCorner = { x: width - corner, y: height - corner };
   const mid = width / 2;
-  const left = `M${mid} 0 H${r} A${r} ${r} 0 0 0 0 ${r} V${height - r} A${r} ${r} 0 0 0 ${r} ${height} H${mid}`;
-  const right = `M${mid} 0 H${width - r} A${r} ${r} 0 0 1 ${width} ${r} V${height - r} A${r} ${r} 0 0 1 ${width - r} ${height} H${mid}`;
-  const length = width + height - 4 * r + Math.PI * r;
+  const left = `M${mid} ${near} H${corner} A${r} ${r} 0 0 0 ${near} ${corner} V${farCorner.y} A${r} ${r} 0 0 0 ${corner} ${far.y} H${mid}`;
+  const right = `M${mid} ${near} H${farCorner.x} A${r} ${r} 0 0 1 ${far.x} ${corner} V${farCorner.y} A${r} ${r} 0 0 1 ${farCorner.x} ${far.y} H${mid}`;
+  const length = width + height - 4 * corner + Math.PI * r;
   return { left, right, length };
 }
 
@@ -121,20 +131,18 @@ function SparkHeads({
   opacity: number;
 }) {
   const ref = useRef<SVGGElement>(null);
+  const sparkColor = `color-mix(in oklab, ${color} ${SPARK_WHITE_PERCENT}%, white)`;
   useEffect(() => {
     if (prefersReducedMotion()) return;
-    ref.current
-      ?.querySelectorAll("path")
-      .forEach((path) =>
-        path.animate(
-          [
-            { strokeWidth: `${SPARK_STROKE_PX * SPARK_FLASH_STROKE_SCALE}px` },
-            { strokeWidth: `${SPARK_STROKE_PX}px` },
-          ],
-          { duration: SPARK_FLASH_MS, easing: "ease-out" },
-        ),
-      );
-  }, [progress]);
+    ref.current?.querySelectorAll("path").forEach((path) =>
+      path.animate([{ stroke: "white" }, { stroke: sparkColor }], {
+        duration: SPARK_FLASH_MS,
+        easing: "ease-out",
+      }),
+    );
+  }, [progress, sparkColor]);
+  const dash = SPARK_LENGTH_PX - SPARK_STROKE_PX;
+  const tipOffset = SPARK_LENGTH_PX - SPARK_STROKE_PX / 2;
   return (
     <g ref={ref}>
       {[geometry.left, geometry.right].map((d) => (
@@ -142,11 +150,11 @@ function SparkHeads({
           key={d}
           d={d}
           fill="none"
-          stroke={`color-mix(in oklab, ${color} ${SPARK_WHITE_PERCENT}%, white)`}
+          stroke={sparkColor}
           strokeWidth={SPARK_STROKE_PX}
           strokeLinecap="round"
-          strokeDasharray={`0.01 ${geometry.length * 2}`}
-          strokeDashoffset={-geometry.length * progress}
+          strokeDasharray={`${dash} ${geometry.length * 2}`}
+          strokeDashoffset={tipOffset - geometry.length * progress}
           className="fun-fuse-arm"
           style={{ opacity: progress < SPARK_MIN_PROGRESS ? 0 : opacity }}
         />
@@ -173,7 +181,7 @@ function Shimmer({ geometry, color }: { geometry: ArmGeometry; color: string }) 
           d={d}
           fill="none"
           stroke={`color-mix(in oklab, ${color} ${SHIMMER_WHITE_PERCENT}%, white)`}
-          strokeWidth={STRONG_STROKE_PX}
+          strokeWidth={RING_BAND_PX}
           strokeDasharray={`${dash} ${geometry.length * 2}`}
         />
       ))}
@@ -222,12 +230,7 @@ export function FunFuse({ mood }: { mood: Mood }) {
         style={{ background: lightBackground(mood, color) }}
       >
         {geometry && size && (
-          <svg
-            className="absolute"
-            style={{ inset: RING_INSET_PX }}
-            width={size.width}
-            height={size.height}
-          >
+          <svg className="absolute inset-0" width={size.width} height={size.height}>
             {GLOW_LAYERS.map(({ widthPx, share }) => (
               <Arms
                 key={widthPx}
@@ -247,8 +250,7 @@ export function FunFuse({ mood }: { mood: Mood }) {
         data-testid="fun-fuse-ring"
         data-tone={mood.tone}
         data-reached={reached}
-        className="pointer-events-none fixed z-[120]"
-        style={{ inset: RING_INSET_PX }}
+        className="pointer-events-none fixed inset-0 z-[120]"
       >
         {geometry && size && (
           <svg
