@@ -4,6 +4,7 @@ import { useDepositInProgress } from "@/components/hooks/useDepositInProgress";
 import { useKeySweepInProgress } from "@/components/hooks/useKeySweepInProgress";
 import { useQuestFlush } from "@/components/hooks/useQuests";
 import { QuestInviteDialog } from "@/components/QuestPoints";
+import { panelColumnGround } from "@/components/ui/styles";
 import { copySignature } from "@/lib/clipboard";
 import { shortSignature } from "@/lib/transfer/attention";
 
@@ -51,7 +52,7 @@ export function TerminalNotices({
     <>
       <QuestInviteDialog owner={owner} />
       {anyNotice && (
-        <div className="flex shrink-0 flex-col gap-1 px-3 sm:px-4">
+        <div className={`${panelColumnGround} relative flex shrink-0 flex-col gap-1 px-3 sm:px-4`}>
           {sessionStopped && (
             <p
               role="alert"
