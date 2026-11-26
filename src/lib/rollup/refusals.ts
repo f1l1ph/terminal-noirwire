@@ -240,10 +240,9 @@ const SENTENCES: Readonly<Record<number, Sentence>> = {
   [PROGRAM_ERROR.accountExists]: "Your account already exists.",
   [PROGRAM_ERROR.accountMissing]:
     "Your account could not be found on the exchange. If you just opened it, wait a moment and try again.",
-  [PROGRAM_ERROR.notOrderKey]:
-    "This device's trading keys are no longer the ones on your account, probably because another device set up trading. Set up trading again on this device. Nothing was charged.",
+  [PROGRAM_ERROR.notOrderKey]: "Trading moved to another device. Nothing was charged.",
   [PROGRAM_ERROR.invalidOrderKey]:
-    "The new trading key could not be used. Set up trading again on this device. Nothing was charged.",
+    "The new trading key could not be used, so trading did not move. Try again. Nothing was charged.",
   [PROGRAM_ERROR.notViewOwner]:
     "This account belongs to a different wallet. Connect the wallet that opened it.",
   [PROGRAM_ERROR.counterOverflow]: INTERNAL_CHECK,

@@ -105,6 +105,7 @@ const CONTROLS: PositionTriggerControls = {
   refresh: () => {},
   notice: null,
   dismissNotice: () => {},
+  blocked: null,
 };
 
 const PARTIAL_CONTROLS: PositionTriggerControls = {

@@ -40,16 +40,21 @@ import { UNCONFIRMED_PLACE_RESULT } from "@/lib/rollup/outcome";
 import { fetchDeployment, quoteSymbolOf, type PublicDeployment } from "@/lib/rollup/deployment";
 import { describeRejectReason } from "@/lib/trading/validation";
 import { offersSpotTrading, tradeGate } from "@/lib/trading/uiRules";
+import { KEYS_ELSEWHERE_NOTICE, deviceStatus } from "@/lib/trading/openCopy";
 import { AccountSetup } from "@/components/AccountSetup";
 import { useNow } from "@/components/hooks/useNow";
 import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { useTradingTabGuard } from "@/components/hooks/useTradingTabGuard";
 import { useTradingPause } from "@/components/hooks/useTradingPause";
 import { usePositionTriggers } from "@/components/hooks/usePositionTriggers";
+import { useFunMode } from "@/components/hooks/useFunMode";
+import { usePositionMood } from "@/components/hooks/usePositionMood";
+import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
+import type { WizardSpotData } from "@/components/FunWizard";
 import { usePrivacyTools } from "@/components/hooks/usePrivacyTools";
 import { OrderNotice } from "@/components/OrderNotice";
-import { PrivacyToolsToggle } from "@/components/PrivacyToolsToggle";
 import { QuestToggle } from "@/components/QuestPoints";
+import { SettingsMenu } from "@/components/SettingsMenu";
 import { TerminalShell } from "@/components/TerminalShell";
 import { TerminalNotices, TRADING_IN_OTHER_TAB_NOTICE } from "@/components/TerminalNotices";
 import { DesktopWorkspace } from "@/components/DesktopWorkspace";
@@ -68,6 +73,7 @@ import { holdClearableAtMs, type UnknownHold } from "@/lib/rollup/accountMemory"
 import { formatClockTime, formatDecimal } from "@/lib/format";
 import { userMessageLine } from "@/lib/userMessage";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
+import { positionEntryEstimate } from "@/lib/trading/entryEstimate";
 
 /**
  * The deposit and withdraw controls and everything they move money with. The
@@ -575,18 +581,56 @@ export function Terminal() {
     .join(",");
   // Either sync below is asked again, ever more slowly up to once a minute,
   // for as long as the account is open and it has not gone through.
-  const accountOpen = trading.accountStatus === "open" && trading.accountLoaded;
+  const tradingAway = deviceStatus(trading.orderKeys) === "elsewhere";
+  const accountOpen = trading.accountStatus === "open" && trading.accountLoaded && !tradingAway;
   const positionTriggers = usePositionTriggers({
     owner: ownerIdentity?.address ?? null,
     live: trading.triggersLive,
     accountLoaded: trading.accountLoaded,
     positions: trading.state.positions,
     statuses: trading.state.triggers,
-    blocked: tabGuard.elsewhere ? TRADING_IN_OTHER_TAB_NOTICE : null,
+    blocked: tabGuard.elsewhere
+      ? TRADING_IN_OTHER_TAB_NOTICE
+      : tradingAway
+        ? KEYS_ELSEWHERE_NOTICE
+        : null,
     setTrigger: trading.setTrigger,
     cancelTrigger: trading.cancelTrigger,
     syncMarket,
   });
+  const [funMode] = useFunMode();
+  const marketLimits = trading.marketLimits;
+  const entryLiquidation = useCallback(
+    (position: Position) => {
+      const settings = marketSettings(position.market);
+      if (!settings) return null;
+      return (
+        positionEntryEstimate(
+          position,
+          settings,
+          marketLimits.get(position.market),
+          priceDecimalsOf(settings),
+        )?.liquidationPrice ?? null
+      );
+    },
+    [marketSettings, marketLimits],
+  );
+  const { mood, gauge } = usePositionMood({
+    entryLiquidation,
+    owner,
+    enabled: funMode.enabled,
+    positions: trading.state.positions,
+    collateral: trading.state.collateral?.total ?? null,
+    exposureUnreadable: trading.state.exposureUnreadable === true,
+    marks: data.marksByMarket,
+    now,
+    triggers: positionTriggers,
+  });
+  const speech = useWizardSpeech(mood);
+  const wizard = useMemo<WizardSpotData | null>(
+    () => (funMode.enabled && funMode.wizard ? { mood, speech, gauge } : null),
+    [funMode.enabled, funMode.wizard, mood, speech, gauge],
+  );
   useEffect(() => {
     const synced = syncedMakerFillsRef.current;
     const unsynced = makerFillSequences.split(",").filter((seq) => seq && !synced.has(seq));
@@ -811,15 +855,7 @@ export function Terminal() {
     <>
       <span className="truncate">Orders are private. The price updates about once a minute.</span>
       <span className="flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          className="rounded-tile text-faint hover:text-ink min-h-8 px-2 text-[12px] whitespace-nowrap transition-colors"
-          onClick={resetLayout}
-        >
-          Reset layout
-        </button>
         <QuestToggle owner={ownerIdentity?.address ?? null} />
-        <PrivacyToolsToggle />
       </span>
     </>
   ) : null;
@@ -869,9 +905,9 @@ export function Terminal() {
             onOpen={(invite) => void trading.openAccount(invite)}
             onRecheck={trading.recheckAccount}
             keys={trading.orderKeys}
-            now={now}
             ownerAuth={trading.ownerAuth}
             depositsOpen={FundsSection !== null}
+            onMoveHere={() => void trading.moveTradingHere()}
           />
         ) : null
       }
@@ -967,6 +1003,7 @@ export function Terminal() {
       limits={trading.marketLimits}
       exposureUnreadable={trading.state.exposureUnreadable === true}
       unseated={trading.state.unseated === true}
+      figuresAway={tradingAway}
       onCancelOrder={trading.cancelOrder ? (m, id) => void handleCancelOrder(m, id) : null}
       cancellingOrderIds={
         cancelling ? new Set(trading.state.openOrders.map((order) => order.orderId)) : cancellingIds
@@ -983,6 +1020,7 @@ export function Terminal() {
               ownerAuthKnown={trading.ownerAuthKnown}
               accountOpen={trading.accountStatus === "open"}
               accountKnown={trading.accountStatus !== "unknown"}
+              tradingAway={tradingAway}
               collateral={trading.state.collateral ?? null}
               onSettled={() => void trading.syncMarket(selectedMarketId)}
             />
@@ -999,6 +1037,7 @@ export function Terminal() {
   const content = isDesktop ? (
     <DesktopWorkspace
       layoutResetSignal={layoutResetSignal}
+      wizard={wizard}
       market={market}
       mark={mark}
       now={now}
@@ -1056,7 +1095,16 @@ export function Terminal() {
       connectionState={data.connectionState}
       wallet={wallet}
       footer={footer}
-      onResetLayout={isDesktop && !mainnet ? resetLayout : undefined}
+      settings={
+        <SettingsMenu
+          keys={trading.orderKeys}
+          mainnet={mainnet}
+          onResetLayout={isDesktop ? resetLayout : undefined}
+        />
+      }
+      tintMood={funMode.enabled && funMode.tint ? mood : null}
+      wizard={wizard}
+      wizardInHeader={isDesktop}
       notices={
         <TerminalNotices
           owner={ownerIdentity?.address ?? null}

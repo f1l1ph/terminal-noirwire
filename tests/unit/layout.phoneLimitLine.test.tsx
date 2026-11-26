@@ -12,7 +12,6 @@ vi.mock("@/components/MarketChart", () => ({
   },
 }));
 vi.mock("@/components/MarketContextBar", () => ({ PriceHeadline: () => null }));
-vi.mock("@/components/PrivacyToolsToggle", () => ({ PrivacyToolsToggle: () => null }));
 vi.mock("@/components/PublicTape", () => ({ PublicTape: () => null }));
 vi.mock("@/components/PublicView", () => ({ PublicView: () => null }));
 vi.mock("@/components/VenuePulse", () => ({ VenuePulse: () => null }));

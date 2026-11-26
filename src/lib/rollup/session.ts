@@ -18,7 +18,15 @@ import {
 import { installOrderKeysSigned } from "./ownerMessages";
 import { isMainnetOwnerSigner } from "./mainnetOwner";
 import { marketMatchesChain } from "./markets";
-import { deviceOrderKeys, type DeviceSeeds, type OrderKeyStatus } from "./orderKeySetup";
+import {
+  deviceOrderKeys,
+  moveOrderKeysHere,
+  QUICK_KEY_SEARCH,
+  viewDerivesFromSeed,
+  type DeviceOrderKeys,
+  type DeviceSeeds,
+  type OrderKeyStatus,
+} from "./orderKeySetup";
 import { loadOrderSeed, createOrderSeed } from "./orderSeedStore";
 import { clearSignInToken, signedInReader, type SignedIn } from "./signInToken";
 import { redactToken, scrubError } from "./redact";
@@ -30,15 +38,17 @@ import {
   decodeMarketAccount,
   freshOrderKeys,
   installOrderKeys,
+  isKeysNotFromSeed,
   isMakersListed,
-  KEYS_NOT_FROM_SEED_MESSAGE,
+  orderKeyAt,
   orderKeyPublicKeys,
   orderKeysFromCheckpoint,
   PACKAGE_PROGRAM_ID,
   programAddresses,
   signInWithExpiry,
+  ORDER_KEY_SLOTS,
   TraderClient,
-  VIEW_NOT_READABLE_MESSAGE,
+  isViewNotReadable,
   viewKeysDeriveFrom,
   type CustodyToken,
   type OrderKeyManager,
@@ -159,6 +169,14 @@ export interface RollupSession {
   saveKeyCheckpoint(): void;
   /** Brings the idle order keys in line with the keys the view holds, after another tab or device used one. A test fake may omit it. */
   resyncKeys?(view: View): void;
+  /** Whether any key the view holds is one this session holds or has handed out and not yet seen confirmed; false means another device took the account over. A test fake may omit it, which counts as holding them. */
+  holdsKeysOf?(view: Pick<View, "orderKeys">): boolean;
+  /** Whether every key the view holds derives from this device's seed, searched near the session's own checkpoint and the one saved in storage. True means another tab of this browser, not another device, whether or not this session's keys can be brought in step. Only asked on suspicion. A test fake may omit it, which counts as false. */
+  keysFromThisSeed?(view: Pick<View, "orderKeys">): boolean;
+  /** Whether the session held the account's keys when it was built; false means trading was on another device then. A test fake may omit it, which counts as true. */
+  heldAtBuild?: boolean;
+  /** Installs four keys this device never handed out, with one owner signature, then makes them this session's live keys. A test fake may omit it. */
+  moveKeysHere?(): Promise<void>;
   /** Ends the client's background subscription and refreshes (0.5.0+); a no-op for a test fake that omits `close`. */
   close(): void;
 }
@@ -170,8 +188,7 @@ export interface RollupSessionDeps {
   now?: () => number;
   /** Where the per-device order seed is kept; this browser's own store by default. */
   seeds?: DeviceSeeds;
-  sleep?: (ms: number) => Promise<void>;
-  /** Told how the order keys stand while the session is built (a new device waits before replacing them). */
+  /** Told how the order keys stand while the session is built (a new device reports that trading is elsewhere). */
   onOrderKeys?: (status: OrderKeyStatus) => void;
 }
 
@@ -327,17 +344,6 @@ async function marketsMatchingChain(
   return matching;
 }
 
-const isErrorWithMessage = (error: unknown, message: string) =>
-  error instanceof Error && error.message === message;
-
-/**
- * How far the first, quick searches look. The full search (100,000 indices)
- * takes many seconds when the keys are not there, so it runs only once the
- * quick ones have ruled out the common cases: this seed's keys not far in,
- * or keys left from the earlier seed derivation.
- */
-const QUICK_KEY_SEARCH = 1_024;
-
 /**
  * The owner's view, or null while the account is not opened. A one-shot read,
  * thrown away right after: no benefit from a live result subscription here,
@@ -353,7 +359,7 @@ async function readOwnerView(
   try {
     return await new TraderClient(reader, reader, owner, keys, programId, { push: false }).view();
   } catch (error) {
-    if (isErrorWithMessage(error, VIEW_NOT_READABLE_MESSAGE)) return null;
+    if (isViewNotReadable(error)) return null;
     throw error;
   }
 }
@@ -375,23 +381,38 @@ async function derivedOrderKeys(
   install: (fresh: OrderKeyManager) => Promise<void>,
 ): Promise<OrderKeyManager> {
   const fresh = freshOrderKeys(seeds.seed);
-  const notFromSeed = (error: unknown) => isErrorWithMessage(error, KEYS_NOT_FROM_SEED_MESSAGE);
   const existingView = await readOwnerView(reader, owner.publicKey, fresh, programId);
   if (!existingView) return fresh;
   try {
     return orderKeysFromCheckpoint(seeds.seed, existingView, checkpoint, QUICK_KEY_SEARCH);
   } catch (error) {
-    if (!notFromSeed(error)) throw error;
+    if (!isKeysNotFromSeed(error)) throw error;
   }
   if (!viewKeysDeriveFrom(seeds.legacySeed, existingView, QUICK_KEY_SEARCH)) {
     try {
       return orderKeysFromCheckpoint(seeds.seed, existingView, null);
     } catch (error) {
-      if (!notFromSeed(error)) throw error;
+      if (!isKeysNotFromSeed(error)) throw error;
     }
   }
   await install(fresh);
   return fresh;
+}
+
+/**
+ * Whether the view holds a key this manager holds, or one it handed out as a
+ * replacement and has not yet seen confirmed (the swap may have landed). The
+ * handed-out keys sit in the last derivation indices before `nextIndex`, and
+ * are derived only when no live key matches.
+ */
+export function holdsKeysOf(keys: OrderKeyManager, view: Pick<View, "orderKeys">): boolean {
+  const inView = new Set(view.orderKeys.map((key) => key.toBase58()));
+  if (keys.publicKeys.some((key) => inView.has(key.toBase58()))) return true;
+  const { nextIndex } = keys.checkpoint;
+  for (let index = Math.max(0, nextIndex - ORDER_KEY_SLOTS); index < nextIndex; index += 1) {
+    if (inView.has(orderKeyAt(keys.seed, index).toBase58())) return true;
+  }
+  return false;
 }
 
 /** A read the rollup refused for want of a valid token, as opposed to any other failure. */
@@ -506,20 +527,25 @@ async function buildSession(
     usesOwnerMessages(described)
       ? installOrderKeysSigned(reader, signer, fresh, programId)
       : installOrderKeys(reader, signer, fresh, programId);
-  const orderKeysOn = (reader: Connection): Promise<OrderKeyManager> =>
+  const orderKeysOn = async (reader: Connection): Promise<DeviceOrderKeys> =>
     derivedSeeds
-      ? derivedOrderKeys(reader, signer, derivedSeeds, programId, checkpoint, (fresh) =>
-          installOn(reader, fresh),
-        )
+      ? {
+          keys: await derivedOrderKeys(
+            reader,
+            signer,
+            derivedSeeds,
+            programId,
+            checkpoint,
+            (fresh) => installOn(reader, fresh),
+          ),
+          held: true,
+        }
       : deviceOrderKeys({
           ownerAddress,
           seeds,
           checkpoint,
           readView: (fresh) => readOwnerView(reader, ownerKey, fresh, programId),
-          install: (fresh) => installOn(reader, fresh),
           report,
-          now,
-          sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
         });
 
   // The query filter (deployment.rollupRpcUrl) serves both the anonymous
@@ -532,21 +558,30 @@ async function buildSession(
   // plain `anonymous` one. A cached token the rollup no longer accepts is
   // dropped and signed for once more.
   let signedIn = await signIn(false);
-  let keys: OrderKeyManager;
+  let device: DeviceOrderKeys;
   try {
-    keys = await orderKeysOn(signedIn.reader);
+    device = await orderKeysOn(signedIn.reader);
   } catch (error) {
     if (!signedIn.cached || !looksUnauthorized(error)) throw error;
     clearSignInToken(storage, ownerAddress);
     signedIn = await signIn(true);
-    keys = await orderKeysOn(signedIn.reader);
+    device = await orderKeysOn(signedIn.reader);
   }
+  const { keys } = device;
+  let held = device.held;
   const reader = signedIn.reader;
-  report({ stage: "ready" });
-  const saveKeyCheckpoint = () => saveCheckpoint(storage, ownerAddress, checkpointOf(keys));
+  if (held) report({ stage: "ready" });
+  // A session that does not hold the account's keys keeps the checkpoint the
+  // device saved earlier: its own keys are a fresh set that says nothing about
+  // which indices were handed out before.
+  const saveKeyCheckpoint = () => {
+    if (held) saveCheckpoint(storage, ownerAddress, checkpointOf(keys));
+  };
   // Saved now as well as after every confirmed call, so a checkpoint the
   // keys had moved beyond is replaced rather than searched past each time.
   saveKeyCheckpoint();
+  const keysFromThisSeed = (view: Pick<View, "orderKeys">): boolean =>
+    viewDerivesFromSeed(keys.seed, view, [keys.checkpoint, loadCheckpoint(storage, ownerAddress)]);
 
   const exchangeTokens = await readExchangeTokens(anonymous, programAddresses(programId).exchange);
   const pinnedMint = deps.overrides?.pins?.usdcMint;
@@ -565,6 +600,22 @@ async function buildSession(
   // order, rather than that order itself paying for warming it up.
   const client = new TraderClient(reader, reader, ownerKey, keys, programId);
   await client.ready();
+
+  /**
+   * Installs four keys at indices this device never handed out, with exactly
+   * one owner signature. A session that did not hold the account's keys was
+   * built with its manager at the saved checkpoint, so the manager's own next
+   * index is already past everything this device signed with.
+   */
+  const moveKeysHere = async (): Promise<void> => {
+    await moveOrderKeysHere({
+      keys,
+      install: (replacement) => installOn(reader, replacement),
+      readView: () => client.view(),
+    });
+    held = true;
+    saveKeyCheckpoint();
+  };
 
   return {
     owner: signer,
@@ -588,6 +639,10 @@ async function buildSession(
     tokenExpiresAtMs: signedIn.expiresAtMs,
     saveKeyCheckpoint,
     resyncKeys: (view) => keys.resync(view),
+    holdsKeysOf: (view) => holdsKeysOf(keys, view),
+    keysFromThisSeed,
+    heldAtBuild: device.held,
+    moveKeysHere,
     close: () => client.close(),
   };
 }

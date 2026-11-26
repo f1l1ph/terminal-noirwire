@@ -1,4 +1,5 @@
 import type { Connection } from "@solana/web3.js";
+import type { FailureReason } from "../analytics";
 import type { MarketInfo } from "../market-data/types";
 import type { UnknownHold } from "../rollup/accountMemory";
 import type { PublicDeployment } from "../rollup/deployment";
@@ -60,7 +61,7 @@ export type OpenAccountOutcome =
   /** The service turned the request away or could not be reached; `mayBeOpen` means the view could not settle it either, so read it before trying again. */
   | { kind: "refused"; refusal: OpenRefusal }
   /** Nothing was sent: the prepared transaction or the wallet's signature was not what was asked for, or the wallet declined. */
-  | { kind: "notSent"; reason: string }
+  | { kind: "notSent"; reason: string; failure?: FailureReason }
   /** This deployment opens accounts another way (test funds), not through the invite-gated routes. */
   | { kind: "notAvailable" };
 
@@ -312,10 +313,10 @@ export type FundOutcome =
 
 /**
  * Where the owner's order keys stand on this device. A new device (or cleared
- * storage) waits for old orders to lapse before replacing the keys with one
- * owner-signed transaction. `seedPersisted` false means the browser would not
- * promise to keep the seed: clearing site data then costs one more such
- * replacement (funds are not at risk); null before a seed was made here.
+ * storage) waits for the owner to move trading here, then replaces the keys
+ * with one owner-signed transaction. `seedPersisted` false means the browser
+ * would not promise to keep the seed: clearing site data then costs one more
+ * such replacement (funds are not at risk); null before a seed was made here.
  */
 export type OrderKeyState = SetupStatus & { seedPersisted: boolean | null };
 
@@ -372,6 +373,8 @@ export interface TradingClient {
   sessionDeployment?(wallet: WalletIdentity): Promise<PublicDeployment>;
   /** Reports where the order keys stand while they are set up or replaced. Optional: dev mode has none. */
   subscribeOrderKeys?(wallet: WalletIdentity, listener: (state: OrderKeyState) => void): () => void;
+  /** The owner's press of Move trading here: replaces the account's order keys with this device's, with one wallet signature. Resolves once the move has finished or stopped; the order key status shows how it went. Optional: dev mode has no order keys. */
+  moveTradingHere?(wallet: WalletIdentity): Promise<void>;
   fund(wallet: WalletIdentity): Promise<FundOutcome>;
   /** The account as of the last view shown, valued against the marks as they are now, with no read. Null when nothing has been shown yet. Optional: dev mode prices on the venue. */
   repriceState?(wallet: WalletIdentity): TraderState | null;

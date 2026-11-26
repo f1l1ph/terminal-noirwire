@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Keypair, PublicKey, type Transaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
-import type { KeyValueStore } from "@/lib/wallet/index";
+import { json, memoryStore } from "./support/rollupFixtures";
 import { keypairOwnerSigner, type OwnerSigner } from "@/lib/wallet/ownerSigner";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import {
@@ -32,17 +32,6 @@ const deployment = (ownerAuth?: "message" | "transaction"): PublicDeployment => 
   markets: [],
   ...(ownerAuth ? { ownerAuth } : {}),
 });
-
-const memoryStore = (): KeyValueStore => {
-  const map = new Map<string, string>();
-  return {
-    getItem: (key) => map.get(key) ?? null,
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
-  };
-};
-
-const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
 function harness(
   options: {
@@ -169,6 +158,7 @@ describe("opening an account by a signed message", () => {
     expect(await h.client.openAccount(h.wallet)).toEqual({
       kind: "notSent",
       reason: "You declined the message",
+      failure: "wallet_declined",
     });
     expect(h.events).not.toContain("submit");
     expect(h.signTransaction).not.toHaveBeenCalled();

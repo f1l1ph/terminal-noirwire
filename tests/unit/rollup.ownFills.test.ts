@@ -3,16 +3,7 @@ import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { fillReceipt } from "@/lib/rollup/sdk";
 import { loadTrackedSecrets, trackedSecretBytes, trackSecret } from "@/lib/rollup/secretStore";
 import type { PublicFill } from "@/lib/market-data/types";
-import type { KeyValueStore } from "@/lib/wallet/index";
-
-function memoryStore(): KeyValueStore {
-  const data = new Map<string, string>();
-  return {
-    getItem: (key) => data.get(key) ?? null,
-    setItem: (key, value) => void data.set(key, value),
-    removeItem: (key) => void data.delete(key),
-  };
-}
+import { memoryStore } from "./support/rollupFixtures";
 
 function bigEndianU64String(bytes: Uint8Array): string {
   let value = 0n;

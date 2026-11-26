@@ -1,23 +1,28 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { track, type AnalyticsEvent } from "@/lib/analytics";
+import { track, trackOnce, type AnalyticsEvent, type SetupStepId } from "@/lib/analytics";
+import { openRefusalReason } from "@/lib/failureReason";
 import { formatShortAddress } from "@/lib/format";
 import {
   depositHelp,
+  depositNeedsSol,
   describeOpenOutcome,
   gateAsksForInvite,
   KEYS_NOT_PERSISTED_NOTE,
   keysMayNotPersist,
+  CANCELS_STOPS_NOTE,
+  KEYS_ELSEWHERE_TITLE,
+  KEYS_MOVED_TITLE,
   keysNotice,
-  keysSettleFraction,
+  MOVE_TRADING_HERE,
   OPEN_RECHECK_ATTEMPTS,
   OPEN_RECHECK_EVERY_MS,
   recheckOffer,
   setupSteps,
   type SetupStep,
 } from "@/lib/trading/openCopy";
-import { SETTLE_WAIT_MS } from "@/lib/rollup/orderKeySetup";
+import { SetupFunnel } from "@/lib/setupFunnel";
 import type {
   AccountStatus,
   OpenAccountOutcome,
@@ -27,6 +32,7 @@ import type {
 import { useWalletLamports } from "@/components/hooks/useWalletLamports";
 import { btnGhost, btnPrimary, input } from "@/components/ui/styles";
 import { openWalletMenu } from "@/components/WalletWidget";
+import { StopReasonAsk } from "@/components/StopReasonAsk";
 
 const TONE_CLASS = { ok: "text-dim", wait: "text-warning", error: "text-danger" } as const;
 const SEGMENT_CLASS = {
@@ -43,8 +49,8 @@ const SETUP_EVENTS: Record<string, AnalyticsEvent | undefined> = {
   deposit: "account_funded",
 };
 
-const sentThisPageLoad = new Set<string>();
 const countedOutcomes = new WeakSet<OpenAccountOutcome>();
+const funnel = new SetupFunnel();
 
 const STATE_WORD = { done: "done", current: "current", upcoming: "not started" } as const;
 
@@ -62,7 +68,7 @@ export function AccountSetup({
   onOpen,
   onRecheck,
   keys,
-  now,
+  onMoveHere,
   ownerAuth = "transaction",
   funded = null,
   depositsOpen,
@@ -78,7 +84,8 @@ export function AccountSetup({
   /** Runs the account check (and any key setup a failed attempt left undone) again; `fresh` reads it through a new session. */
   onRecheck: (options?: { fresh?: boolean }) => Promise<void>;
   keys: OrderKeyState | null;
-  now: number;
+  /** Takes over trading from the device that holds the keys: one wallet signature, no fee. */
+  onMoveHere: () => void;
   /** How the deployment has the owner consent to opening: by a message, or by a transaction in the wallet. */
   ownerAuth?: OwnerAuth;
   /** Whether the trading account holds USDC; null while that is not known. */
@@ -87,7 +94,7 @@ export function AccountSetup({
   depositsOpen: boolean;
 }) {
   const notice = outcome ? describeOpenOutcome(outcome, status) : null;
-  const keyStep = keysNotice(keys, now);
+  const keyStep = keysNotice(keys);
   const offer = recheckOffer(status, keys);
   const [checking, setChecking] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
@@ -120,27 +127,45 @@ export function AccountSetup({
   const { steps, ready } = setupSteps({ connected: address !== null, status, keys, funded });
   const current = steps.find((step) => step.state === "current")?.id ?? null;
   const walletLamports = useWalletLamports(address, current === "deposit" && depositsOpen);
+  const showsNeedsSol = current === "deposit" && depositsOpen && depositNeedsSol(walletLamports);
+  useEffect(() => {
+    if (showsNeedsSol) trackOnce("deposit_needs_sol", "deposit_needs_sol");
+  }, [showsNeedsSol]);
   const doneIds = steps
     .filter((step) => step.state === "done")
     .map((step) => step.id)
     .join(",");
   useEffect(() => {
+    if (current) funnel.seen(current);
+  }, [current]);
+  useEffect(() => {
     for (const id of doneIds ? doneIds.split(",") : []) {
+      funnel.done(id as SetupStepId);
       const event = SETUP_EVENTS[id];
-      if (!event || sentThisPageLoad.has(id)) continue;
-      sentThisPageLoad.add(id);
-      track(event);
+      if (event) trackOnce(`setup:${id}`, event);
     }
   }, [doneIds]);
+  useEffect(() => {
+    if (status === "declined") funnel.failed("verify", "wallet_declined");
+  }, [status]);
+  const keyFailure = keys?.stage === "failed" ? (keys.failure ?? "other") : null;
+  useEffect(() => {
+    if (keyFailure) funnel.failed("keys", keyFailure);
+  }, [keyFailure]);
   useEffect(() => {
     if (!outcome || countedOutcomes.has(outcome)) return;
     countedOutcomes.add(outcome);
     track("account_open_result", { result: outcome.kind });
+    const reason =
+      outcome.kind === "refused"
+        ? openRefusalReason(outcome.refusal)
+        : outcome.kind === "notSent"
+          ? (outcome.failure ?? "other")
+          : null;
+    if (reason) funnel.failed("open", reason);
   }, [outcome]);
   useEffect(() => {
-    if (!asksForInvite || sentThisPageLoad.has("invite")) return;
-    sentThisPageLoad.add("invite");
-    track("invite_asked");
+    if (asksForInvite) trackOnce("setup:invite", "invite_asked");
   }, [asksForInvite]);
 
   if (ready) {
@@ -162,6 +187,7 @@ export function AccountSetup({
       className={`${btnGhost} mt-1 h-11 w-full`}
       disabled={checking}
       onClick={() => {
+        funnel.acted(offer === "retry" ? "keys" : "verify");
         setChecking(true);
         void onRecheck().finally(() => setChecking(false));
       }}
@@ -176,8 +202,43 @@ export function AccountSetup({
     </button>
   );
 
-  const settleFraction =
-    keyStep?.kind === "settling" ? keysSettleFraction(keyStep.secondsLeft, SETTLE_WAIT_MS) : 0;
+  if (
+    current === "keys" &&
+    (keyStep?.kind === "elsewhere" || keyStep?.kind === "moved" || keyStep?.kind === "installing")
+  ) {
+    return (
+      <section aria-label="Trading device" className="border-line-subtle border-b pb-2">
+        {keyStep.kind === "installing" ? (
+          <div role="status">
+            <h2 className="text-ink-strong text-[13px] font-medium">Moving trading here</h2>
+            <p className="text-dim mt-0.5 text-[12px]">Approve in your wallet.</p>
+          </div>
+        ) : (
+          <>
+            <h2 className="text-ink-strong text-[13px] font-medium">
+              {keyStep.kind === "moved" ? KEYS_MOVED_TITLE : KEYS_ELSEWHERE_TITLE}
+            </h2>
+            {keyStep.cancelsStops && (
+              <p className="text-warning mt-1 text-[11px]">{CANCELS_STOPS_NOTE}</p>
+            )}
+            <button
+              type="button"
+              className={`${keyStep.kind === "moved" ? btnGhost : btnPrimary} mt-1.5 min-h-11 w-full`}
+              onClick={() => {
+                funnel.acted("keys");
+                onMoveHere();
+              }}
+            >
+              {MOVE_TRADING_HERE}
+            </button>
+          </>
+        )}
+        {keysMayNotPersist(keys) && (
+          <p className="text-faint mt-1 text-[11px]">{KEYS_NOT_PERSISTED_NOTE}</p>
+        )}
+      </section>
+    );
+  }
 
   function detail(step: SetupStep): ReactNode {
     if (step.state === "upcoming") return null;
@@ -191,7 +252,10 @@ export function AccountSetup({
             <button
               type="button"
               className={`${btnPrimary} mt-1 h-11 w-full`}
-              onClick={openWalletMenu}
+              onClick={() => {
+                funnel.acted("connect");
+                openWalletMenu();
+              }}
             >
               Connect wallet
             </button>
@@ -244,7 +308,10 @@ export function AccountSetup({
                 type="button"
                 className={`${btnPrimary} mt-1 h-11 w-full`}
                 disabled={opening}
-                onClick={() => onOpen(inviteCode.trim() === "" ? undefined : inviteCode.trim())}
+                onClick={() => {
+                  funnel.acted("open");
+                  onOpen(inviteCode.trim() === "" ? undefined : inviteCode.trim());
+                }}
               >
                 {opening ? "Opening…" : "Open account"}
               </button>
@@ -263,29 +330,6 @@ export function AccountSetup({
         if (step.state === "done") return null;
         return (
           <>
-            {keyStep?.kind === "settling" && (
-              <div role="status">
-                <p>Setting up trading on this device. Ready in about {keyStep.secondsLeft}s.</p>
-                <div
-                  className="bg-line-subtle mt-1 h-1.5 w-full overflow-hidden rounded-full"
-                  role="progressbar"
-                  aria-label="Trading key setup"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(settleFraction * 100)}
-                >
-                  <div
-                    className="bg-ink-strong h-full rounded-full transition-[width] duration-700"
-                    style={{ width: `${settleFraction * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
-            {keyStep?.kind === "installing" && (
-              <p role="status">
-                Setting up trading on this device. Approve the request in your wallet.
-              </p>
-            )}
             {keyStep?.kind === "failed" && (
               <>
                 <p role="alert" className="text-danger">
@@ -301,7 +345,12 @@ export function AccountSetup({
           </>
         );
       case "deposit":
-        return depositHelp(depositsOpen, walletLamports);
+        return (
+          <>
+            <p>{depositHelp(depositsOpen, walletLamports)}</p>
+            <StopReasonAsk active={depositsOpen} />
+          </>
+        );
     }
   }
 

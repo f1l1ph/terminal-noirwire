@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import type { WizardSpotData } from "@/components/FunWizard";
 import { MarketContextBar } from "@/components/MarketContextBar";
 import {
   TerminalPanelProvider,
@@ -36,8 +37,10 @@ export function DesktopWorkspace({
   quoteSymbol,
   takerFeeBps,
   layoutResetSignal,
+  wizard,
   ...panelData
 }: TerminalPanelData & {
+  wizard: WizardSpotData | null;
   /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
   quoteSymbol: string;
   /** The market account's taker fee in basis points; undefined until the session has read it. */
@@ -54,6 +57,7 @@ export function DesktopWorkspace({
           now={panelData.now}
           quoteSymbol={quoteSymbol}
           takerFeeBps={takerFeeBps}
+          wizard={wizard}
         />
       </div>
       <TerminalPanelProvider value={panelData}>

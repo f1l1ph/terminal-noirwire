@@ -5,6 +5,7 @@ import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession, TraderClientLike } from "@/lib/rollup/session";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { KeyValueStore } from "@/lib/wallet/index";
+import { memoryStore } from "./support/rollupFixtures";
 import type { WalletIdentity } from "@/lib/trading/types";
 
 const NO_FAUCET_REASON = "this deployment has no faucet: test funds are not handed out here";
@@ -19,15 +20,6 @@ const DEPLOYMENT: PublicDeployment = {
   stats: Keypair.generate().publicKey.toBase58(),
   markets: [],
 };
-
-function memoryStore(): KeyValueStore {
-  const entries = new Map<string, string>();
-  return {
-    getItem: (key) => entries.get(key) ?? null,
-    setItem: (key, value) => void entries.set(key, value),
-    removeItem: (key) => void entries.delete(key),
-  };
-}
 
 function throwingStore(): KeyValueStore {
   const fail = () => {

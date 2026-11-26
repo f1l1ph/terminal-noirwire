@@ -1,12 +1,17 @@
 "use client";
 
+import { useEffect } from "react";
 import { btnGhost } from "@/components/ui/styles";
+import { trackAppError } from "@/lib/analytics";
+
 export default function Error({
+  error,
   reset,
 }: {
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  useEffect(() => trackAppError("route_boundary"), [error]);
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-4 text-center">
       <p className="text-ink-strong text-[16px] font-medium">Something went wrong.</p>

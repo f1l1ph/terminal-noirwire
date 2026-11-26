@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { createPortal } from "react-dom";
 import { formatClockTime, formatShortAddress } from "@/lib/format";
 import { env } from "@/lib/env";
 import { isMainnetBuild } from "@/lib/network";
 import type { AccountReadOutcome, PrivacyCheck } from "@/lib/trading/types";
+import { Dialog } from "@/components/ui/Dialog";
 import { btnGhost, panel, sectionLabel } from "@/components/ui/styles";
 
 interface PublicSnapshot {
@@ -246,54 +246,37 @@ export function PublicView({
           )}
         </div>
       )}
-      {privacy &&
-        evidenceOpen &&
-        // A portal to `document.body`, not an in-place `fixed inset-0`: see
-        // the same note on OrderEntry's confirm dialog - nested inside a
-        // dockview panel, this div's ancestor chain includes an element with
-        // its own CSS transform (dockview's overlay renderer), which makes a
-        // descendant's `position: fixed` relative to that box, not the
-        // viewport. PublicView also sits low on the page, and an anchored
-        // overlay large enough to hold every required line ran past the
-        // bottom of the viewport in a real capture, clipping exactly the one
-        // sentence the review most wants visible - a centered, truly
-        // viewport-fixed panel is never clipped by where the trigger button
-        // happens to sit.
-        createPortal(
-          <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 p-4">
-            <div
-              role="dialog"
-              aria-label="Privacy evidence"
-              className="bg-surface border-line-strong rounded-panel flex w-[360px] max-w-[92vw] flex-col gap-2 border p-4 shadow-lg"
-            >
-              <div className="flex items-center justify-between">
-                <p className={sectionLabel}>Privacy evidence</p>
-                <button
-                  type="button"
-                  className="text-faint text-[11px] underline"
-                  onClick={() => setEvidenceOpen(false)}
-                >
-                  Close
-                </button>
-              </div>
-              <AccountReadRow label={copy.viewLabel} outcome={privacy.view.outcome} />
-              <AccountReadRow label={`${market} book`} outcome={privacy.book.outcome} />
-              <p className="tnum text-dim text-[13px] leading-snug">
-                Unsigned {privacy.network} rollup RPC
-              </p>
-              <p className="tnum text-dim text-[13px] leading-snug">
-                Checked {formatClockTime(new Date(privacy.checkedAtMs))}
-              </p>
-              <p className="tnum text-faint text-[12px] leading-snug">
-                View {formatShortAddress(privacy.view.address)} · book{" "}
-                {formatShortAddress(privacy.book.address)}
-              </p>
-              <p className="text-faint text-[11px] break-all">{privacy.endpoint}</p>
-              <p className="text-ink text-[13px] leading-relaxed">{WHAT_THIS_SHOWS}</p>
+      {privacy && evidenceOpen && (
+        <Dialog name={{ label: "Privacy evidence" }} onDismiss={() => setEvidenceOpen(false)}>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <p className={sectionLabel}>Privacy evidence</p>
+              <button
+                type="button"
+                data-initial-focus
+                className="text-faint text-[11px] underline"
+                onClick={() => setEvidenceOpen(false)}
+              >
+                Close
+              </button>
             </div>
-          </div>,
-          document.body,
-        )}
+            <AccountReadRow label={copy.viewLabel} outcome={privacy.view.outcome} />
+            <AccountReadRow label={`${market} book`} outcome={privacy.book.outcome} />
+            <p className="tnum text-dim text-[13px] leading-snug">
+              Unsigned {privacy.network} rollup RPC
+            </p>
+            <p className="tnum text-dim text-[13px] leading-snug">
+              Checked {formatClockTime(new Date(privacy.checkedAtMs))}
+            </p>
+            <p className="tnum text-faint text-[12px] leading-snug">
+              View {formatShortAddress(privacy.view.address)} · book{" "}
+              {formatShortAddress(privacy.book.address)}
+            </p>
+            <p className="text-faint text-[11px] break-all">{privacy.endpoint}</p>
+            <p className="text-ink text-[13px] leading-relaxed">{WHAT_THIS_SHOWS}</p>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }

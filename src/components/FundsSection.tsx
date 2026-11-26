@@ -2,7 +2,8 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { track, type AnalyticsEvent } from "@/lib/analytics";
+import { track, trackOnce, type AnalyticsEvent } from "@/lib/analytics";
+import { failureReasonOf } from "@/lib/failureReason";
 import { env } from "@/lib/env";
 import { formatMoney } from "@/lib/format";
 import { isAvailableUnknown, transferableAmount } from "@/lib/trading/balanceDisplay";
@@ -41,6 +42,7 @@ import { movedDeposits } from "@/lib/transfer/keyReturn";
 import { sweepKeySol } from "@/lib/transfer/keySweep";
 import { finishCompleted, withdraw } from "@/lib/transfer/withdraw";
 import { QUOTE_DECIMALS } from "@/lib/rollup/markets";
+import { MOVING_FUNDS_AWAY_NOTE } from "@/lib/trading/openCopy";
 import { needsAcknowledgement, recordAcknowledgement } from "@/lib/trading/realMoneyAck";
 import { browserLocalStorage } from "@/lib/wallet";
 import { RealMoneyDialog } from "@/components/OrderDialogs";
@@ -51,15 +53,9 @@ type Kind = "deposit" | "withdraw";
 
 const SOL_DECIMALS = 9;
 
-const sentOnce = new Set<AnalyticsEvent>();
-
 /** Counts `event` the first time it mounts in this page load. */
 function CountOnce({ event }: { event: AnalyticsEvent }) {
-  useEffect(() => {
-    if (sentOnce.has(event)) return;
-    sentOnce.add(event);
-    track(event);
-  }, [event]);
+  useEffect(() => trackOnce(event, event), [event]);
   return null;
 }
 
@@ -102,9 +98,12 @@ export default function FundsSection({
   ownerAuthKnown,
   accountOpen,
   accountKnown,
+  tradingAway = false,
   collateral,
   onSettled,
 }: {
+  /** Trading is on another device: no new deposit or withdrawal starts here, while pending records and their recovery stay. */
+  tradingAway?: boolean;
   identity: WalletIdentity | null;
   rollupReader: (() => Promise<Connection>) | null;
   /** Asks the exchange whether the account holds a seat right now; the first deposit takes one. */
@@ -323,13 +322,21 @@ export default function FundsSection({
         onSettled();
       }
     } catch (error) {
-      if (kind === "deposit") track("deposit_result", { result: "error" });
+      if (kind === "deposit") {
+        track("deposit_result", { result: "error", reason: failureReasonOf(error) });
+      }
       setResult(failureLine(error));
     } finally {
       setPhase(null);
       setRefreshKey((count) => count + 1);
     }
   }
+
+  const awayNote = tradingAway && (
+    <p role="status" className="text-dim mt-1 text-[12px]">
+      {MOVING_FUNDS_AWAY_NOTE}
+    </p>
+  );
 
   return (
     <div>
@@ -343,13 +350,17 @@ export default function FundsSection({
       />
       <div className="border-line-subtle border-b p-3">
         {!open ? (
-          <button
-            type="button"
-            className={`${btnGhost} w-full px-3 text-[12px]`}
-            onClick={() => setOpen(true)}
-          >
-            Add or withdraw USDC
-          </button>
+          <>
+            <button
+              type="button"
+              className={`${btnGhost} w-full px-3 text-[12px]`}
+              disabled={tradingAway}
+              onClick={() => setOpen(true)}
+            >
+              Add or withdraw USDC
+            </button>
+            {awayNote}
+          </>
         ) : (
           <div>
             <p className={sectionLabel}>Move USDC</p>
@@ -394,7 +405,8 @@ export default function FundsSection({
                 new one cannot start until then.
               </p>
             )}
-            {!accountOpen && (
+            {awayNote}
+            {!accountOpen && !tradingAway && (
               <p className="text-dim mt-1 text-[12px]">Open your account before moving USDC.</p>
             )}
             {lacksSol && kind === "deposit" && <CountOnce event="deposit_needs_sol" />}
@@ -464,6 +476,7 @@ export default function FundsSection({
                 type="button"
                 className={`${btnPrimary} flex-1 text-[12px]`}
                 disabled={
+                  tradingAway ||
                   !canStartTransfer({
                     running: busy,
                     blocked,

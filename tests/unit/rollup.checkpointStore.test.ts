@@ -1,15 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadCheckpoint, saveCheckpoint } from "@/lib/rollup/checkpointStore";
-import type { KeyValueStore } from "@/lib/wallet/index";
-
-function memoryStore(): KeyValueStore {
-  const data = new Map<string, string>();
-  return {
-    getItem: (key) => data.get(key) ?? null,
-    setItem: (key, value) => void data.set(key, value),
-    removeItem: (key) => void data.delete(key),
-  };
-}
+import { memoryStore } from "./support/rollupFixtures";
 
 describe("order-key checkpoint persistence (0.3.0's OrderKeyManager.checkpoint/restore)", () => {
   it("round-trips a checkpoint for an owner address", () => {

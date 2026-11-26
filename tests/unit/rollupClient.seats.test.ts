@@ -9,6 +9,7 @@ import type { MarketInfo } from "@/lib/market-data/types";
 import type { TraderState, WalletIdentity } from "@/lib/trading/types";
 import { RESULT_STATUS_CODE, type OrderResult, type Placed, type View } from "@/lib/rollup/sdk";
 import { describeProgramError, PROGRAM_ERROR } from "@/lib/rollup/refusals";
+import { deploymentMarket, programRefusal } from "./support/rollupFixtures";
 
 const USDC = 1_000_000n;
 const OWNER = Keypair.generate();
@@ -32,23 +33,6 @@ function perp(id: string): MarketInfo {
     change24hPercent: 0,
     volume24h: "0",
     openInterest: "0",
-  };
-}
-
-function deploymentMarket(marketId: number, symbol: string, baseDecimals: number, lot: string) {
-  return {
-    marketId,
-    symbol,
-    kind: "perp" as const,
-    market: Keypair.generate().publicKey.toBase58(),
-    tape: Keypair.generate().publicKey.toBase58(),
-    priceFeed: Keypair.generate().publicKey.toBase58(),
-    baseToken: null,
-    quoteToken: { symbol: "nUSD", mint: Keypair.generate().publicKey.toBase58(), decimals: 6 },
-    baseDecimals,
-    quoteDecimals: 6,
-    lotSize: lot,
-    tick: "100",
   };
 }
 
@@ -176,10 +160,7 @@ function confirmingAs(...views: View[]) {
   });
 }
 
-const notSeated = () =>
-  transactionFailure("sig", {
-    InstructionError: [0, { Custom: 6000 + PROGRAM_ERROR.notSeated }],
-  });
+const notSeated = () => programRefusal(PROGRAM_ERROR.notSeated);
 
 describe("an account that holds no seat", () => {
   it("shows zero everywhere and says it is unseated", async () => {

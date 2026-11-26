@@ -7,7 +7,7 @@ import {
   TransactionInstruction,
 } from "@solana/web3.js";
 import { RollupTradingClient } from "@/lib/trading/rollupClient";
-import type { KeyValueStore } from "@/lib/wallet/index";
+import { json, memoryStore } from "./support/rollupFixtures";
 import { keypairOwnerSigner, type OwnerSigner } from "@/lib/wallet/ownerSigner";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import type { PublicDeployment } from "@/lib/rollup/deployment";
@@ -54,15 +54,6 @@ const DEPLOYMENT: PublicDeployment = {
   exchange: Keypair.generate().publicKey.toBase58(),
   stats: Keypair.generate().publicKey.toBase58(),
   markets: [],
-};
-
-const memoryStore = (): KeyValueStore => {
-  const map = new Map<string, string>();
-  return {
-    getItem: (key) => map.get(key) ?? null,
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
-  };
 };
 
 /** What `/v1/open/prepare` sends: `open_trader` with the gate paying and already signed as the gate. */
@@ -181,8 +172,6 @@ function harness(options: {
   };
 }
 
-const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
-
 describe("opening an account on mainnet", () => {
   it("rebuilds the transaction, has the wallet sign it once, submits it and reports the reference", async () => {
     const h = harness({});
@@ -280,6 +269,7 @@ describe("opening an account on mainnet", () => {
     expect(outcome).toEqual({
       kind: "notSent",
       reason: `your wallet changed the transaction (it added 1 instruction, from programs ${budget.toBase58()})`,
+      failure: "other",
     });
     expect(h.events).not.toContain("submit");
   });

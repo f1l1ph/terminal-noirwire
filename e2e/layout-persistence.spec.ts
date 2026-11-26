@@ -145,6 +145,7 @@ test.describe("The layout persists and recovers", () => {
     const maximized = await chartPanelBox(page);
     expect(maximized.width).toBeGreaterThan(beforeMaximize.width + 300);
 
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Reset layout" }).click();
     await expect(page.getByRole("tab", { name: "Markets" })).toBeVisible();
     await expect(page.getByRole("tab", { name: "Chart" })).toBeVisible();

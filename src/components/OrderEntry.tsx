@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { track } from "@/lib/analytics";
+import { track, trackOnce, type OrderBlockReason } from "@/lib/analytics";
+import { failureReasonOf } from "@/lib/failureReason";
 import { formatDecimal, formatMoney, formatRelativeAge, UNAVAILABLE } from "@/lib/format";
 import { ageMs, isStale, STALE_MARK_MS } from "@/lib/market-data/selectors";
 import { priceDecimalsOf, sizeDecimalsOf } from "@/lib/market-data/precision";
@@ -112,6 +113,9 @@ const GOOD_FOR_OPTIONS = [
   { value: "1m", label: "1 minute" },
   { value: "1h", label: "1 hour" },
 ] as const;
+
+/** How long a reason must stay on screen before it counts, so a reason that flashes while typing is not counted. */
+const BLOCK_SETTLED_MS = 2_000;
 
 type ReasonTone = "neutral" | "warning" | "error";
 
@@ -746,69 +750,85 @@ export function OrderEntry({
   })();
 
   /** The one line that says why the order button is off, only while the form itself is what is missing. */
-  const reason: { text: string; tone: ReasonTone } | null = (() => {
+  const reason: { text: string; tone: ReasonTone; code: OrderBlockReason | null } | null = (() => {
     if (!market || !validation) return null;
     if (!hasWallet || gate || accountUnknown) return null;
     if (limitsBlock) {
       return {
         text: limitsGateText(limitsBlock),
         tone: limitsBlock === "failed" ? "error" : "neutral",
+        code: limitsBlock === "failed" ? "limits_failed" : "limits_loading",
       };
     }
-    if (pausedBlock) return { text: pausedReason, tone: "warning" };
+    if (pausedBlock) return { text: pausedReason, tone: "warning", code: "paused" };
     if (availableBlocks) {
       return exposureUnreadable
-        ? { text: UNREADABLE_EXPOSURE_ORDERS_NOTICE, tone: "warning" }
+        ? { text: UNREADABLE_EXPOSURE_ORDERS_NOTICE, tone: "warning", code: "exposure_unreadable" }
         : null;
     }
     if (unknownHold || placeOrderPending || needsTransfer) return null;
     if (noFunds) {
-      if (!testCopy) return { text: `Deposit ${quoteUnit || "funds"} to trade`, tone: "neutral" };
-      return grantAlreadyUsed ? { text: "No funds left to trade with", tone: "neutral" } : null;
+      if (!testCopy) {
+        return {
+          text: `Deposit ${quoteUnit || "funds"} to trade`,
+          tone: "neutral",
+          code: "no_funds",
+        };
+      }
+      return grantAlreadyUsed
+        ? { text: "No funds left to trade with", tone: "neutral", code: "no_funds" }
+        : null;
     }
     if (staleBlock) {
       return {
         text: `The price is ${markAge !== null ? formatRelativeAge(markAge) : "too"} old. Waiting for a fresh one.`,
         tone: "warning",
+        code: "stale_price",
       };
     }
-    if (closingOnlyBlock) return { text: CLOSING_ONLY_NOTICE, tone: "warning" };
+    if (closingOnlyBlock)
+      return { text: CLOSING_ONLY_NOTICE, tone: "warning", code: "closing_only" };
     if (orderType === "market" && !priceText) {
-      return { text: "Waiting for the current price", tone: "neutral" };
+      return { text: "Waiting for the current price", tone: "neutral", code: "waiting_for_price" };
     }
     if (quantityOverride !== null) {
       if (validation.errors.quantity) {
         return {
           text: describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits),
           tone: "error",
+          code: "invalid_quantity",
         };
       }
     } else if (!amountEntered) {
-      return { text: "Enter an amount", tone: "neutral" };
+      return { text: "Enter an amount", tone: "neutral", code: null };
     } else if (amountInvalid) {
-      return { text: "Enter an amount like 25.00", tone: "error" };
+      return { text: "Enter an amount like 25.00", tone: "error", code: "invalid_amount" };
     } else if (amountOverAvailable) {
       return {
         text: isSpotSell
           ? `You hold ${formatDecimal(availableBase, sizeDecimals)} ${baseName}`
           : `More than your available ${money(availableQuote)}`,
         tone: "error",
+        code: "over_available",
       };
     } else if (amountTooSmall) {
       return {
         text: `Too small to trade. The minimum is ${minimumSizeText} ${baseName}`,
         tone: "error",
+        code: "too_small",
       };
     } else if (validation.errors.quantity) {
       return {
         text: describeFieldError(validation.errors.quantity, fieldMarket ?? market, limits),
         tone: "error",
+        code: "invalid_quantity",
       };
     }
     if (validation.errors.price) {
       return {
         text: describeFieldError(validation.errors.price, fieldMarket ?? market, limits),
         tone: "error",
+        code: "invalid_price",
       };
     }
     if (shortfall) {
@@ -818,16 +838,32 @@ export function OrderEntry({
             ? `You hold ${formatDecimal(shortfall.available, sizeDecimals)} ${baseName}; this sells ${formatDecimal(shortfall.needed, sizeDecimals)}`
             : `Needs up to ${money(shortfall.needed)} for margin and fees, you have ${money(shortfall.available)}. Lower the amount or leverage`,
         tone: "error",
+        code: "short_of_funds",
       };
     }
     if (staleMarkAllowed) {
       return {
         text: staleReduceOnlyNotice(markAge !== null ? formatRelativeAge(markAge) : null),
         tone: "warning",
+        code: "stale_price",
       };
     }
     return null;
   })();
+
+  const blockedCode = canSubmit ? null : (reason?.code ?? null);
+  useEffect(() => {
+    if (!blockedCode) return;
+    const timer = setTimeout(
+      () => trackOnce(`order_blocked:${blockedCode}`, "order_blocked", { reason: blockedCode }),
+      BLOCK_SETTLED_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [blockedCode]);
+  const ticketShown = market !== null && market !== undefined;
+  useEffect(() => {
+    if (ticketShown) trackOnce("ticket_seen", "ticket_seen");
+  }, [ticketShown]);
 
   /** What the dialog will freeze: the exact signed fields and the worst case the order can cost. */
   function freezeOrder(): FrozenOrder | null {
@@ -967,6 +1003,7 @@ export function OrderEntry({
       !recheck.valid ||
       markMovedMaterially(order.markPrice, mark?.price)
     ) {
+      track("order_blocked", { reason: "changed_since_review" });
       setSubmitError(confirmBlocker ?? "The order can no longer be placed as reviewed.");
       return;
     }
@@ -990,7 +1027,7 @@ export function OrderEntry({
       // scroll position mid-panel on the next render.
       containerRef.current?.parentElement?.scrollTo({ top: 0 });
     } catch (error) {
-      track("order_result", { result: "error" });
+      track("order_result", { result: "error", reason: failureReasonOf(error) });
       if (error instanceof OrderOutcomeUnknownError) {
         onOrderUnknown(descriptor, error.hold);
       } else {

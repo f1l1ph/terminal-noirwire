@@ -3,6 +3,7 @@ import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { ownerDataKeys } from "@/lib/wallet/index";
+import { json, memoryStore } from "./support/rollupFixtures";
 import {
   MARKET_KIND_CODE,
   programInstructions,
@@ -34,8 +35,6 @@ const PERP = {
   tick: "100",
 };
 
-const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
-
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.doUnmock("@/lib/rollup/sdk");
@@ -49,16 +48,15 @@ afterEach(() => {
  * the service describes `served` and answers prepare in `answers`.
  */
 async function click(modes: { cached: Mode; served: Mode; answers: Mode; submit?: Response }) {
-  const store = new Map<string, string>();
   const tokenKey = ownerDataKeys.signInToken(ADDRESS);
+  const base = memoryStore();
   vi.stubGlobal("window", {
     localStorage: {
-      getItem: (key: string) => store.get(key) ?? null,
+      ...base,
       setItem: (key: string, value: string) => {
         if (key === tokenKey) throw new Error("storage is full");
-        store.set(key, value);
+        base.setItem(key, value);
       },
-      removeItem: (key: string) => void store.delete(key),
     },
   });
   const seeds = new Map<string, Uint8Array>();

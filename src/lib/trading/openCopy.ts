@@ -1,3 +1,4 @@
+import { SETUP_STEPS, type SetupStepId } from "../analytics";
 import { ROUND_TRIP_LAMPORTS, SOLANA_EXIT_LAMPORTS } from "../transfer/computeBudget";
 import type { AccountStatus, OpenAccountOutcome, OrderKeyState } from "./types";
 
@@ -151,23 +152,68 @@ export function gateAsksForInvite(outcome: OpenAccountOutcome | null): boolean {
 export const OPEN_RECHECK_EVERY_MS = 5_000;
 export const OPEN_RECHECK_ATTEMPTS = 12;
 
+export const KEYS_ELSEWHERE_TITLE = "Trading is on another device";
+export const KEYS_MOVED_TITLE = "Trading moved to another device";
+export const MOVE_TRADING_HERE = "Move trading here";
+export const CANCELS_STOPS_NOTE = "Moving cancels your stop loss and take profit.";
+/** The sentence the trigger list shows while trading is on another device. */
+export const KEYS_ELSEWHERE_NOTICE = `${KEYS_ELSEWHERE_TITLE}.`;
+
+/**
+ * Shown in place of every account figure while trading is on another device:
+ * the lists read empty there only because they are not loaded, and the other
+ * device may hold positions, orders and balances.
+ */
+export const ACCOUNT_NOT_SHOWN_AWAY =
+  "Your account is not shown here while trading is on another device.";
+/** Why a new deposit or withdrawal cannot start while trading is on another device. */
+export const MOVING_FUNDS_AWAY_NOTE = `Deposits and withdrawals start from the device that trades. Press ${MOVE_TRADING_HERE} first.`;
+
+export const SWITCH_DEVICE_TITLE = "Switch device";
+export const SWITCH_DEVICE_STEPS = [
+  "Open NoirWire on the new device",
+  "Connect the same wallet",
+  `Press ${MOVE_TRADING_HERE}`,
+] as const;
+export const SWITCH_DEVICE_WARNING = `${CANCELS_STOPS_NOTE} Set them again there.`;
+
 export type KeysNotice =
-  | { kind: "settling"; secondsLeft: number }
+  | { kind: "elsewhere"; cancelsStops: boolean }
+  | { kind: "moved"; cancelsStops: boolean }
   | { kind: "installing" }
   | { kind: "failed"; reason: string };
 
-/** What to show while this device's order keys are set up, or null once they are ready (or not yet known). */
-export function keysNotice(keys: OrderKeyState | null, nowMs: number): KeysNotice | null {
+/** What to show while this device's order keys are not ready, or null once they are ready (or not yet known). */
+export function keysNotice(keys: OrderKeyState | null): KeysNotice | null {
   if (!keys) return null;
-  if (keys.stage === "settling") {
-    return {
-      kind: "settling",
-      secondsLeft: Math.max(0, Math.ceil((keys.readyAtMs - nowMs) / 1000)),
-    };
+  switch (keys.stage) {
+    case "elsewhere":
+      return { kind: "elsewhere", cancelsStops: keys.cancelsStops };
+    case "moved":
+      return { kind: "moved", cancelsStops: keys.cancelsStops };
+    case "installing":
+      return { kind: "installing" };
+    case "failed":
+      return { kind: "failed", reason: keys.reason };
+    case "ready":
+      return null;
   }
-  if (keys.stage === "installing") return { kind: "installing" };
-  if (keys.stage === "failed") return { kind: "failed", reason: keys.reason };
-  return null;
+}
+
+type DeviceStatus = "here" | "elsewhere";
+
+/** Where the trader's trading keys are, or null while that is not known or key setup failed. */
+export function deviceStatus(keys: OrderKeyState | null): DeviceStatus | null {
+  switch (keys?.stage) {
+    case "ready":
+      return "here";
+    case "elsewhere":
+    case "moved":
+    case "installing":
+      return "elsewhere";
+    default:
+      return null;
+  }
 }
 
 /** What the single retry button is for, or null when there is nothing to retry: an unread account, or key setup that failed. */
@@ -201,7 +247,6 @@ export function withoutOpenOutcome<T extends { outcome: OpenAccountOutcome | nul
   return { ...flows, [owner]: { ...flow, outcome: null } };
 }
 
-export type SetupStepId = "connect" | "verify" | "open" | "keys" | "deposit";
 export type SetupStepState = "done" | "current" | "upcoming";
 
 export interface SetupStep {
@@ -218,7 +263,7 @@ export const SETUP_LABELS: Record<SetupStepId, string> = {
   deposit: "Deposit USDC",
 };
 
-const SETUP_ORDER: SetupStepId[] = ["connect", "verify", "open", "keys", "deposit"];
+const SETUP_ORDER: readonly SetupStepId[] = SETUP_STEPS;
 
 /**
  * The steps from a new visitor to a funded account, each done, current or
@@ -264,6 +309,10 @@ function heldSolText(lamports: bigint): string {
   return `${sol.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")} SOL`;
 }
 
+/** True when the wallet holds too little SOL to pay a deposit's network fees. Null (not read yet) is never short. */
+export const depositNeedsSol = (walletLamports: bigint | null): boolean =>
+  walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS);
+
 /**
  * What the deposit step says to do; it never asks for an action the page
  * cannot offer. It names the SOL a deposit and a later withdrawal cost in
@@ -275,15 +324,8 @@ export function depositHelp(depositsOpen: boolean, walletLamports: bigint | null
   if (!depositsOpen) return "Deposits open soon. You can explore the market until then.";
   const addUsdc = "Add USDC from your wallet in the Funds section of your account panel.";
   const depositFee = feeSolText(ROUND_TRIP_LAMPORTS);
-  if (walletLamports !== null && walletLamports < BigInt(ROUND_TRIP_LAMPORTS)) {
+  if (walletLamports !== null && depositNeedsSol(walletLamports)) {
     return `${addUsdc} Your wallet holds ${heldSolText(walletLamports)}, and a deposit needs about ${depositFee} for network fees. Add some SOL first. Nothing is charged until you deposit.`;
   }
   return `${addUsdc} Your wallet also needs about ${depositFee} for network fees on the deposit, and about ${feeSolText(SOLANA_EXIT_LAMPORTS)} again to withdraw.`;
-}
-
-/** How far through the trading-key wait this device is, 0 to 1. */
-export function keysSettleFraction(secondsLeft: number, totalMs: number): number {
-  const total = totalMs / 1000;
-  if (total <= 0) return 1;
-  return Math.min(1, Math.max(0, 1 - secondsLeft / total));
 }

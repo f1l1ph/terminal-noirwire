@@ -1,14 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCOUNT_NOT_SHOWN_AWAY,
+  CANCELS_STOPS_NOTE,
   depositHelp,
+  depositNeedsSol,
   describeOpenOutcome,
+  deviceStatus,
   feeSolText,
   gateAsksForInvite,
+  KEYS_ELSEWHERE_NOTICE,
+  KEYS_ELSEWHERE_TITLE,
+  KEYS_MOVED_TITLE,
   keysMayNotPersist,
   keysNotice,
-  keysSettleFraction,
+  MOVE_TRADING_HERE,
+  MOVING_FUNDS_AWAY_NOTE,
   recheckOffer,
   setupSteps,
+  SWITCH_DEVICE_STEPS,
+  SWITCH_DEVICE_TITLE,
+  SWITCH_DEVICE_WARNING,
   withoutOpenOutcome,
 } from "@/lib/trading/openCopy";
 import type { OpenRefusal } from "@/lib/rollup/openClient";
@@ -83,19 +94,73 @@ describe("describeOpenOutcome", () => {
 });
 
 describe("keysNotice", () => {
-  it("counts down to when the keys settle, never below zero", () => {
-    const settling = { stage: "settling", readyAtMs: 10_000, seedPersisted: true } as const;
-    expect(keysNotice(settling, 4_000)).toEqual({ kind: "settling", secondsLeft: 6 });
-    expect(keysNotice(settling, 9_001)).toEqual({ kind: "settling", secondsLeft: 1 });
-    expect(keysNotice(settling, 20_000)).toEqual({ kind: "settling", secondsLeft: 0 });
+  it("says the keys are elsewhere or moved, and whether moving cancels stops", () => {
+    expect(keysNotice({ stage: "elsewhere", cancelsStops: true, seedPersisted: true })).toEqual({
+      kind: "elsewhere",
+      cancelsStops: true,
+    });
+    expect(keysNotice({ stage: "elsewhere", cancelsStops: false, seedPersisted: true })).toEqual({
+      kind: "elsewhere",
+      cancelsStops: false,
+    });
+    expect(keysNotice({ stage: "moved", cancelsStops: true, seedPersisted: true })).toEqual({
+      kind: "moved",
+      cancelsStops: true,
+    });
   });
 
   it("asks for the wallet while installing and shows nothing when ready or unknown", () => {
-    expect(keysNotice({ stage: "installing", seedPersisted: true }, 0)).toEqual({
+    expect(keysNotice({ stage: "installing", seedPersisted: true })).toEqual({
       kind: "installing",
     });
-    expect(keysNotice({ stage: "ready", seedPersisted: true }, 0)).toBeNull();
-    expect(keysNotice(null, 0)).toBeNull();
+    expect(keysNotice({ stage: "ready", seedPersisted: true })).toBeNull();
+    expect(keysNotice(null)).toBeNull();
+  });
+});
+
+describe("deviceStatus", () => {
+  it("is here only once the keys are ready", () => {
+    expect(deviceStatus({ stage: "ready", seedPersisted: true })).toBe("here");
+  });
+
+  it("is elsewhere for elsewhere, moved and installing", () => {
+    expect(deviceStatus({ stage: "elsewhere", cancelsStops: false, seedPersisted: true })).toBe(
+      "elsewhere",
+    );
+    expect(deviceStatus({ stage: "moved", cancelsStops: true, seedPersisted: true })).toBe(
+      "elsewhere",
+    );
+    expect(deviceStatus({ stage: "installing", seedPersisted: true })).toBe("elsewhere");
+  });
+
+  it("is unknown for failed keys and before any keys are known", () => {
+    expect(deviceStatus({ stage: "failed", reason: "x", seedPersisted: true })).toBeNull();
+    expect(deviceStatus(null)).toBeNull();
+  });
+});
+
+describe("the device switch copy", () => {
+  it("has the agreed wording and no em dash", () => {
+    expect(KEYS_ELSEWHERE_TITLE).toBe("Trading is on another device");
+    expect(KEYS_MOVED_TITLE).toBe("Trading moved to another device");
+    expect(MOVE_TRADING_HERE).toBe("Move trading here");
+    expect(CANCELS_STOPS_NOTE).toBe("Moving cancels your stop loss and take profit.");
+    expect(SWITCH_DEVICE_WARNING.startsWith(CANCELS_STOPS_NOTE)).toBe(true);
+    expect(KEYS_ELSEWHERE_NOTICE).toBe("Trading is on another device.");
+    for (const text of [
+      KEYS_ELSEWHERE_NOTICE,
+      SWITCH_DEVICE_TITLE,
+      SWITCH_DEVICE_WARNING,
+      ...SWITCH_DEVICE_STEPS,
+      KEYS_ELSEWHERE_TITLE,
+      KEYS_MOVED_TITLE,
+      MOVE_TRADING_HERE,
+      CANCELS_STOPS_NOTE,
+      ACCOUNT_NOT_SHOWN_AWAY,
+      MOVING_FUNDS_AWAY_NOTE,
+    ]) {
+      expect(text).not.toMatch(/\u2014/);
+    }
   });
 });
 
@@ -116,12 +181,14 @@ describe("recheckOffer and the failed key stage", () => {
   });
 
   it("carries the reason of a failed setup", () => {
-    expect(keysNotice(failed, 0)).toEqual({ kind: "failed", reason: "x" });
+    expect(keysNotice(failed)).toEqual({ kind: "failed", reason: "x" });
   });
 });
 
 describe("setupSteps", () => {
-  const settling = { stage: "settling", readyAtMs: 10, seedPersisted: true } as const;
+  const elsewhere = { stage: "elsewhere", cancelsStops: false, seedPersisted: true } as const;
+  const moved = { stage: "moved", cancelsStops: true, seedPersisted: true } as const;
+  const installing = { stage: "installing", seedPersisted: true } as const;
   const ready = { stage: "ready", seedPersisted: true } as const;
   const failed = { stage: "failed", reason: "x", seedPersisted: true } as const;
   const states = (input: Parameters<typeof setupSteps>[0]) =>
@@ -157,14 +224,16 @@ describe("setupSteps", () => {
     ]);
   });
 
-  it("shows the key wait as the current step while the account read is still pending", () => {
-    expect(states({ connected: true, status: "unknown", keys: settling, funded: null })).toEqual([
-      "done",
-      "done",
-      "done",
-      "current",
-      "upcoming",
-    ]);
+  it("keeps the keys step current for every key stage that is not ready, even while the account read is pending", () => {
+    for (const keys of [elsewhere, moved, installing]) {
+      expect(states({ connected: true, status: "unknown", keys, funded: null })).toEqual([
+        "done",
+        "done",
+        "done",
+        "current",
+        "upcoming",
+      ]);
+    }
     expect(states({ connected: true, status: "open", keys: failed, funded: null })[3]).toBe(
       "current",
     );
@@ -183,21 +252,11 @@ describe("setupSteps", () => {
       true,
     );
     expect(
-      setupSteps({ connected: true, status: "open", keys: settling, funded: true }).ready,
+      setupSteps({ connected: true, status: "open", keys: elsewhere, funded: true }).ready,
     ).toBe(false);
     expect(setupSteps({ connected: false, status: "open", keys: ready, funded: true }).ready).toBe(
       false,
     );
-  });
-});
-
-describe("keysSettleFraction", () => {
-  it("runs from 0 to 1 over the wait and stays in range", () => {
-    expect(keysSettleFraction(60, 60_000)).toBe(0);
-    expect(keysSettleFraction(15, 60_000)).toBeCloseTo(0.75);
-    expect(keysSettleFraction(0, 60_000)).toBe(1);
-    expect(keysSettleFraction(90, 60_000)).toBe(0);
-    expect(keysSettleFraction(1, 0)).toBe(1);
   });
 });
 
@@ -283,6 +342,21 @@ describe("depositHelp", () => {
     expect(depositHelp(true, null)).not.toContain("Add some SOL first");
     expect(depositHelp(true, BigInt(ROUND_TRIP_LAMPORTS))).not.toContain("Add some SOL first");
     expect(depositHelp(true, BigInt(ROUND_TRIP_LAMPORTS) - 1n)).toContain("Add some SOL first");
+  });
+
+  it("says the wallet needs SOL exactly when the help line does", () => {
+    for (const lamports of [
+      null,
+      0n,
+      BigInt(ROUND_TRIP_LAMPORTS) - 1n,
+      BigInt(ROUND_TRIP_LAMPORTS),
+    ]) {
+      expect(depositNeedsSol(lamports)).toBe(
+        depositHelp(true, lamports).includes("Add some SOL first"),
+      );
+    }
+    expect(depositNeedsSol(null)).toBe(false);
+    expect(depositNeedsSol(0n)).toBe(true);
   });
 
   it("does not mention SOL when deposits are off", () => {

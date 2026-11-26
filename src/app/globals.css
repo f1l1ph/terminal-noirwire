@@ -81,6 +81,15 @@ textarea:focus-visible,
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+
+  .fun-hop,
+  .fun-hat-tilt,
+  .fun-blink,
+  .fun-shake,
+  .fun-sparkle,
+  .fun-breathe {
+    animation: none !important;
+  }
 }
 
 :root {
@@ -94,6 +103,93 @@ textarea:focus-visible,
 @keyframes rail-step-in {
   from {
     background-color: var(--color-elevated);
+  }
+}
+
+.fun-breathe {
+  animation: fun-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes fun-breathe {
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.fun-sparkle {
+  animation: fun-sparkle 1.6s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes fun-sparkle {
+  50% {
+    opacity: 0.2;
+    transform: scale(0.5);
+  }
+}
+
+.fun-shake {
+  animation: fun-shake 0.4s ease-in-out 3;
+}
+
+@keyframes fun-shake {
+  20% {
+    transform: translateX(-1.5px) rotate(-2deg);
+  }
+  50% {
+    transform: translateX(1.5px) rotate(2deg);
+  }
+  80% {
+    transform: translateX(-1px) rotate(-1deg);
+  }
+}
+
+.fun-hop {
+  animation: fun-hop 0.4s ease-out;
+}
+
+@keyframes fun-hop {
+  35% {
+    transform: translateY(-4px);
+  }
+  70% {
+    transform: translateY(0);
+  }
+  85% {
+    transform: translateY(-1px);
+  }
+}
+
+.fun-hat-tilt {
+  animation: fun-hat-tilt 0.4s ease-out;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+
+@keyframes fun-hat-tilt {
+  30% {
+    transform: rotate(-9deg);
+  }
+  65% {
+    transform: rotate(4deg);
+  }
+}
+
+.fun-blink {
+  animation: fun-blink 4.5s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes fun-blink {
+  0%,
+  94%,
+  100% {
+    transform: scaleY(1);
+  }
+  97% {
+    transform: scaleY(0.1);
   }
 }
 

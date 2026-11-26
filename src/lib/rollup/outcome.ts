@@ -44,9 +44,16 @@ const UNRECOGNISED_RESULT_REASON =
 export const UNCONFIRMED_OUTCOME_REASON =
   "We could not confirm what happened to this request. Check your positions and open orders before trying again. Nothing will be sent again automatically.";
 
-/** Shown when the order keys were refused twice: another tab or device is using this account. */
+/** Shown when the order keys were refused twice with this device's own keys still in the view: another tab is using this account. */
 export const KEYS_IN_USE_ELSEWHERE_REASON =
-  "This account is being used in another tab or on another device, so this did not go through. Reload this page to carry on here. Nothing was charged.";
+  "This account is being used in another tab or on another device, so this did not go through. Nothing was charged.";
+
+/** Shown when a key action is refused on this device without sending anything, because the account's order keys are another device's. */
+export const KEYS_AWAY_REASON = "Trading is on another device. Nothing was sent.";
+
+/** Shown when this tab's keys fell behind the ones another tab of this browser installed and picking them up again failed: nothing was sent a second time. */
+export const KEYS_REBUILD_FAILED_REASON =
+  "This tab could not pick up the account's trading keys again. Reload the page and try again. Nothing was sent.";
 
 /** Shown when a reduce-only order was refused because the position is already gone or smaller. */
 export const POSITION_ALREADY_REDUCED_REASON =
