@@ -1,6 +1,6 @@
 import type { Mood, MoodReason, MoodState } from "@/lib/trading/positionMood";
 
-export type LinePool = MoodState | "greeting";
+type LinePool = MoodState | "greeting";
 
 export const WIZARD_LINES: Record<MoodState, readonly string[]> = {
   calm: [
@@ -64,11 +64,9 @@ export function pickLine(
 
 export interface Speech {
   state: MoodState;
-  reason: MoodReason | null;
   line: string;
   /** Counts every new line, so a repeat of the same state still reads as a new entry. */
   entry: number;
-  greeting: boolean;
   /** How many times Fun mode had been switched on when this was last updated. */
   greetings: number;
 }
@@ -76,10 +74,8 @@ export interface Speech {
 export function firstSpeech(mood: Mood, greetings: number, random?: () => number): Speech {
   return {
     state: mood.state,
-    reason: mood.reason,
     line: pickLine(mood.state, null, random),
     entry: 1,
-    greeting: false,
     greetings,
   };
 }
@@ -88,30 +84,22 @@ export function firstSpeech(mood: Mood, greetings: number, random?: () => number
  * What the wizard says now. A new line is picked when a state is entered, and
  * a greeting when Fun mode is switched on in a calm moment; never on a tick.
  */
-export function advanceSpeech(
-  previous: Speech,
-  mood: Mood,
-  greetings: number,
-  random?: () => number,
-): Speech {
+export function advanceSpeech(previous: Speech, mood: Mood, greetings: number): Speech {
   if (previous.state !== mood.state) {
     return {
       state: mood.state,
-      reason: mood.reason,
-      line: pickLine(mood.state, previous.line, random),
+      line: pickLine(mood.state, previous.line),
       entry: previous.entry + 1,
-      greeting: false,
       greetings,
     };
   }
   if (greetings !== previous.greetings) {
     return {
       ...previous,
-      line: pickLine("greeting", previous.line, random),
+      line: pickLine("greeting", previous.line),
       entry: previous.entry + 1,
-      greeting: true,
       greetings,
     };
   }
-  return previous.reason === mood.reason ? previous : { ...previous, reason: mood.reason };
+  return previous;
 }

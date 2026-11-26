@@ -9,10 +9,10 @@ import type { Position, TriggerKind } from "./types";
  * It is a display of distance only: nothing here places, changes or
  * advises on an order.
  */
-export const DANGER_ENTER_BPS = 300;
-export const DANGER_LEAVE_BPS = 360;
-export const PROFIT_ENTER_BPS = 500;
-export const PROFIT_LEAVE_BPS = 575;
+const DANGER_ENTER_BPS = 300;
+const DANGER_LEAVE_BPS = 360;
+const PROFIT_ENTER_BPS = 500;
+const PROFIT_LEAVE_BPS = 575;
 
 const INTENSITY_STEPS = 10;
 const BPS = 10_000n;

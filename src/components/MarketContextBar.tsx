@@ -109,7 +109,6 @@ export function MarketContextBar({
   takerFeeBps = ASSUMED_TAKER_FEE_BPS,
   wizard,
 }: {
-  /** The wizard's spot between the price and the stats; absent while Fun mode or the Wizard setting is off. */
   wizard?: WizardSpotData | null;
   market: MarketInfo | undefined;
   mark: Mark;

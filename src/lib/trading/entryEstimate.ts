@@ -3,7 +3,7 @@ import { withoutSign } from "./decimal";
 import { displayOrderCost, estimateOrderCost } from "./risk";
 import type { MarketLimits, Position } from "./types";
 
-export interface EntryEstimate {
+interface EntryEstimate {
   initialMargin: string;
   liquidationPrice: string | null;
 }

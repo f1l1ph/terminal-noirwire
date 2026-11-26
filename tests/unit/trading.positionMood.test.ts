@@ -81,17 +81,23 @@ describe("mood from stop loss and take profit", () => {
     expect(short).toMatchObject({ state: "nearProfit", reason: "takeProfit" });
   });
 
-  it("ignores a trigger the exchange does not report as armed", () => {
-    const unarmed: LocalTriggerReading = { price: "98", long: true, armed: false };
-    expect(moodOf({ triggers: { "A-PERP": { stopLoss: unarmed } } })).toEqual(CALM_MOOD);
-  });
-
-  it("ignores a trigger with no local price", () => {
-    expect(moodOf({ triggers: {} })).toEqual(CALM_MOOD);
-  });
-
-  it("ignores a trigger recorded for the other direction", () => {
-    expect(moodOf({ triggers: { "A-PERP": { stopLoss: armed("98", false) } } })).toEqual(CALM_MOOD);
+  const unarmed: LocalTriggerReading = { price: "98", long: true, armed: false };
+  it.each<[string, Triggers]>([
+    [
+      "ignores a trigger the exchange does not report as armed",
+      { "A-PERP": { stopLoss: unarmed } },
+    ],
+    ["ignores a trigger with no local price", {}],
+    [
+      "ignores a trigger recorded for the other direction",
+      { "A-PERP": { stopLoss: armed("98", false) } },
+    ],
+    [
+      "ignores a trigger price that is not a number",
+      { "A-PERP": { stopLoss: armed("abc", true) } },
+    ],
+  ])("%s", (_name, triggers) => {
+    expect(moodOf({ triggers })).toEqual(CALM_MOOD);
   });
 
   it("warns about a stop loss moved above the entry to lock in profit", () => {
@@ -101,10 +107,6 @@ describe("mood from stop loss and take profit", () => {
         triggers: { "A-PERP": { stopLoss: armed("102", true) } },
       }),
     ).toMatchObject({ state: "nearDanger", reason: "stopLoss" });
-  });
-
-  it("ignores a trigger price that is not a number", () => {
-    expect(moodOf({ triggers: { "A-PERP": { stopLoss: armed("abc", true) } } })).toEqual(CALM_MOOD);
   });
 
   it("is at danger once the mark is past the stop loss", () => {
@@ -143,23 +145,21 @@ describe("mood across positions and freshness", () => {
     ).toBe("nearDanger");
   });
 
-  it("reads a stale mark as unknown", () => {
-    expect(
-      moodOf({
+  it.each<[string, Partial<MoodInput> & { triggers?: Triggers }]>([
+    [
+      "reads a stale mark as unknown",
+      {
         marks: { "A-PERP": { price: "100", time: NOW - STALE_MARK_MS - 1 } },
         triggers: { "A-PERP": { takeProfit: armed("101", true) } },
-      }).state,
-    ).toBe("unknown");
-  });
-
-  it("reads a mark stamped in the future as unknown", () => {
-    expect(moodOf({ marks: { "A-PERP": { price: "100", time: NOW + 3_600_000 } } }).state).toBe(
-      "unknown",
-    );
-  });
-
-  it("reads a missing mark as unknown", () => {
-    expect(moodOf({ marks: { "A-PERP": null } }).state).toBe("unknown");
+      },
+    ],
+    [
+      "reads a mark stamped in the future as unknown",
+      { marks: { "A-PERP": { price: "100", time: NOW + 3_600_000 } } },
+    ],
+    ["reads a missing mark as unknown", { marks: { "A-PERP": null } }],
+  ])("%s", (_name, overrides) => {
+    expect(moodOf(overrides).state).toBe("unknown");
   });
 
   it("shows no profit while another position has no fresh mark", () => {
@@ -297,24 +297,17 @@ describe("mood hysteresis", () => {
   const inDanger: Mood = { state: "nearDanger", intensity: 0.1, reason: "stopLoss" };
   const inProfit: Mood = { state: "nearProfit", intensity: 0.1, reason: "takeProfit" };
 
-  it("enters danger at 300 bps and not before", () => {
-    expect(nextMood(CALM_MOOD, danger(300)).state).toBe("nearDanger");
-    expect(nextMood(CALM_MOOD, danger(301)).state).toBe("calm");
-  });
-
-  it("leaves danger only above 360 bps", () => {
-    expect(nextMood(inDanger, danger(360)).state).toBe("nearDanger");
-    expect(nextMood(inDanger, danger(361)).state).toBe("calm");
-  });
-
-  it("enters profit at 500 bps and not before", () => {
-    expect(nextMood(CALM_MOOD, profit(500)).state).toBe("nearProfit");
-    expect(nextMood(CALM_MOOD, profit(501)).state).toBe("calm");
-  });
-
-  it("leaves profit only above 575 bps", () => {
-    expect(nextMood(inProfit, profit(575)).state).toBe("nearProfit");
-    expect(nextMood(inProfit, profit(576)).state).toBe("calm");
+  it.each<[string, Mood, RawMood, string]>([
+    ["enters danger at 300 bps", CALM_MOOD, danger(300), "nearDanger"],
+    ["does not enter danger at 301 bps", CALM_MOOD, danger(301), "calm"],
+    ["stays in danger at 360 bps", inDanger, danger(360), "nearDanger"],
+    ["leaves danger above 360 bps", inDanger, danger(361), "calm"],
+    ["enters profit at 500 bps", CALM_MOOD, profit(500), "nearProfit"],
+    ["does not enter profit at 501 bps", CALM_MOOD, profit(501), "calm"],
+    ["stays in profit at 575 bps", inProfit, profit(575), "nearProfit"],
+    ["leaves profit above 575 bps", inProfit, profit(576), "calm"],
+  ])("%s", (_name, from, raw, expected) => {
+    expect(nextMood(from, raw).state).toBe(expected);
   });
 
   it("keeps a visible intensity inside the leave band", () => {

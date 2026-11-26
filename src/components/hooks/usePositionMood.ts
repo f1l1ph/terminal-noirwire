@@ -47,7 +47,7 @@ function readingFrom(
 }
 
 /** The mood, and the risk range of the position the wizard's bar follows (none when there is nothing to draw). */
-export interface PositionMoodReading {
+interface PositionMoodReading {
   mood: Mood;
   gauge: Gauge | null;
 }

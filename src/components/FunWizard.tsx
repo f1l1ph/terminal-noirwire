@@ -153,7 +153,7 @@ const GLOW: Partial<Record<MoodState, string>> = {
  * eyes, hat angle and small extras change with the mood; the mood colour is a
  * soft glow behind it, never a recolour of the character.
  */
-export function WizardFigure({
+function WizardFigure({
   state,
   size,
   entry,
@@ -299,16 +299,7 @@ function dangerLabel(reason: Gauge["dangerReason"]): string | null {
  * a small hat where the mark is. It is a picture of distance only; the line
  * above it states the same fact in words.
  */
-export function RiskBar({
-  mood,
-  gauge,
-  maxWidth,
-}: {
-  mood: Mood;
-  gauge: Gauge | null;
-  /** Widest the track may grow, in px. */
-  maxWidth: number;
-}) {
+function RiskBar({ mood, gauge, maxWidth }: { mood: Mood; gauge: Gauge | null; maxWidth: number }) {
   const position = gauge ? gaugeMarker(gauge) : null;
   if (!gauge || position === null) return null;
   const dangerous = mood.state === "nearDanger" || mood.state === "atDanger";

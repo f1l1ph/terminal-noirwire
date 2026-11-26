@@ -40,7 +40,6 @@ export function DesktopWorkspace({
   wizard,
   ...panelData
 }: TerminalPanelData & {
-  /** The wizard's spot in the market card; absent while Fun mode or the Wizard setting is off. */
   wizard: WizardSpotData | null;
   /** The quote token's name as the venue gives it (nUSD, USDC); empty while not yet known. */
   quoteSymbol: string;

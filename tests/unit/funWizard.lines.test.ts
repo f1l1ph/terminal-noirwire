@@ -49,9 +49,9 @@ describe("wizard speech", () => {
 
   it("greets when Fun mode is switched on, and not otherwise", () => {
     const calm = firstSpeech(CALM_MOOD, 0);
-    expect(advanceSpeech(calm, CALM_MOOD, 0).greeting).toBe(false);
+    expect(advanceSpeech(calm, CALM_MOOD, 0)).toBe(calm);
     const greeted = advanceSpeech(calm, CALM_MOOD, 1);
-    expect(greeted.greeting).toBe(true);
     expect(GREETING_LINES).toContain(greeted.line);
+    expect(greeted.entry).toBe(calm.entry + 1);
   });
 });
