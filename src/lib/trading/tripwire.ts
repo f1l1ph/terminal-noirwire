@@ -1,4 +1,4 @@
-import type { Mood, MoodTarget } from "@/lib/trading/positionMood";
+import { clamp01, type Mood, type MoodTarget } from "@/lib/trading/positionMood";
 
 /** Mirror the `--color-fun-danger` and `--color-fun-safe` tokens: a canvas cannot read a CSS variable. */
 export const TRIPWIRE_DANGER_COLOR = "#ff3b2e";
@@ -52,17 +52,17 @@ export function tripwireLine(mood: Mood | null, marketId: string | undefined): T
 
 /** The alpha of the runway and the bloom at this intensity. */
 export function tripwireShadeAlpha(intensity: number): number {
-  return SHADE_ALPHA * Math.min(Math.max(intensity, 0), 1);
+  return SHADE_ALPHA * clamp01(intensity);
 }
 
 /** The inset rule on the left of the position card the mood follows; undefined for every other card. */
 export function positionCardRule(mood: Mood | null, market: string): string | undefined {
   if (!mood || !mood.tone || !mood.focus || mood.focus.market !== market) return undefined;
-  const alpha = Math.round(Math.min(Math.max(mood.intensity, 0), 1) * 100);
+  const alpha = Math.round(clamp01(mood.intensity) * 100);
   return `inset 2px 0 0 0 color-mix(in oklab, ${funToneVar(mood.tone)} ${alpha}%, transparent)`;
 }
 
 /** The top thread's opacity at this intensity. */
 export function threadOpacity(intensity: number): number {
-  return 0.25 + 0.55 * Math.min(Math.max(intensity, 0), 1);
+  return 0.25 + 0.55 * clamp01(intensity);
 }

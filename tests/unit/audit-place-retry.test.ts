@@ -7,6 +7,7 @@ import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { WalletIdentity } from "@/lib/trading/types";
 import { OutcomeUnknown, type View } from "@/lib/rollup/sdk";
+import { memoryStore } from "./support/rollupFixtures";
 
 /**
  * The package's `placeOrder` throws `OutcomeUnknown` (it does not only
@@ -72,15 +73,6 @@ const DEPLOYMENT: PublicDeployment = {
 
 const WALLET: WalletIdentity = { address: "owner-address", secretKeyHex: "aa".repeat(64) };
 
-const memoryStorage = () => {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
-    removeItem: (k: string) => void map.delete(k),
-  };
-};
-
 describe("audit: placeOrder after a post-send failure", () => {
   it("sends exactly one order and reports it as pending when the package throws OutcomeUnknown", async () => {
     let placeCalls = 0;
@@ -121,7 +113,7 @@ describe("audit: placeOrder after a post-send failure", () => {
     const trading = new RollupTradingClient({
       simUrl: "http://sim.test",
       marketSettingsLookup: (id) => (id === "NSOL-PERP" ? PERP : undefined),
-      storage: memoryStorage(),
+      storage: memoryStore(),
       buildSession: async () => session(),
     });
 

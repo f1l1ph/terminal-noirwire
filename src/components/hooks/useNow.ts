@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 
-/** The current time, refreshed on an interval, for age and staleness displays. */
-export function useNow(intervalMs = 1000): number {
+const TICK_MS = 1000;
+
+/** The current time, refreshed every second, for age and staleness displays. */
+export function useNow(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    const id = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(id);
-  }, [intervalMs]);
+  }, []);
   return now;
 }

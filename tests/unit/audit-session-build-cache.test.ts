@@ -4,6 +4,7 @@ import { RollupTradingClient } from "@/lib/trading/rollupClient";
 import type { RollupSession } from "@/lib/rollup/session";
 import type { WalletIdentity } from "@/lib/trading/types";
 import type { View } from "@/lib/rollup/sdk";
+import { memoryStore } from "./support/rollupFixtures";
 
 const VIEW = {
   orderKeys: [],
@@ -25,15 +26,10 @@ const VIEW = {
 describe("audit: session build failure", () => {
   it("a session build that failed once is retried on the next call", async () => {
     let builds = 0;
-    const map = new Map<string, string>();
     const trading = new RollupTradingClient({
       simUrl: "http://sim.test",
       marketSettingsLookup: () => undefined,
-      storage: {
-        getItem: (k) => map.get(k) ?? null,
-        setItem: (k, v) => void map.set(k, v),
-        removeItem: (k) => void map.delete(k),
-      },
+      storage: memoryStore(),
       buildSession: async () => {
         builds += 1;
         if (builds === 1) throw new TypeError("network blip");

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fetchDeployment, type PublicDeployment } from "@/lib/rollup/deployment";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { trustedProgramId } from "@/lib/rollup/session";
+import { memoryStore } from "./support/rollupFixtures";
 
 function deployment(over: Partial<PublicDeployment> = {}, mint = MAINNET_PINS.usdcMint) {
   return {
@@ -84,11 +85,7 @@ describe("a mainnet build checking /v1/deployment", () => {
 
   it("keeps a description as last-known only after this build accepts it", async () => {
     const storage = new Map<string, string>();
-    const store = {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => void storage.set(key, value),
-      removeItem: (key: string) => void storage.delete(key),
-    };
+    const store = memoryStore(storage);
     const answer = (body: unknown) =>
       (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
     await expect(

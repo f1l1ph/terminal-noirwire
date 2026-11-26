@@ -14,6 +14,7 @@ import {
   VIEW_NOT_READABLE_MESSAGE,
   type SignMessage,
 } from "@/lib/rollup/sdk";
+import { memoryStore } from "./support/rollupFixtures";
 
 const QUOTE_MINT = Keypair.generate().publicKey.toBase58();
 const BASE_MINT = Keypair.generate().publicKey.toBase58();
@@ -102,14 +103,7 @@ const memorySeeds = () => {
 };
 
 async function build(owner: Keypair, stage: Stage = {}) {
-  const store = new Map<string, string>();
-  vi.stubGlobal("window", {
-    localStorage: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-    },
-  });
+  vi.stubGlobal("window", { localStorage: memoryStore() });
   const installed: string[][] = [];
   let signer: SignMessage | null = null;
   const view = stage.view ?? (async () => ({ orderKeys: [] as PublicKey[] }));

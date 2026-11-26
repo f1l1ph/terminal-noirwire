@@ -222,5 +222,3 @@ export const loadOrderSeed = (owner: string) => store().load(owner);
 export const createOrderSeed = (owner: string) => store().create(owner);
 /** Whether the browser granted persistent storage when the last seed was created; null before any. */
 export const orderSeedPersisted = () => store().persisted();
-/** Deletes the owner's seed from this browser. */
-export const forgetOrderSeed = (owner: string) => store().forget(owner);

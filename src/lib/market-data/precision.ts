@@ -10,9 +10,9 @@ export function decimalPlaces(value: string): number {
 
 /** sim-noirwire's `/v1/markets` gives tick and lot size but no separate "decimals to display" field; this is derived from them. */
 export function priceDecimalsOf(market: Pick<MarketInfo, "tickSize">): number {
-  return Math.max(decimalPlaces(market.tickSize), 0);
+  return decimalPlaces(market.tickSize);
 }
 
 export function sizeDecimalsOf(market: Pick<MarketInfo, "lotSize">): number {
-  return Math.max(decimalPlaces(market.lotSize), 0);
+  return decimalPlaces(market.lotSize);
 }

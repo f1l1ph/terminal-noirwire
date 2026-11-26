@@ -9,6 +9,7 @@ import { isMakersListed, ORDER_TYPE_CODE } from "@/lib/rollup/sdk";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { NewOrderInput, WalletIdentity } from "@/lib/trading/types";
 import { limitSentAsIoc, orderCanRest, wireOrderType } from "@/lib/trading/orderType";
+import { memoryStore } from "./support/rollupFixtures";
 
 describe("orderCanRest", () => {
   it("lets only a limit order rest", () => {
@@ -106,12 +107,7 @@ async function sentOrderType(
     makersListed,
   }: { mainnet: boolean; makersListed: boolean | "unreadable" | "switchedAfterBuild" },
 ): Promise<number> {
-  const map = new Map<string, string>();
-  const storage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
-    removeItem: (k: string) => void map.delete(k),
-  };
+  const storage = memoryStore();
   let sent = -1;
   const unused = async () => {
     throw new Error("unused");

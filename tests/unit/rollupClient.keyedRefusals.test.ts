@@ -12,7 +12,7 @@ import {
   POSITION_ALREADY_REDUCED_REASON,
 } from "@/lib/rollup/outcome";
 import { describeProgramError, PROGRAM_ERROR } from "@/lib/rollup/refusals";
-import { programRefusal } from "./support/rollupFixtures";
+import { memoryStore, programRefusal } from "./support/rollupFixtures";
 
 const PERP: MarketInfo = {
   id: "NSOL-PERP",
@@ -131,12 +131,7 @@ function trading(
   overrides: Partial<TraderClientLike>,
   options: { views?: View[]; resync?: (view: View) => void } = {},
 ) {
-  const map = new Map<string, string>();
-  const storage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
-    removeItem: (k: string) => void map.delete(k),
-  };
+  const storage = memoryStore();
   const unused = async () => {
     throw new Error("unused");
   };

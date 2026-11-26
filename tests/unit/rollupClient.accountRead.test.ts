@@ -7,6 +7,7 @@ import type { PublicDeployment } from "@/lib/rollup/deployment";
 import type { MarketInfo } from "@/lib/market-data/types";
 import type { TraderState, WalletIdentity } from "@/lib/trading/types";
 import { VIEW_NOT_READABLE_MESSAGE, type View } from "@/lib/rollup/sdk";
+import { memoryStore } from "./support/rollupFixtures";
 
 const PERP: MarketInfo = {
   id: "NSOL-PERP",
@@ -70,18 +71,9 @@ const WALLET: WalletIdentity = {
   secretKeyHex: "aa".repeat(64),
 };
 
-function memoryStorage() {
-  const map = new Map<string, string>();
-  return {
-    getItem: (key: string) => map.get(key) ?? null,
-    setItem: (key: string, value: string) => void map.set(key, value),
-    removeItem: (key: string) => void map.delete(key),
-  };
-}
-
 function account(
   view: TraderClientLike["view"],
-  storage: ReturnType<typeof memoryStorage> = memoryStorage(),
+  storage: ReturnType<typeof memoryStore> = memoryStore(),
 ) {
   let push: ((view: View) => void) | null = null;
   const unused = async () => {
@@ -166,7 +158,7 @@ describe("RollupTradingClient.subscribe: the first account read", () => {
   });
 
   it("keeps a wallet seen with an account unknown when its view reads as missing, then shows it once readable", async () => {
-    const storage = memoryStorage();
+    const storage = memoryStore();
     const first = account(async () => viewWithCollateral(5_000_000n, 1), storage);
     await vi.waitFor(() => expect(first.states).toHaveLength(1));
 
@@ -184,7 +176,7 @@ describe("RollupTradingClient.subscribe: the first account read", () => {
   });
 
   it("keeps a wallet seen with an account unknown on the SDK's not-readable answer", async () => {
-    const storage = memoryStorage();
+    const storage = memoryStore();
     const first = account(async () => viewWithCollateral(5_000_000n, 1), storage);
     await vi.waitFor(() => expect(first.states).toHaveLength(1));
     const second = account(async () => {

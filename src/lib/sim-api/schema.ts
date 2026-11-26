@@ -16,7 +16,6 @@ import { z } from "zod";
  */
 
 export const MARKET_IDS = ["NSOL-PERP", "NNVDA-PERP", "NSOL-NUSD"] as const;
-export type KnownMarketId = (typeof MARKET_IDS)[number];
 
 export const marketKindSchema = z.enum(["perp", "spot"]);
 export type MarketKind = z.infer<typeof marketKindSchema>;
@@ -113,7 +112,6 @@ export const latencyStatsSchema = z.object({
   sampleSize: z.number().int().nonnegative(),
   measuredFrom: z.string(),
 });
-export type LatencyStats = z.infer<typeof latencyStatsSchema>;
 
 const activitySplitSchema = z.object({ user: z.number(), bot: z.number() });
 const volumeSplitSchema = z.object({ user: z.string(), bot: z.string() });
@@ -136,7 +134,6 @@ export const healthResponseSchema = z.object({
   /** Present only while the service is awake: whether its market maker has quotes up, and why not when it has none. */
   trading: z.object({ ready: z.boolean(), reason: z.string().optional() }).optional(),
 });
-export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 const wsActivitySchema = z.object({ orders: z.number(), fills: z.number(), volume: z.string() });
 
@@ -148,7 +145,6 @@ const wsStatsSchema = z.object({
   latency: latencyStatsSchema,
   updatedAtMs: z.number(),
 });
-export type WsStats = z.infer<typeof wsStatsSchema>;
 
 export const wsMessageSchema = z.discriminatedUnion("type", [
   z.object({

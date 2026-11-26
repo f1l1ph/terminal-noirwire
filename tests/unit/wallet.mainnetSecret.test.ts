@@ -1,23 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
-import { bytesToHex, createWallet, loadLegacyWallet, type KeyValueStore } from "@/lib/wallet/index";
+import { bytesToHex, createWallet, loadLegacyWallet } from "@/lib/wallet/index";
 import { keypairOwnerSigner } from "@/lib/wallet/ownerSigner";
 import { ownerKeypairFrom, secretOwner } from "@/lib/wallet/secretSigner";
 import { deriveOrderSeed } from "@/lib/rollup/keys";
 import { MAINNET_PINS } from "@/lib/rollup/pins";
 import { buildRealSession } from "@/lib/rollup/session";
+import { memoryStore } from "./support/rollupFixtures";
 
 const keypair = Keypair.generate();
 const secret = { secretKeyHex: bytesToHex(keypair.secretKey) };
-
-const memoryStore = (entries: Record<string, string> = {}): KeyValueStore => {
-  const map = new Map(Object.entries(entries));
-  return {
-    getItem: (key) => map.get(key) ?? null,
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
-  };
-};
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -55,7 +47,7 @@ describe("a mainnet build holds no owner secret", () => {
 
   it("does not read a plain-text secret an earlier build left in storage", () => {
     vi.stubEnv("NEXT_PUBLIC_NETWORK", "mainnet");
-    const left = memoryStore({ "noirwire-terminal-wallet-secret": secret.secretKeyHex });
+    const left = memoryStore(new Map([["noirwire-terminal-wallet-secret", secret.secretKeyHex]]));
     expect(loadLegacyWallet(left)).toBeNull();
   });
 

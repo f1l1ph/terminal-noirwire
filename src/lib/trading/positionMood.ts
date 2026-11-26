@@ -118,7 +118,7 @@ function parseFixed(value: string): bigint | null {
   }
 }
 
-function clamp01(value: number): number {
+export function clamp01(value: number): number {
   return Math.min(Math.max(value, 0), 1);
 }
 
