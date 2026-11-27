@@ -37,12 +37,6 @@ export function formatMoney(value: string | number, quoteSymbol: string, decimal
   return quoteSymbol ? `${formatted} ${quoteSymbol}` : formatted;
 }
 
-export function formatPercent(value: number, decimals = 2): string {
-  if (!Number.isFinite(value)) return UNAVAILABLE;
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(decimals)}%`;
-}
-
 /** Below 1 s in whole milliseconds, at or above 1 s in seconds to two decimals. */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return UNAVAILABLE;
@@ -91,16 +85,6 @@ export function formatTimeLeft(expiresAtMs: number, now: number): string {
 export function formatUpdatedAge(ageMs: number): string {
   const relative = formatRelativeAge(ageMs);
   return relative === "just now" ? "Updated just now" : `Updated ${relative} ago`;
-}
-
-/** Clock time for an event from today; a plain date for an older row. */
-export function formatEventTime(date: Date, now: Date = new Date()): string {
-  const sameDay = date.toDateString() === now.toDateString();
-  if (sameDay) return formatClockTime(date);
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }
 
 /** A short, non-identifying form of a base58 address: first6…last4. */

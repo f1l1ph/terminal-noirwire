@@ -15,10 +15,6 @@ import type { Side } from "./types";
  * does not, and is exactly what the venue already publishes.
  */
 
-export function isOwnFill(fill: PublicFill, ownTags: ReadonlySet<string>): boolean {
-  return ownTags.has(fill.takerTag) || ownTags.has(fill.makerTag);
-}
-
 export interface OwnFillRecord {
   sequence: number;
   market: string;

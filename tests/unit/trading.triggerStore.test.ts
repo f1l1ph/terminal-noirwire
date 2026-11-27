@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  clearLocalMarket,
   clearLocalTrigger,
   loadTriggerBook,
   setLocalTrigger,
@@ -64,7 +63,7 @@ describe("the trigger prices this device remembers", () => {
     expect(loadTriggerBook(store, OWNER)[MARKET].takeProfit?.price).toBe("170.00");
   });
 
-  it("forgets one kind, then the market, then the whole record", () => {
+  it("forgets one kind, then the whole record", () => {
     const store = memoryStore();
     setLocalTrigger(store, OWNER, MARKET, "takeProfit", trigger());
     setLocalTrigger(store, OWNER, MARKET, "stopLoss", trigger({ price: "140.00" }));
@@ -75,9 +74,6 @@ describe("the trigger prices this device remembers", () => {
     clearLocalTrigger(store, OWNER, MARKET, "stopLoss");
     expect(loadTriggerBook(store, OWNER)).toEqual({});
     expect(store.getItem(ownerDataKeys.triggerPrices(OWNER))).toBeNull();
-    setLocalTrigger(store, OWNER, MARKET, "takeProfit", trigger());
-    clearLocalMarket(store, OWNER, MARKET);
-    expect(loadTriggerBook(store, OWNER)).toEqual({});
   });
 
   it("ignores a record that is not shaped like one", () => {

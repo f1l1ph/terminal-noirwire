@@ -7,7 +7,7 @@ import {
 } from "@/lib/transfer/journal";
 import { base58Of, judgeSend, recordThenBroadcast, signatureOf } from "@/lib/transfer/send";
 import { tryLockOwner, type LockManagerLike } from "@/lib/transfer/lock";
-import { exitOperation, seatVerdict, type ExitOperation } from "@/lib/transfer/verdicts";
+import { exitOperation, type ExitOperation } from "@/lib/transfer/verdicts";
 import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
 
 function memoryStorage(failWrites = false) {
@@ -366,24 +366,11 @@ describe("seat withdrawal record", () => {
       method: "shuttle",
     });
     expect(resumed.id).toBe("op1");
-    expect(seatVerdict(resumed.seat, atoms, 1_000n, undefined)).toBe("ask");
-
-    expect(seatVerdict(resumed.seat, atoms, 1_500n, undefined)).toBe("landed");
+    expect(resumed.seat?.state).toBe("pending");
     await journal.markSeatLanded("me", "op1");
     const [landed] = await journal.unfinished("me");
     expect(landed.seat?.state).toBe("landed");
-    expect(seatVerdict(landed.seat, atoms, 0n, undefined)).toBe("landed");
     expect(landed.sends).toEqual([]);
-  });
-
-  it("asks the operator after a crash between the record and the send, and sends again only on lost:<id>", async () => {
-    const journal = await withdrawal();
-    await journal.recordSeatSend("me", "op1", seat);
-    const [record] = await journal.unfinished("me");
-    const atoms = BigInt(record.atoms);
-    expect(seatVerdict(record.seat, atoms, 1_000n, undefined)).toBe("ask");
-    expect(seatVerdict(record.seat, atoms, 1_000n, "lost:other")).toBe("ask");
-    expect(seatVerdict(record.seat, atoms, 1_000n, "lost:ab12")).toBe("send");
   });
 
   it("forgets a seat send the chain refused, so the withdrawal can be tried again", async () => {

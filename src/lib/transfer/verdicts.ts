@@ -70,43 +70,6 @@ export interface ExitOperation {
 
 export type SolanaVerdict = "landed" | "failed" | "safe" | "wait";
 
-const recordId = (record: SentRecord) => record.id ?? record.at;
-
-/**
- * What to do about a recorded send, given the operator's answer for a pending
- * one, `landed:<id>` or `lost:<id>` naming that very record. An answer that
- * names no record, or another one, is no answer.
- */
-export function pendingVerdict(
-  record: SentRecord | undefined,
-  answer: string | undefined,
-): "send" | "done" | "ask" {
-  if (!record) return "send";
-  if (record.state === "landed") return "done";
-  const id = recordId(record);
-  if (answer === `landed:${id}`) return "done";
-  return answer === `lost:${id}` ? "send" : "ask";
-}
-
-/**
- * What to do about the seat's withdrawal given the record and the owner's
- * token account in the rollup now: `send` it, take it as `landed` and go on, or
- * `ask`. The rollup balance rising by the amount shows it landed even when the
- * response was lost; otherwise only the operator's answer settles it.
- */
-export function seatVerdict(
-  seat: SeatSend | undefined,
-  atoms: bigint,
-  rollupNow: bigint,
-  answer: string | undefined,
-): "send" | "landed" | "ask" {
-  if (!seat) return "send";
-  if (seat.state === "landed") return "landed";
-  if (rollupNow >= BigInt(seat.before) + atoms) return "landed";
-  const verdict = pendingVerdict(seat, answer);
-  return verdict === "done" ? "landed" : verdict;
-}
-
 /**
  * Where a transaction written down before its broadcast stands: `landed`,
  * `failed` (it ran and was refused, so it moved nothing), `safe` (it is not

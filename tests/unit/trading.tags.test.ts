@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveOwnFills, isOwnFill } from "@/lib/trading/tags";
+import { deriveOwnFills } from "@/lib/trading/tags";
 import type { PublicFill } from "@/lib/market-data/types";
 
 function fill(overrides: Partial<PublicFill> = {}): PublicFill {
@@ -15,24 +15,6 @@ function fill(overrides: Partial<PublicFill> = {}): PublicFill {
     ...overrides,
   };
 }
-
-describe("isOwnFill", () => {
-  it("matches a fill where this browser's known tag is the taker", () => {
-    expect(isOwnFill(fill({ takerTag: "abc" }), new Set(["abc"]))).toBe(true);
-  });
-
-  it("matches a fill where this browser's known tag is the maker", () => {
-    expect(isOwnFill(fill({ makerTag: "abc" }), new Set(["abc"]))).toBe(true);
-  });
-
-  it("does not match a fill carrying neither known tag", () => {
-    expect(isOwnFill(fill({ takerTag: "x", makerTag: "y" }), new Set(["abc"]))).toBe(false);
-  });
-
-  it("never matches with an empty own-tag set", () => {
-    expect(isOwnFill(fill(), new Set())).toBe(false);
-  });
-});
 
 describe("deriveOwnFills", () => {
   it("reports the taker's own side when this trader was the taker", () => {
