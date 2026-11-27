@@ -3,9 +3,7 @@ import {
   formatClockTime,
   formatDecimal,
   formatDuration,
-  formatEventTime,
   formatMoney,
-  formatPercent,
   formatRelativeAge,
   formatShortAddress,
   formatTimeLeft,
@@ -48,16 +46,6 @@ describe("formatMoney", () => {
 
   it("stays Unavailable without a trailing label", () => {
     expect(formatMoney(Number.NaN, "USDC")).toBe(UNAVAILABLE);
-  });
-});
-
-describe("formatPercent", () => {
-  it("signs a positive change", () => {
-    expect(formatPercent(3.456)).toBe("+3.46%");
-  });
-
-  it("keeps the sign on a negative change", () => {
-    expect(formatPercent(-1.2)).toBe("-1.20%");
   });
 });
 
@@ -123,20 +111,6 @@ describe("formatUpdatedAge", () => {
   it("names the age and ends in ago", () => {
     expect(formatUpdatedAge(42_000)).toBe("Updated 42s ago");
     expect(formatUpdatedAge(120_000)).toBe("Updated 2m ago");
-  });
-});
-
-describe("formatEventTime", () => {
-  it("shows a clock time for an event from today", () => {
-    const now = new Date(2026, 0, 5, 12, 0, 0);
-    const event = new Date(2026, 0, 5, 9, 30, 0, 500);
-    expect(formatEventTime(event, now)).toBe("09:30:00.500");
-  });
-
-  it("shows a date for an event from an earlier day", () => {
-    const now = new Date(2026, 0, 5, 12, 0, 0);
-    const event = new Date(2026, 0, 1, 9, 30, 0, 500);
-    expect(formatEventTime(event, now)).toBe("2026-01-01");
   });
 });
 

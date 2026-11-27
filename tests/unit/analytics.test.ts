@@ -8,6 +8,7 @@ import {
   track,
   trackAppError,
   trackOnce,
+  whenTrackerReady,
 } from "@/lib/analytics";
 
 afterEach(() => {
@@ -141,6 +142,56 @@ describe("trackOnce", () => {
     trackOnce("ticket", "ticket_seen");
     trackOnce("other", "ticket_seen");
     expect(umamiTrack).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("whenTrackerReady", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends at once when the tracker is already loaded", () => {
+    vi.stubGlobal("window", { umami: { track: vi.fn() } });
+    const send = vi.fn();
+    whenTrackerReady(send);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends once the tracker arrives, and only once", () => {
+    vi.useFakeTimers();
+    const page: { umami?: { track: () => void } } = {};
+    vi.stubGlobal("window", page);
+    const send = vi.fn();
+    whenTrackerReady(send);
+    vi.advanceTimersByTime(1_000);
+    expect(send).not.toHaveBeenCalled();
+    page.umami = { track: vi.fn() };
+    vi.advanceTimersByTime(5_000);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up after 30 seconds without a tracker", () => {
+    vi.useFakeTimers();
+    const page: { umami?: { track: () => void } } = {};
+    vi.stubGlobal("window", page);
+    const send = vi.fn();
+    whenTrackerReady(send);
+    vi.advanceTimersByTime(30_000);
+    page.umami = { track: vi.fn() };
+    vi.advanceTimersByTime(5_000);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing after it is cancelled", () => {
+    vi.useFakeTimers();
+    const page: { umami?: { track: () => void } } = {};
+    vi.stubGlobal("window", page);
+    const send = vi.fn();
+    const cancel = whenTrackerReady(send);
+    cancel();
+    page.umami = { track: vi.fn() };
+    vi.advanceTimersByTime(5_000);
+    expect(send).not.toHaveBeenCalled();
   });
 });
 

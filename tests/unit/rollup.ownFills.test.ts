@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { deriveRollupOwnFills } from "@/lib/rollup/ownFills";
 import { fillReceipt } from "@/lib/rollup/sdk";
-import { loadTrackedSecrets, trackedSecretBytes, trackSecret } from "@/lib/rollup/secretStore";
+import { loadTrackedSecrets, trackSecret } from "@/lib/rollup/secretStore";
+import { hexToBytes } from "@/lib/wallet/index";
 import type { PublicFill } from "@/lib/market-data/types";
 import { memoryStore } from "./support/rollupFixtures";
 
@@ -77,7 +78,7 @@ describe("Own-fill recognition surviving a reload", () => {
     storeAfterReload.setItem(`noirwire-terminal-rollup-secrets-${owner}`, persisted);
 
     const entries = loadTrackedSecrets(storeAfterReload, owner);
-    const secrets = trackedSecretBytes(entries);
+    const secrets = entries.map((entry) => hexToBytes(entry.secretHex));
     expect(secrets).toHaveLength(1);
     expect(secrets[0]).toEqual(secret);
 
@@ -97,7 +98,7 @@ describe("Own-fill recognition surviving a reload", () => {
     const entries = loadTrackedSecrets(store, owner);
     expect(entries).toHaveLength(20);
     // The oldest 5 were evicted; the most recent (last placed) survived.
-    const kept = trackedSecretBytes(entries);
+    const kept = entries.map((entry) => hexToBytes(entry.secretHex));
     expect(kept.some((bytes) => bytes.every((b, i) => b === secrets[24][i]))).toBe(true);
     expect(kept.some((bytes) => bytes.every((b, i) => b === secrets[0][i]))).toBe(false);
   });

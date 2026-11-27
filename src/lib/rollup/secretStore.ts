@@ -1,4 +1,4 @@
-import { bytesToHex, hexToBytes, ownerDataKeys, type KeyValueStore } from "../wallet/index";
+import { bytesToHex, ownerDataKeys, type KeyValueStore } from "../wallet/index";
 
 export type TrackedTriggerKind = "takeProfit" | "stopLoss";
 
@@ -114,8 +114,4 @@ export function unpinTriggerSecrets(
     return { market: entry.market, secretHex: entry.secretHex, placedAtMs: entry.placedAtMs };
   });
   if (changed) storage.setItem(keyFor(ownerAddress), JSON.stringify(evictOldest(next)));
-}
-
-export function trackedSecretBytes(entries: TrackedOrderSecret[]): Uint8Array[] {
-  return entries.map((entry) => hexToBytes(entry.secretHex));
 }

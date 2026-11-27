@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   MISSING_RECHECK_MS,
   exitOperation,
-  seatVerdict,
   solanaVerdict,
   tokenAtoms,
   type ExitOperation,
@@ -219,38 +218,6 @@ describe("solanaVerdict", () => {
       getSlot: async () => 2_000,
     };
     await expect(solanaVerdict(broken, aSend())).rejects.toThrow("offline");
-  });
-});
-
-describe("seatVerdict", () => {
-  const pending: SeatSend = { state: "pending", at: "t", id: "ab12", before: "1000" };
-
-  it("sends when nothing was recorded", () => {
-    expect(seatVerdict(undefined, 500n, 1_000n, undefined)).toBe("send");
-  });
-
-  it("takes a landed record as landed", () => {
-    expect(seatVerdict({ ...pending, state: "landed" }, 500n, 0n, undefined)).toBe("landed");
-  });
-
-  it("takes a rollup balance that rose by the amount as landed", () => {
-    expect(seatVerdict(pending, 500n, 1_500n, undefined)).toBe("landed");
-  });
-
-  it("asks when nothing shows it landed", () => {
-    expect(seatVerdict(pending, 500n, 1_499n, undefined)).toBe("ask");
-  });
-
-  it("ignores an answer that names another record", () => {
-    expect(seatVerdict(pending, 500n, 1_000n, "lost:other")).toBe("ask");
-  });
-
-  it("sends again only on a lost answer naming this record", () => {
-    expect(seatVerdict(pending, 500n, 1_000n, "lost:ab12")).toBe("send");
-  });
-
-  it("lands on a landed answer naming this record", () => {
-    expect(seatVerdict(pending, 500n, 1_000n, "landed:ab12")).toBe("landed");
   });
 });
 

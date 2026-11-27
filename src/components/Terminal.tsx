@@ -47,7 +47,7 @@ import { useMediaQuery } from "@/components/hooks/useMediaQuery";
 import { useTradingTabGuard } from "@/components/hooks/useTradingTabGuard";
 import { useTradingPause } from "@/components/hooks/useTradingPause";
 import { usePositionTriggers } from "@/components/hooks/usePositionTriggers";
-import { useFunMode } from "@/components/hooks/useFunMode";
+import { useFunMode, useReportFunModeAtLoad } from "@/components/hooks/useFunMode";
 import { usePositionMood } from "@/components/hooks/usePositionMood";
 import { useWizardSpeech } from "@/components/hooks/useWizardSpeech";
 import type { WizardSpotData } from "@/components/FunWizard";
@@ -120,6 +120,7 @@ function sessionKey(owner: string, market: string): string {
 }
 
 export function Terminal() {
+  useReportFunModeAtLoad();
   const store = useSharedMarketDataStore();
   const [chosenMarketId, setChosenMarketId] = useState<string>(MARKET_IDS[0]);
   const allData = useMarketDataState(store);

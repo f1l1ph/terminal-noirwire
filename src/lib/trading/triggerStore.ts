@@ -88,18 +88,6 @@ export function clearLocalTrigger(
   return book;
 }
 
-export function clearLocalMarket(
-  storage: KeyValueStore,
-  owner: string,
-  market: string,
-): LocalTriggerBook {
-  const book = loadTriggerBook(storage, owner);
-  if (!(market in book)) return book;
-  delete book[market];
-  saveTriggerBook(storage, owner, book);
-  return book;
-}
-
 /**
  * The records the exchange has since contradicted. A trigger reported gone,
  * by a read taken after it was set, is no longer there whatever this device
