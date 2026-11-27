@@ -79,6 +79,7 @@ const ORDER_RESULTS = [
   "error",
 ] as const;
 const ORDER_TYPES = ["market", "limit"] as const;
+const FUN_MODE_STATES = ["on", "off"] as const;
 const STEP_HOW = ["now", "already"] as const;
 
 /**
@@ -105,6 +106,8 @@ export const EVENT_SCHEMA = {
   ticket_seen: {},
   order_blocked: { reason: ORDER_BLOCK_REASONS },
   quests_enabled: {},
+  fun_mode_seen: { state: FUN_MODE_STATES },
+  fun_mode_switched: { state: FUN_MODE_STATES },
   setup_step_seen: { step: SETUP_STEPS },
   setup_step_done: { step: SETUP_STEPS, how: STEP_HOW },
   setup_action: { step: SETUP_STEPS },
