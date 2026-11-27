@@ -170,6 +170,28 @@ export function track<E extends AnalyticsEvent>(event: E, data?: EventData<E>): 
   }
 }
 
+const TRACKER_POLL_MS = 250;
+const TRACKER_WAIT_LIMIT_MS = 30_000;
+
+/**
+ * Runs `send` once the tracker script has loaded, which happens after the
+ * page is interactive, so an event sent on mount is not lost. Gives up after
+ * 30 s; returns a cancel.
+ */
+export function whenTrackerReady(send: () => void): () => void {
+  if (window.umami) {
+    send();
+    return () => {};
+  }
+  let waited = 0;
+  const timer = setInterval(() => {
+    waited += TRACKER_POLL_MS;
+    if (window.umami) send();
+    if (window.umami || waited >= TRACKER_WAIT_LIMIT_MS) clearInterval(timer);
+  }, TRACKER_POLL_MS);
+  return () => clearInterval(timer);
+}
+
 const sentThisPageLoad = new Set<string>();
 
 /** Sends `event` once per page load for the same `key`; later calls with that key do nothing. */

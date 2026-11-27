@@ -42,6 +42,29 @@ describe("fun mode analytics", () => {
     expect(umamiTrack).toHaveBeenCalledWith("fun_mode_seen", { state: "off", v: "dev" });
   });
 
+  it("waits for the tracker script and sends the choice the page loaded with", async () => {
+    vi.useFakeTimers();
+    try {
+      const saved = {
+        [FUN_MODE_STORAGE_KEY]: JSON.stringify({ enabled: true, tint: true, wizard: true }),
+      };
+      const page: { umami?: { track: ReturnType<typeof vi.fn> }; localStorage: unknown } = {
+        localStorage: storageWith(saved),
+      };
+      vi.stubGlobal("window", page);
+      const { reportFunModeAtLoad, changeFunMode } = await import("@/components/hooks/useFunMode");
+      reportFunModeAtLoad();
+      changeFunMode({ enabled: false });
+      const umamiTrack = vi.fn();
+      page.umami = { track: umamiTrack };
+      vi.advanceTimersByTime(250);
+      expect(umamiTrack).toHaveBeenCalledTimes(1);
+      expect(umamiTrack).toHaveBeenCalledWith("fun_mode_seen", { state: "on", v: "dev" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("counts each switch of Fun mode with the state it lands on", async () => {
     const { changeFunMode, umamiTrack } = await freshFunMode();
     changeFunMode({ enabled: true });

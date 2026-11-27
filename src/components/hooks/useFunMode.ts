@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { track, trackOnce } from "@/lib/analytics";
+import { track, trackOnce, whenTrackerReady } from "@/lib/analytics";
 import {
   DEFAULT_FUN_MODE,
   loadFunMode,
@@ -37,9 +37,10 @@ export function useFunMode(): [FunModeSettings, (patch: Partial<FunModeSettings>
   return [settings, changeFunMode];
 }
 
-/** Counts, once per page load, whether this browser opened the terminal with Fun mode on or off. */
-export function reportFunModeAtLoad(): void {
-  trackOnce("fun_mode_seen", "fun_mode_seen", { state: funModeState(store.read().enabled) });
+/** Counts, once per page load, whether this browser opened the terminal with Fun mode on or off; returns a cancel. */
+export function reportFunModeAtLoad(): () => void {
+  const state = funModeState(store.read().enabled);
+  return whenTrackerReady(() => trackOnce("fun_mode_seen", "fun_mode_seen", { state }));
 }
 
 export function useReportFunModeAtLoad(): void {
